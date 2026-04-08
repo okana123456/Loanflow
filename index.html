@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LoanFlow — Smart Lending. Clear Repayments.</title>
-<meta name="description" content="LoanFlow - Complete loan management system for lending companies. Smart Lending. Clear Repayments.">
+<title>Nguzo — Smart Lending. Clear Repayments.</title>
+<meta name="description" content="Nguzo - Complete loan management system for lending companies. Smart Lending. Clear Repayments.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -176,13 +176,13 @@ tr:hover{background:rgba(59,130,246,.03)}
 <!-- LOGIN SCREEN -->
 <div id="loginScreen">
 <div class="login-box">
-<span class="logo-icon">💰</span>
-<h1>LoanFlow</h1>
+<span class="logo-icon">🏦</span>
+<h1>Nguzo</h1>
 <p class="tagline">Smart Lending. Clear Repayments.</p>
-<div class="form-group"><label>Email</label><input class="input" id="loginEmail" type="email" placeholder="admin@loanflow.com"></div>
+<div class="form-group"><label>Email</label><input class="input" id="loginEmail" type="email" placeholder="admin@nguzo.com"></div>
 <div class="form-group"><label>Password</label><input class="input" id="loginPassword" type="password" placeholder="••••••••"></div>
 <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handleLogin()">Sign In</button>
-<p style="margin-top:16px;font-size:12px;color:var(--text-secondary)">Default: admin@loanflow.com / admin123</p>
+<p style="margin-top:16px;font-size:12px;color:var(--text-secondary)">Default: admin@nguzo.com / admin123</p>
 </div>
 </div>
 
@@ -193,7 +193,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 <div id="appShell">
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">
-<h2>💰 LoanFlow</h2>
+<h2>🏦 Nguzo</h2>
 <span>Smart Lending. Clear Repayments.</span>
 </div>
 <nav class="sidebar-nav">
@@ -235,7 +235,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 <script>
 /*
 ═══════════════════════════════════════════════════════════
- LOANFLOW — SQL SETUP
+ NGUZO — SQL SETUP
  Run the following SQL in your Supabase SQL Editor to create
  all required tables. Copy this entire block.
 ═══════════════════════════════════════════════════════════
@@ -462,8 +462,8 @@ CREATE TABLE IF NOT EXISTS loan_audit_log (
 CREATE TABLE IF NOT EXISTS loan_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id TEXT UNIQUE,
-  company_name TEXT DEFAULT 'LoanFlow',
-  company_logo TEXT DEFAULT '💰',
+  company_name TEXT DEFAULT 'Nguzo',
+  company_logo TEXT DEFAULT '🏦',
   company_address TEXT,
   company_phone TEXT,
   company_email TEXT,
@@ -477,14 +477,14 @@ CREATE TABLE IF NOT EXISTS loan_settings (
   app_no_start INT DEFAULT 1,
   receipt_no_prefix TEXT DEFAULT 'RCP',
   receipt_no_start INT DEFAULT 1,
-  receipt_header TEXT DEFAULT 'LoanFlow',
+  receipt_header TEXT DEFAULT 'Nguzo',
   receipt_footer TEXT DEFAULT 'Thank you for your payment',
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Insert default admin (password: admin123 as SHA-256)
 INSERT INTO loan_staff (name, email, phone, password_hash, role, is_active)
-VALUES ('System Admin', 'admin@loanflow.com', '0700000000',
+VALUES ('System Admin', 'admin@nguzo.com', '0700000000',
   '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', true)
 ON CONFLICT (email) DO NOTHING;
 
@@ -510,13 +510,211 @@ ALTER TABLE loan_settings DISABLE ROW LEVEL SECURITY;
 const SUPABASE_URL = 'https://xhghcwwnfnyslsoxsbey.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhoZ2hjd3duZm55c2xzb3hzYmV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMjcyNjAsImV4cCI6MjA4OTYwMzI2MH0.NRcfijdg0Ueeaw-eh1ZD6esxfdsodplzrJwvvo1Bkww';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-const sb = (table) => supabaseClient.from(table);
+let sb = (table) => supabaseClient.from(table);
 
 // ═══ STATE ═══
 let currentUser = null;
 let currentSection = 'dashboard';
 let cachedData = {};
 let charts = {};
+
+// ═══ DEMO DATA ═══
+const IS_DEMO = () => currentUser?.id === 'demo-admin';
+
+const DEMO = {
+  branches: [
+    {id:'b1',name:'Nairobi HQ',location:'Kenyatta Avenue, Nairobi',is_active:true,created_at:'2024-01-15'},
+    {id:'b2',name:'Mombasa Branch',location:'Moi Avenue, Mombasa',is_active:true,created_at:'2024-02-20'},
+    {id:'b3',name:'Kisumu Branch',location:'Oginga Odinga St, Kisumu',is_active:true,created_at:'2024-03-10'},
+    {id:'b4',name:'Eldoret Branch',location:'Uganda Rd, Eldoret',is_active:false,created_at:'2024-06-01'}
+  ],
+  staff: [
+    {id:'s1',name:'System Admin',email:'admin@nguzo.com',phone:'0700000000',role:'admin',is_active:true,last_login:'2025-04-07T14:30:00Z',branch_id:'b1'},
+    {id:'s2',name:'Jane Wanjiku',email:'jane@nguzo.com',phone:'0711222333',role:'branch_manager',is_active:true,last_login:'2025-04-07T09:15:00Z',branch_id:'b1'},
+    {id:'s3',name:'Peter Ochieng',email:'peter@nguzo.com',phone:'0722333444',role:'loan_officer',is_active:true,last_login:'2025-04-06T16:45:00Z',branch_id:'b2'},
+    {id:'s4',name:'Mary Akinyi',email:'mary@nguzo.com',phone:'0733444555',role:'cashier',is_active:true,last_login:'2025-04-07T08:00:00Z',branch_id:'b1'},
+    {id:'s5',name:'John Kamau',email:'john@nguzo.com',phone:'0744555666',role:'loan_officer',is_active:true,last_login:'2025-04-05T11:20:00Z',branch_id:'b3'},
+    {id:'s6',name:'Grace Muthoni',email:'grace@nguzo.com',phone:'0755666777',role:'viewer',is_active:false,last_login:'2025-03-15T10:00:00Z',branch_id:'b1'}
+  ],
+  clients: [
+    {id:'c1',full_name:'James Mwangi',id_number:'28456712',phone:'0712345678',email:'james@email.com',gender:'Male',dob:'1985-03-15',address:'Westlands, Nairobi',occupation:'Business Owner',employer:'Self',monthly_income:150000,credit_score:780,blacklisted:false,next_of_kin_name:'Alice Mwangi',next_of_kin_phone:'0723456789',next_of_kin_relation:'Spouse',created_at:'2024-06-10'},
+    {id:'c2',full_name:'Fatuma Hassan',id_number:'31234567',phone:'0723456789',email:'fatuma@email.com',gender:'Female',dob:'1990-07-22',address:'Tudor, Mombasa',occupation:'Teacher',employer:'Mombasa Primary',monthly_income:65000,credit_score:620,blacklisted:false,next_of_kin_name:'Ali Hassan',next_of_kin_phone:'0734567890',next_of_kin_relation:'Brother',created_at:'2024-07-15'},
+    {id:'c3',full_name:'David Kiplagat',id_number:'25678901',phone:'0734567890',email:'david@email.com',gender:'Male',dob:'1978-11-05',address:'Milimani, Eldoret',occupation:'Farmer',employer:'Self',monthly_income:90000,credit_score:450,blacklisted:false,next_of_kin_name:'Sarah Kiplagat',next_of_kin_phone:'0745678901',next_of_kin_relation:'Wife',created_at:'2024-08-01'},
+    {id:'c4',full_name:'Winnie Achieng',id_number:'33456789',phone:'0745678901',email:'winnie@email.com',gender:'Female',dob:'1992-04-18',address:'Milimani, Kisumu',occupation:'Nurse',employer:'Kisumu County Hospital',monthly_income:72000,credit_score:710,blacklisted:false,next_of_kin_name:'Tom Odhiambo',next_of_kin_phone:'0756789012',next_of_kin_relation:'Husband',created_at:'2024-09-12'},
+    {id:'c5',full_name:'Samuel Njoroge',id_number:'22345678',phone:'0756789012',email:'samuel@email.com',gender:'Male',dob:'1980-01-30',address:'Thika Rd, Nairobi',occupation:'Mechanic',employer:'Self',monthly_income:55000,credit_score:380,blacklisted:true,notes:'Defaulted on 2 previous loans',next_of_kin_name:'Lucy Njoroge',next_of_kin_phone:'0767890123',next_of_kin_relation:'Sister',created_at:'2024-04-20'},
+    {id:'c6',full_name:'Amina Mohamed',id_number:'34567890',phone:'0767890123',email:'amina@email.com',gender:'Female',dob:'1995-09-08',address:'Eastleigh, Nairobi',occupation:'Trader',employer:'Self',monthly_income:45000,credit_score:550,blacklisted:false,next_of_kin_name:'Yusuf Mohamed',next_of_kin_phone:'0778901234',next_of_kin_relation:'Father',created_at:'2024-10-05'},
+    {id:'c7',full_name:'Brian Otieno',id_number:'29876543',phone:'0778901234',email:'brian@email.com',gender:'Male',dob:'1988-12-25',address:'Nyali, Mombasa',occupation:'IT Consultant',employer:'TechCorp Ltd',monthly_income:180000,credit_score:820,blacklisted:false,next_of_kin_name:'Eve Otieno',next_of_kin_phone:'0789012345',next_of_kin_relation:'Wife',created_at:'2024-11-18'},
+    {id:'c8',full_name:'Esther Wambui',id_number:'30123456',phone:'0789012345',email:'esther@email.com',gender:'Female',dob:'1993-06-14',address:'Karen, Nairobi',occupation:'Accountant',employer:'Deloitte Kenya',monthly_income:120000,credit_score:690,blacklisted:false,next_of_kin_name:'Paul Wambui',next_of_kin_phone:'0790123456',next_of_kin_relation:'Brother',created_at:'2025-01-08'}
+  ],
+  products: [
+    {id:'p1',name:'Salary Advance',description:'Quick salary advance for employed individuals. Up to 3x monthly salary.',category:'salary_advance',min_amount:5000,max_amount:300000,interest_rate:5,interest_type:'flat',min_term_months:1,max_term_months:6,processing_fee_pct:2,late_penalty_pct:3,grace_period_days:3,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-01-15'},
+    {id:'p2',name:'Business Loan',description:'Working capital and business expansion loans for SMEs.',category:'business',min_amount:50000,max_amount:5000000,interest_rate:12,interest_type:'reducing_balance',min_term_months:6,max_term_months:36,processing_fee_pct:3,late_penalty_pct:5,grace_period_days:7,requires_guarantor:true,requires_collateral:true,is_active:true,created_at:'2024-01-15'},
+    {id:'p3',name:'Emergency Loan',description:'Instant emergency loans with fast processing.',category:'emergency',min_amount:1000,max_amount:50000,interest_rate:8,interest_type:'flat',min_term_months:1,max_term_months:3,processing_fee_pct:1.5,late_penalty_pct:5,grace_period_days:0,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-02-10'},
+    {id:'p4',name:'Asset Finance',description:'Loans for purchasing vehicles, equipment, and machinery.',category:'asset',min_amount:200000,max_amount:10000000,interest_rate:15,interest_type:'reducing_balance',min_term_months:12,max_term_months:60,processing_fee_pct:4,late_penalty_pct:3,grace_period_days:14,requires_guarantor:true,requires_collateral:true,is_active:true,created_at:'2024-03-01'},
+    {id:'p5',name:'Personal Loan',description:'General purpose personal loans for any need.',category:'personal',min_amount:10000,max_amount:500000,interest_rate:10,interest_type:'flat',min_term_months:3,max_term_months:24,processing_fee_pct:2.5,late_penalty_pct:4,grace_period_days:5,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-04-15'}
+  ],
+  applications: [
+    {id:'a1',application_no:'APP-2025-0001',client_id:'c1',product_id:'p2',applied_amount:500000,applied_term_months:12,purpose:'Business expansion - new branch',collateral_description:'Toyota Hilux 2020 KCX 123A',guarantor_name:'Alice Mwangi',guarantor_phone:'0723456789',status:'disbursed',approved_by:'s2',approved_at:'2025-01-20T10:00:00Z',created_at:'2025-01-15T09:00:00Z'},
+    {id:'a2',application_no:'APP-2025-0002',client_id:'c2',product_id:'p1',applied_amount:120000,applied_term_months:4,purpose:'School fees for children',status:'disbursed',approved_by:'s2',approved_at:'2025-02-05T14:00:00Z',created_at:'2025-02-01T11:30:00Z'},
+    {id:'a3',application_no:'APP-2025-0003',client_id:'c4',product_id:'p5',applied_amount:200000,applied_term_months:12,purpose:'Home renovation',status:'disbursed',approved_by:'s2',approved_at:'2025-02-20T09:00:00Z',created_at:'2025-02-18T08:00:00Z'},
+    {id:'a4',application_no:'APP-2025-0004',client_id:'c7',product_id:'p4',applied_amount:2500000,applied_term_months:24,purpose:'Purchase delivery truck',collateral_description:'Isuzu FRR 2023',guarantor_name:'Eve Otieno',guarantor_phone:'0789012345',status:'approved',approved_by:'s2',approved_at:'2025-04-05T11:00:00Z',created_at:'2025-04-01T10:00:00Z'},
+    {id:'a5',application_no:'APP-2025-0005',client_id:'c6',product_id:'p3',applied_amount:30000,applied_term_months:2,purpose:'Medical emergency',status:'submitted',created_at:'2025-04-06T15:00:00Z'},
+    {id:'a6',application_no:'APP-2025-0006',client_id:'c8',product_id:'p2',applied_amount:800000,applied_term_months:18,purpose:'Import stock for retail shop',collateral_description:'Shop lease agreement',guarantor_name:'Paul Wambui',guarantor_phone:'0790123456',status:'under_review',created_at:'2025-04-07T09:00:00Z'},
+    {id:'a7',application_no:'APP-2025-0007',client_id:'c3',product_id:'p5',applied_amount:100000,applied_term_months:6,purpose:'Farm inputs',status:'rejected',rejection_reason:'Low credit score and previous arrears history',reviewed_by:'s2',reviewed_at:'2025-03-25T16:00:00Z',created_at:'2025-03-20T14:00:00Z'},
+    {id:'a8',application_no:'APP-2025-0008',client_id:'c1',product_id:'p1',applied_amount:250000,applied_term_months:3,purpose:'Cash flow gap',status:'draft',created_at:'2025-04-08T07:00:00Z'}
+  ],
+  loans: [],
+  schedules: [],
+  repayments: [],
+  penalties: [],
+  follow_ups: [],
+  audit_log: []
+};
+
+// Generate loans from disbursed applications
+(function(){
+  const now = new Date();
+  // Loan 1: James Mwangi - Business Loan 500K, active, slightly overdue
+  const l1 = {id:'l1',loan_no:'LN-2025-0001',application_id:'a1',client_id:'c1',product_id:'p2',loan_officer_id:'s3',branch_id:'b1',principal_amount:500000,interest_rate:12,interest_type:'reducing_balance',term_months:12,processing_fee:15000,total_interest:39374,total_payable:539374,monthly_installment:44948,disbursed_amount:485000,disbursement_method:'bank_transfer',disbursement_reference:'TXN-BK-20250120',disbursement_date:'2025-01-20',first_repayment_date:'2025-02-20',maturity_date:'2026-01-20',status:'active',outstanding_balance:365280,total_paid:174094,arrears_amount:12500,overdue_days:18,created_at:'2025-01-20'};
+  
+  // Loan 2: Fatuma - Salary Advance 120K, active, on track
+  const l2 = {id:'l2',loan_no:'LN-2025-0002',application_id:'a2',client_id:'c2',product_id:'p1',loan_officer_id:'s5',branch_id:'b2',principal_amount:120000,interest_rate:5,interest_type:'flat',term_months:4,processing_fee:2400,total_interest:24000,total_payable:144000,monthly_installment:36000,disbursed_amount:117600,disbursement_method:'mpesa',disbursement_reference:'QK7H2R4N5M',disbursement_date:'2025-02-05',first_repayment_date:'2025-03-05',maturity_date:'2025-06-05',status:'active',outstanding_balance:72000,total_paid:72000,arrears_amount:0,overdue_days:0,created_at:'2025-02-05'};
+  
+  // Loan 3: Winnie - Personal 200K, active, 45 days overdue
+  const l3 = {id:'l3',loan_no:'LN-2025-0003',application_id:'a3',client_id:'c4',product_id:'p5',loan_officer_id:'s3',branch_id:'b3',principal_amount:200000,interest_rate:10,interest_type:'flat',term_months:12,processing_fee:5000,total_interest:240000,total_payable:440000,monthly_installment:36667,disbursed_amount:195000,disbursement_method:'bank_transfer',disbursement_reference:'TXN-BK-20250220',disbursement_date:'2025-02-20',first_repayment_date:'2025-03-20',maturity_date:'2026-02-20',status:'active',outstanding_balance:403333,total_paid:36667,arrears_amount:36667,overdue_days:45,created_at:'2025-02-20'};
+  
+  DEMO.loans = [l1, l2, l3];
+  
+  // Schedules for Loan 1
+  for(let i=1;i<=12;i++){
+    const due = new Date(2025, 1+i-1, 20);
+    const isPaid = i <= 3;
+    const isOverdue = i === 4;
+    DEMO.schedules.push({id:'sch1-'+i,loan_id:'l1',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:41667,interest_due:3281,total_due:44948,principal_paid:isPaid?41667:0,interest_paid:isPaid?3281:0,total_paid:isPaid?44948:0,status:isPaid?'paid':isOverdue?'overdue':'pending'});
+  }
+  // Schedules for Loan 2
+  for(let i=1;i<=4;i++){
+    const due = new Date(2025, 2+i-1, 5);
+    const isPaid = i <= 2;
+    DEMO.schedules.push({id:'sch2-'+i,loan_id:'l2',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:30000,interest_due:6000,total_due:36000,principal_paid:isPaid?30000:0,interest_paid:isPaid?6000:0,total_paid:isPaid?36000:0,status:isPaid?'paid':'pending'});
+  }
+  // Schedules for Loan 3
+  for(let i=1;i<=12;i++){
+    const due = new Date(2025, 2+i-1, 20);
+    const isPaid = i === 1;
+    const isOverdue = i === 2;
+    DEMO.schedules.push({id:'sch3-'+i,loan_id:'l3',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:16667,interest_due:20000,total_due:36667,principal_paid:isPaid?16667:0,interest_paid:isPaid?20000:0,total_paid:isPaid?36667:0,status:isPaid?'paid':isOverdue?'overdue':'pending'});
+  }
+  
+  // Repayments
+  DEMO.repayments = [
+    {id:'r1',receipt_no:'RCP-2025-0001',loan_id:'l1',amount:44948,payment_method:'mpesa',payment_reference:'QK7A1B2C3D',payment_date:'2025-02-20',principal_portion:41667,interest_portion:3281,penalty_portion:0,created_at:'2025-02-20T10:15:00Z'},
+    {id:'r2',receipt_no:'RCP-2025-0002',loan_id:'l1',amount:44948,payment_method:'mpesa',payment_reference:'QK8E4F5G6H',payment_date:'2025-03-20',principal_portion:41667,interest_portion:3281,penalty_portion:0,created_at:'2025-03-20T09:30:00Z'},
+    {id:'r3',receipt_no:'RCP-2025-0003',loan_id:'l2',amount:36000,payment_method:'mpesa',payment_reference:'QK9I7J8K9L',payment_date:'2025-03-05',principal_portion:30000,interest_portion:6000,penalty_portion:0,created_at:'2025-03-05T11:00:00Z'},
+    {id:'r4',receipt_no:'RCP-2025-0004',loan_id:'l1',amount:84198,payment_method:'bank_transfer',payment_reference:'TXN-BK-APR01',payment_date:'2025-04-02',principal_portion:41667,interest_portion:3281,penalty_portion:39250,notes:'Late payment with penalty',created_at:'2025-04-02T14:20:00Z'},
+    {id:'r5',receipt_no:'RCP-2025-0005',loan_id:'l2',amount:36000,payment_method:'cash',payment_reference:'CASH-0405',payment_date:'2025-04-05',principal_portion:30000,interest_portion:6000,penalty_portion:0,created_at:'2025-04-05T08:45:00Z'},
+    {id:'r6',receipt_no:'RCP-2025-0006',loan_id:'l3',amount:36667,payment_method:'mpesa',payment_reference:'QK0M1N2O3P',payment_date:'2025-03-22',principal_portion:16667,interest_portion:20000,penalty_portion:0,notes:'Paid 2 days late',created_at:'2025-03-22T16:30:00Z'},
+  ];
+  
+  // Follow-ups
+  DEMO.follow_ups = [
+    {id:'fu1',loan_id:'l1',client_id:'c1',officer_id:'s3',follow_up_type:'call',notes:'Called client about overdue installment #4. Promised to pay by end of week.',outcome:'Promise to pay',follow_up_date:'2025-04-05',next_follow_up_date:'2025-04-12',created_at:'2025-04-05T10:00:00Z'},
+    {id:'fu2',loan_id:'l3',client_id:'c4',officer_id:'s5',follow_up_type:'sms',notes:'Sent SMS reminder for installment #2 overdue by 45 days.',outcome:'No response',follow_up_date:'2025-04-03',next_follow_up_date:'2025-04-08',created_at:'2025-04-03T09:00:00Z'},
+    {id:'fu3',loan_id:'l3',client_id:'c4',officer_id:'s5',follow_up_type:'visit',notes:'Visited client at workplace. Client citing financial difficulties. Discussed restructuring options.',outcome:'Restructuring requested',follow_up_date:'2025-04-07',next_follow_up_date:'2025-04-14',created_at:'2025-04-07T14:00:00Z'},
+  ];
+  
+  // Audit log
+  DEMO.audit_log = [
+    {id:'al1',user_id:'s1',action:'login',table_name:'loan_staff',created_at:'2025-04-08T07:00:00Z'},
+    {id:'al2',user_id:'s2',action:'application_approved',table_name:'loan_applications',record_id:'a4',new_value:{application_no:'APP-2025-0004',amount:2500000},created_at:'2025-04-05T11:00:00Z'},
+    {id:'al3',user_id:'s3',action:'loan_disbursed',table_name:'loans',record_id:'l1',new_value:{loan_no:'LN-2025-0001',amount:500000},created_at:'2025-01-20T10:30:00Z'},
+    {id:'al4',user_id:'s4',action:'repayment_recorded',table_name:'loan_repayments',record_id:'r4',new_value:{receipt:'RCP-2025-0004',amount:84198},created_at:'2025-04-02T14:20:00Z'},
+    {id:'al5',user_id:'s5',action:'follow_up_created',table_name:'loan_follow_ups',record_id:'fu3',new_value:{type:'visit',client:'Winnie Achieng'},created_at:'2025-04-07T14:00:00Z'},
+    {id:'al6',user_id:'s2',action:'application_rejected',table_name:'loan_applications',record_id:'a7',new_value:{application_no:'APP-2025-0007',reason:'Low credit score'},created_at:'2025-03-25T16:00:00Z'},
+    {id:'al7',user_id:'s1',action:'settings_changed',table_name:'loan_settings',new_value:{company_name:'Nguzo'},created_at:'2025-04-01T09:00:00Z'},
+    {id:'al8',user_id:'s3',action:'client_created',table_name:'loan_clients',record_id:'c7',new_value:{name:'Brian Otieno'},created_at:'2024-11-18T10:00:00Z'},
+    {id:'al9',user_id:'s1',action:'staff_created',table_name:'loan_staff',record_id:'s5',new_value:{name:'John Kamau',role:'loan_officer'},created_at:'2024-06-15T11:30:00Z'},
+    {id:'al10',user_id:'s4',action:'repayment_recorded',table_name:'loan_repayments',record_id:'r6',new_value:{receipt:'RCP-2025-0006',amount:36667},created_at:'2025-03-22T16:30:00Z'}
+  ];
+})();
+
+// Demo-aware data fetcher
+function demoQuery(table) {
+  const map = {
+    'loans': DEMO.loans,
+    'loan_clients': DEMO.clients,
+    'loan_products': DEMO.products,
+    'loan_applications': DEMO.applications,
+    'loan_schedules': DEMO.schedules,
+    'loan_repayments': DEMO.repayments,
+    'loan_branches': DEMO.branches,
+    'loan_staff': DEMO.staff,
+    'loan_audit_log': DEMO.audit_log,
+    'loan_follow_ups': DEMO.follow_ups,
+    'loan_penalties': DEMO.penalties,
+    'loan_settings': null
+  };
+  return map[table] !== undefined ? map[table] : [];
+}
+
+// Wrap sb for demo mode: returns a chainable mock that resolves to demo data
+const _realSb = sb;
+const sbDemo = (table) => {
+  if (!IS_DEMO()) return _realSb(table);
+  const data = demoQuery(table);
+  const chain = {
+    _data: data ? [...data] : null,
+    select: function() { return chain; },
+    insert: function(rec) { return chain; return chain; },
+    update: function() { return chain; },
+    delete: function() { return chain; },
+    eq: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => r[k] == v); return chain; },
+    neq: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => r[k] != v); return chain; },
+    gt: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) > Number(v)); return chain; },
+    gte: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) >= Number(v)); return chain; },
+    lt: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) < Number(v)); return chain; },
+    in: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => v.includes(r[k])); return chain; },
+    order: function() { return chain; },
+    limit: function(n) { if(chain._data) chain._data = chain._data.slice(0, n); return chain; },
+    single: function() { return Promise.resolve({ data: chain._data?.[0] || null, error: null }); },
+    then: function(resolve, reject) { return Promise.resolve({ data: chain._data, error: null }).then(resolve, reject); }
+  };
+  // Make it thenable
+  chain[Symbol.toStringTag] = 'Promise';
+  return chain;
+};
+
+
+// Override sb for demo mode
+const _origSb = sb;
+sb = (table) => {
+  if(!IS_DEMO()) return _origSb(table);
+  const allData = demoQuery(table);
+  let filteredData = allData ? [...allData] : null;
+  const chain = {
+    _data: () => filteredData,
+    select(){ return chain },
+    insert(rec){ 
+      if(Array.isArray(allData)){
+        if(Array.isArray(rec)) rec.forEach(r=>allData.push(r)); else allData.push(rec);
+      }
+      return chain;
+    },
+    update(){ return chain },
+    delete(){ return chain },
+    eq(k,v){ if(filteredData) filteredData=filteredData.filter(r=>r[k]==v); return chain },
+    neq(k,v){ if(filteredData) filteredData=filteredData.filter(r=>r[k]!=v); return chain },
+    gt(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])>Number(v)); return chain },
+    gte(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])>=Number(v)); return chain },
+    lt(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])<Number(v)); return chain },
+    in(k,v){ if(filteredData) filteredData=filteredData.filter(r=>v.includes(r[k])); return chain },
+    order(){ return chain },
+    limit(n){ if(filteredData) filteredData=filteredData.slice(0,n); return chain },
+    single(){ return Promise.resolve({data:filteredData?.[0]||null,error:null}) },
+    then(resolve,reject){ return Promise.resolve({data:filteredData,error:null}).then(resolve,reject) }
+  };
+  return chain;
+};
 
 // ═══ UTILS ═══
 const $ = (sel) => document.querySelector(sel);
@@ -586,9 +784,9 @@ async function handleLogin(){
     const{data,error}=await sb('loan_staff').select('*').eq('email',email).eq('password_hash',hash).eq('is_active',true).single();
     if(error||!data){
       // Demo mode: if table doesn't exist or no match, use demo admin
-      if(email==='admin@loanflow.com'&&pwd==='admin123'){
+      if(email==='admin@nguzo.com'&&pwd==='admin123'){
         currentUser={id:'demo-admin',business_id:'demo-biz',name:'Demo Admin',email,role:'admin',branch_id:null,is_active:true};
-        localStorage.setItem('lf_session',JSON.stringify({user:currentUser,ts:Date.now()}));
+        localStorage.setItem('nz_session',JSON.stringify({user:currentUser,ts:Date.now()}));
         toast('Logged in as Demo Admin (tables not yet created)','info');
         showApp();return;
       }
@@ -596,14 +794,14 @@ async function handleLogin(){
     }
     currentUser=data;
     await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',data.id);
-    localStorage.setItem('lf_session',JSON.stringify({user:data,ts:Date.now()}));
+    localStorage.setItem('nz_session',JSON.stringify({user:data,ts:Date.now()}));
     await audit('login','loan_staff',data.id,null,{email});
     showApp();
   }catch(e){
     // Fallback demo mode on any error
-    if(email==='admin@loanflow.com'&&pwd==='admin123'){
+    if(email==='admin@nguzo.com'&&pwd==='admin123'){
       currentUser={id:'demo-admin',business_id:'demo-biz',name:'Demo Admin',email,role:'admin',branch_id:null,is_active:true};
-      localStorage.setItem('lf_session',JSON.stringify({user:currentUser,ts:Date.now()}));
+      localStorage.setItem('nz_session',JSON.stringify({user:currentUser,ts:Date.now()}));
       toast('Logged in as Demo Admin (offline mode)','info');
       showApp();return;
     }
@@ -612,16 +810,16 @@ async function handleLogin(){
 }
 
 function checkSession(){
-  const s=localStorage.getItem('lf_session');
+  const s=localStorage.getItem('nz_session');
   if(!s)return false;
   const{user,ts}=JSON.parse(s);
-  if(Date.now()-ts>8*60*60*1000){localStorage.removeItem('lf_session');return false}
+  if(Date.now()-ts>8*60*60*1000){localStorage.removeItem('nz_session');return false}
   currentUser=user;return true;
 }
 
 function handleLogout(){
   audit('logout','loan_staff',currentUser?.id,null,null);
-  currentUser=null;localStorage.removeItem('lf_session');
+  currentUser=null;localStorage.removeItem('nz_session');
   $('#appShell').style.display='none';$('#loginScreen').style.display='flex';
 }
 
@@ -888,7 +1086,7 @@ async function toggleBlacklist(id,val){
 
 function exportClientsExcel(){
   const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Monthly Income':c.monthly_income,'Credit Score':c.credit_score,Status:c.blacklisted?'Blacklisted':'Active'}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'LoanFlow_Clients.xlsx');
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'Nguzo_Clients.xlsx');
   toast('Exported to Excel','success');
 }
 
@@ -1297,7 +1495,7 @@ async function exportLoanPDF(id){
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date');
   if(!loan)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF();
-  doc.setFontSize(18);doc.text('LoanFlow - Loan Statement',14,20);
+  doc.setFontSize(18);doc.text('Nguzo - Loan Statement',14,20);
   doc.setFontSize(10);doc.text(`Loan: ${loan.loan_no} | Principal: ${fmtMoney(loan.principal_amount)} | Balance: ${fmtMoney(loan.outstanding_balance)}`,14,30);
   doc.text(`Status: ${loan.status} | Rate: ${loan.interest_rate}% | Term: ${loan.term_months} months`,14,36);
   doc.autoTable({startY:44,head:[['#','Due Date','Due','Paid','Status']],body:(schedules||[]).map(s=>[s.installment_no,s.due_date,fmtMoney(s.total_due),fmtMoney(s.total_paid),s.status]),styles:{fontSize:8}});
@@ -1395,7 +1593,7 @@ async function printReceipt(id){
   const{data:rep}=await sb('loan_repayments').select('*').eq('id',id).single();
   if(!rep)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF({format:[80,140],unit:'mm'});
-  doc.setFontSize(14);doc.text('LoanFlow',40,10,{align:'center'});
+  doc.setFontSize(14);doc.text('Nguzo',40,10,{align:'center'});
   doc.setFontSize(8);doc.text('Payment Receipt',40,16,{align:'center'});
   doc.line(5,18,75,18);
   doc.setFontSize(9);
@@ -1412,7 +1610,7 @@ async function printReceipt(id){
 
 function exportRepaymentsExcel(){
   const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Amount:r.amount,Method:r.payment_method,Reference:r.payment_reference,Date:r.payment_date}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'LoanFlow_Repayments.xlsx');
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Nguzo_Repayments.xlsx');
   toast('Exported','success');
 }
 
@@ -1489,7 +1687,7 @@ async function genPortfolioReport(){
     const{data:loans}=await sb('loans').select('*');
     const active=(loans||[]).filter(l=>l.status==='active');
     const{jsPDF}=window.jspdf;const doc=new jsPDF();
-    doc.setFontSize(16);doc.text('LoanFlow — Portfolio Report',14,20);
+    doc.setFontSize(16);doc.text('Nguzo — Portfolio Report',14,20);
     doc.setFontSize(10);doc.text(`Generated: ${fmtDate(today())}`,14,28);
     doc.autoTable({startY:34,head:[['Metric','Value']],body:[['Total Active Loans',active.length],['Total Outstanding',fmtMoney(active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))],['Total Disbursed',fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.disbursed_amount||0),0))]]});
     doc.save('Portfolio_Report.pdf');toast('Report generated','success');
@@ -1658,7 +1856,7 @@ async function renderSettings(){
   const main=$('#mainContent');
   try{
     let{data:settings}=await sb('loan_settings').select('*').limit(1).single();
-    if(!settings)settings={company_name:'LoanFlow',company_logo:'💰',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,loan_no_prefix:'LN',app_no_prefix:'APP',receipt_no_prefix:'RCP',receipt_header:'LoanFlow',receipt_footer:'Thank you for your payment'};
+    if(!settings)settings={company_name:'Nguzo',company_logo:'🏦',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,loan_no_prefix:'LN',app_no_prefix:'APP',receipt_no_prefix:'RCP',receipt_header:'Nguzo',receipt_footer:'Thank you for your payment'};
     main.innerHTML=`
       <div class="page-header"><h1>⚙️ Settings</h1></div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
@@ -1686,7 +1884,7 @@ async function renderSettings(){
     // Extract SQL from script comment
     const scripts=document.querySelectorAll('script');
     const mainScript=scripts[scripts.length-1].textContent;
-    const sqlMatch=mainScript.match(/═+\n LOANFLOW — SQL SETUP[\s\S]*?\*\//);
+    const sqlMatch=mainScript.match(/═+\n NGUZO — SQL SETUP[\s\S]*?\*\//);
     if(sqlMatch){$('#sqlBlock').textContent=sqlMatch[0].replace(/^\s*\/?\*+\s?/gm,'').replace(/\*\/$/,'')}
   }catch(e){toast(e.message,'error')}
 }
