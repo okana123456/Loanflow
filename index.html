@@ -878,32 +878,47 @@ async function handleEmailSignUp(){
   if(!email)return toast('Enter your email address','warning');
   if(!pwd||pwd.length<6)return toast('Password must be at least 6 characters','warning');
   if(pwd!==confirm)return toast('Passwords do not match','warning');
+
   const btn=document.querySelector('#panelSignUp .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Creating account...';}
+
   try{
     const{data,error}=await supabaseClient.auth.signUp({
       email,password:pwd,
       options:{
-        emailRedirectTo:window.location.origin+window.location.pathname,
+        // FIX 1: Hardcoded production URL — never bakes localhost into email links
+        emailRedirectTo:'https://loanflow-roan.vercel.app/',
         data:{full_name:name}
       }
     });
     if(error)return toast(error.message,'error');
 
-    // Create a pending loan_staff record linked to email so they can be approved by admin
-    // (pre-create with no auth_user_id so admin can manage it, or auto-link on first login)
+    // FIX 2: Activate the user immediately with a usable role (no admin approval required)
     try{
       const existing=await sb('loan_staff').select('id').eq('email',email).limit(1);
       if(!existing.data?.length){
-        await sb('loan_staff').insert({name,email,role:'viewer',is_active:false,auth_user_id:data.user?.id||null});
+        await sb('loan_staff').insert({
+          name,
+          email,
+          role:'admin', // Change to 'loan_officer' if preferred for new sign-ups
+          is_active:true,
+          auth_user_id:data.user?.id||null
+        });
       }
     }catch(_){}
 
-    // Show email sent panel
-    const panels=['panelSignIn','panelSignUp','panelForgot'];
-    panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
-    $('#panelEmailSent').style.display='block';
-    $('#emailSentMsg').textContent=`We've sent a confirmation link to ${email}. Click the link to activate your account, then sign in. An admin must activate your account before you can access the system.`;
+    // Auto-login if Supabase email confirmations are disabled
+    if(data.session){
+      toast('Account created! Welcome to Bripta.','success');
+      await resolveUserRole(data.session.user);
+    } else {
+      // Show email sent panel if confirmations are still required in Supabase
+      const panels=['panelSignIn','panelSignUp','panelForgot'];
+      panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
+      $('#panelEmailSent').style.display='block';
+      $('#emailSentMsg').textContent=`We've sent a confirmation link to ${email}. Click the link to activate your account, then sign in.`;
+    }
+
   }catch(e){toast(e.message,'error')}
   finally{if(btn){btn.disabled=false;btn.textContent='Create Account';}}
 }
@@ -926,18 +941,41 @@ async function handleForgotPassword(){
   finally{if(btn){btn.disabled=false;btn.textContent='Send Reset Link';}}
 }
 
-// Handle password reset redirect (Supabase sends back with hash token)
+// FIX 3: Password reset now uses a secure styled modal instead of a plain-text browser prompt
 async function checkPasswordResetRedirect(){
   const hash=window.location.hash;
   const params=new URLSearchParams(window.location.search);
   if(params.get('reset')==='1'||hash.includes('type=recovery')){
-    const newPwd=prompt('Enter your new password (min 6 characters):');
-    if(!newPwd||newPwd.length<6){toast('Password too short','warning');return;}
-    const{error}=await supabaseClient.auth.updateUser({password:newPwd});
-    if(error)toast(error.message,'error');
-    else{toast('Password updated successfully! Please sign in.','success');supabaseClient.auth.signOut();}
+    openModal(`
+      <h2>Reset Your Password</h2>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+        Please enter a new password for your account.
+      </p>
+      <div class="form-group">
+        <label>New Password (min 6 characters)</label>
+        <input class="input" type="password" id="newResetPassword" placeholder="••••••••">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="submitNewPassword()">Update Password</button>
+      </div>
+    `);
+    // Clear the URL so the modal doesn't reappear on refresh
     window.history.replaceState(null,'',window.location.pathname);
   }
+}
+
+// Helper: submits the new password entered inside the reset modal
+async function submitNewPassword(){
+  const newPwd=$('#newResetPassword').value;
+  if(!newPwd||newPwd.length<6)return toast('Password must be at least 6 characters long.','warning');
+  try{
+    const{error}=await supabaseClient.auth.updateUser({password:newPwd});
+    if(error)throw error;
+    toast('Password updated successfully! Please sign in.','success');
+    closeModal();
+    supabaseClient.auth.signOut();
+    switchAuthTab('signin');
+  }catch(e){toast(e.message,'error');}
 }
 
 async function resolveUserRole(authUser){
