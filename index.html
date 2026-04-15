@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nguzo — Smart Lending. Clear Repayments.</title>
-<meta name="description" content="Nguzo - Complete loan management system for lending companies. Smart Lending. Clear Repayments.">
+<title>Bripta — Smart Lending. Clear Repayments.</title>
+<meta name="description" content="Bripta - Complete loan management system for lending companies. Smart Lending. Clear Repayments.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -35,7 +35,6 @@ a{color:var(--accent-blue);text-decoration:none}
 .login-box{background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:48px;width:100%;max-width:420px;text-align:center}
 .login-box h1{font-size:32px;font-weight:800;margin-bottom:4px}
 .login-box .tagline{color:var(--text-secondary);margin-bottom:32px;font-size:14px}
-.login-box .logo-icon{font-size:48px;margin-bottom:16px;display:block}
 
 /* LAYOUT */
 #appShell{display:none;height:100vh}
@@ -47,7 +46,7 @@ a{color:var(--accent-blue);text-decoration:none}
 .nav-item{display:flex;align-items:center;gap:12px;padding:10px 20px;color:var(--text-secondary);cursor:pointer;font-size:14px;font-weight:600;transition:all .15s;border-left:3px solid transparent}
 .nav-item:hover{color:var(--text-primary);background:rgba(59,130,246,.06)}
 .nav-item.active{color:var(--accent-blue);background:rgba(59,130,246,.1);border-left-color:var(--accent-blue)}
-.nav-item .icon{width:20px;text-align:center;font-size:16px}
+.nav-item .icon{width:20px;text-align:center;font-size:13px;font-weight:700}
 .nav-section-label{padding:16px 20px 6px;font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px}
 .sidebar-footer{padding:16px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--text-secondary)}
 .sidebar-footer .user-info{margin-bottom:8px}
@@ -70,6 +69,13 @@ a{color:var(--accent-blue);text-decoration:none}
 .btn-sm{padding:5px 10px;font-size:12px}
 .btn-icon{padding:6px 8px;font-size:16px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-google{background:#fff;color:#333;border:1px solid #ddd;font-weight:600;display:flex;align-items:center;gap:8px;justify-content:center}
+.btn-google:hover{background:#f5f5f5}
+.auth-divider{display:flex;align-items:center;gap:12px;margin:20px 0;color:var(--text-secondary);font-size:12px}
+.auth-divider::before,.auth-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.auth-tabs{display:flex;gap:0;margin-bottom:20px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.auth-tab{flex:1;padding:10px;text-align:center;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text-secondary);border:none}
+.auth-tab.active{background:var(--accent-blue);color:#fff}
 
 .input,.select,.textarea{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);font-family:inherit;font-size:14px;transition:border .15s}
 .input:focus,.select:focus,.textarea:focus{outline:none;border-color:var(--accent-blue)}
@@ -137,7 +143,6 @@ tr:hover{background:rgba(59,130,246,.03)}
 .loading-overlay{display:flex;align-items:center;justify-content:center;padding:60px}
 
 .empty-state{text-align:center;padding:60px 20px;color:var(--text-secondary)}
-.empty-state .icon{font-size:48px;margin-bottom:12px}
 .empty-state p{font-size:14px}
 
 .steps{display:flex;gap:0;margin-bottom:24px}
@@ -151,8 +156,6 @@ tr:hover{background:rgba(59,130,246,.03)}
 .toggle-slider::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
 .toggle input:checked+.toggle-slider{background:var(--accent-blue)}
 .toggle input:checked+.toggle-slider::before{transform:translateX(20px)}
-
-.credit-gauge{width:120px;height:60px;position:relative;margin:0 auto}
 
 .hamburger{display:none;position:fixed;top:16px;left:16px;z-index:200;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer;font-size:20px;color:var(--text-primary)}
 
@@ -176,44 +179,59 @@ tr:hover{background:rgba(59,130,246,.03)}
 <!-- LOGIN SCREEN -->
 <div id="loginScreen">
 <div class="login-box">
-<span class="logo-icon">🏦</span>
-<h1>Nguzo</h1>
+<h1>Bripta</h1>
 <p class="tagline">Smart Lending. Clear Repayments.</p>
-<div class="form-group"><label>Email</label><input class="input" id="loginEmail" type="email" placeholder="admin@nguzo.com"></div>
-<div class="form-group"><label>Password</label><input class="input" id="loginPassword" type="password" placeholder="••••••••"></div>
-<button class="btn btn-primary" style="width:100%;padding:12px" onclick="handleLogin()">Sign In</button>
-<p style="margin-top:16px;font-size:12px;color:var(--text-secondary)">Default: admin@nguzo.com / admin123</p>
+<div id="authContainer">
+  <button class="btn btn-google" style="width:100%;padding:12px;margin-bottom:12px" onclick="signInWithGoogle()">
+    <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+    Sign in with Google
+  </button>
+  <div class="auth-divider">or sign in with phone</div>
+  <div class="form-group"><label>Phone Number</label><input class="input" id="loginPhone" type="tel" placeholder="+254712345678"></div>
+  <div class="form-group"><label>Password</label><input class="input" id="loginPassword" type="password" placeholder="Enter password"></div>
+  <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handlePhoneLogin()">Sign In</button>
+  <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
+    Don't have an account? <a href="#" onclick="toggleSignUp(event)">Sign Up</a>
+  </p>
+</div>
+<div id="signUpContainer" style="display:none">
+  <div class="form-group"><label>Phone Number</label><input class="input" id="signUpPhone" type="tel" placeholder="+254712345678"></div>
+  <div class="form-group"><label>Password</label><input class="input" id="signUpPassword" type="password" placeholder="Create password (min 6 chars)"></div>
+  <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handlePhoneSignUp()">Create Account</button>
+  <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
+    Already have an account? <a href="#" onclick="toggleSignUp(event)">Sign In</a>
+  </p>
+</div>
 </div>
 </div>
 
 <!-- HAMBURGER -->
-<button class="hamburger" onclick="document.querySelector('.sidebar').classList.toggle('open')">☰</button>
+<button class="hamburger" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
 
 <!-- APP SHELL -->
 <div id="appShell">
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">
-<h2>🏦 Nguzo</h2>
+<h2>Bripta</h2>
 <span>Smart Lending. Clear Repayments.</span>
 </div>
 <nav class="sidebar-nav">
-<div class="nav-item active" data-section="dashboard" onclick="navigateTo('dashboard')"><span class="icon">📊</span>Dashboard</div>
+<div class="nav-item active" data-section="dashboard" onclick="navigateTo('dashboard')"><span class="icon">D</span>Dashboard</div>
 <div class="nav-section-label">Lending</div>
-<div class="nav-item" data-section="clients" onclick="navigateTo('clients')"><span class="icon">👥</span>Clients</div>
-<div class="nav-item" data-section="products" onclick="navigateTo('products')"><span class="icon">📦</span>Loan Products</div>
-<div class="nav-item" data-section="applications" onclick="navigateTo('applications')"><span class="icon">📝</span>Applications</div>
-<div class="nav-item" data-section="disbursement" onclick="navigateTo('disbursement')"><span class="icon">💸</span>Disbursement</div>
-<div class="nav-item" data-section="loans" onclick="navigateTo('loans')"><span class="icon">🏦</span>Active Loans</div>
-<div class="nav-item" data-section="repayments" onclick="navigateTo('repayments')"><span class="icon">💳</span>Repayments</div>
-<div class="nav-item" data-section="overdue" onclick="navigateTo('overdue')"><span class="icon">⚠️</span>Overdue</div>
+<div class="nav-item" data-section="clients" onclick="navigateTo('clients')"><span class="icon">C</span>Clients</div>
+<div class="nav-item" data-section="products" onclick="navigateTo('products')"><span class="icon">P</span>Loan Products</div>
+<div class="nav-item" data-section="applications" onclick="navigateTo('applications')"><span class="icon">A</span>Applications</div>
+<div class="nav-item" data-section="disbursement" onclick="navigateTo('disbursement')"><span class="icon">$</span>Disbursement</div>
+<div class="nav-item" data-section="loans" onclick="navigateTo('loans')"><span class="icon">L</span>Active Loans</div>
+<div class="nav-item" data-section="repayments" onclick="navigateTo('repayments')"><span class="icon">R</span>Repayments</div>
+<div class="nav-item" data-section="overdue" onclick="navigateTo('overdue')"><span class="icon">!</span>Overdue</div>
 <div class="nav-section-label">Management</div>
-<div class="nav-item" data-section="reports" onclick="navigateTo('reports')"><span class="icon">📈</span>Reports</div>
-<div class="nav-item" data-section="branches" onclick="navigateTo('branches')"><span class="icon">🏢</span>Branches</div>
-<div class="nav-item" data-section="staff" onclick="navigateTo('staff')"><span class="icon">👔</span>Staff</div>
-<div class="nav-item" data-section="calculator" onclick="navigateTo('calculator')"><span class="icon">🧮</span>Calculator</div>
+<div class="nav-item" data-section="reports" onclick="navigateTo('reports')"><span class="icon">+</span>Reports</div>
+<div class="nav-item" data-section="staff" onclick="navigateTo('staff')"><span class="icon">S</span>Staff</div>
+<div class="nav-item" data-section="calculator" onclick="navigateTo('calculator')"><span class="icon">#</span>Calculator</div>
 <div class="nav-section-label">System</div>
-<div class="nav-item" data-section="settings" onclick="navigateTo('settings')"><span class="icon">⚙️</span>Settings</div>
-<div class="nav-item" data-section="auditlog" onclick="navigateTo('auditlog')"><span class="icon">📋</span>Audit Log</div>
+<div class="nav-item" data-section="settings" onclick="navigateTo('settings')"><span class="icon">*</span>Settings</div>
+<div class="nav-item" data-section="auditlog" onclick="navigateTo('auditlog')"><span class="icon">~</span>Audit Log</div>
 </nav>
 <div class="sidebar-footer">
 <div class="user-info" id="sidebarUser">Admin</div>
@@ -221,7 +239,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 <label class="toggle" title="Toggle light mode"><input type="checkbox" id="themeToggle" onchange="toggleTheme()"><span class="toggle-slider"></span></label>
 <span style="font-size:11px;line-height:24px">Light</span>
 </div>
-<button onclick="handleLogout()">🚪 Logout</button>
+<button onclick="handleLogout()">Logout</button>
 </div>
 </aside>
 
@@ -235,30 +253,19 @@ tr:hover{background:rgba(59,130,246,.03)}
 <script>
 /*
 ═══════════════════════════════════════════════════════════
- NGUZO — SQL SETUP
+ BRIPTA — SQL SETUP
  Run the following SQL in your Supabase SQL Editor to create
  all required tables. Copy this entire block.
 ═══════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS loan_branches (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  business_id TEXT,
-  name TEXT NOT NULL,
-  location TEXT,
-  manager_id UUID,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS loan_staff (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id TEXT,
+  auth_user_id UUID UNIQUE,
   name TEXT NOT NULL,
-  email TEXT UNIQUE NOT NULL,
+  email TEXT,
   phone TEXT,
-  password_hash TEXT NOT NULL,
   role TEXT CHECK (role IN ('admin','branch_manager','loan_officer','cashier','viewer')) DEFAULT 'viewer',
-  branch_id UUID REFERENCES loan_branches(id),
   is_active BOOLEAN DEFAULT true,
   last_login TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -280,8 +287,6 @@ CREATE TABLE IF NOT EXISTS loan_clients (
   next_of_kin_name TEXT,
   next_of_kin_phone TEXT,
   next_of_kin_relation TEXT,
-  credit_score INT DEFAULT 500,
-  blacklisted BOOLEAN DEFAULT false,
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   created_by UUID
@@ -292,18 +297,17 @@ CREATE TABLE IF NOT EXISTS loan_products (
   business_id TEXT,
   name TEXT NOT NULL,
   description TEXT,
-  category TEXT CHECK (category IN ('personal','business','asset','emergency','salary_advance')) DEFAULT 'personal',
   min_amount NUMERIC DEFAULT 0,
   max_amount NUMERIC DEFAULT 0,
   interest_rate NUMERIC DEFAULT 0,
   interest_type TEXT CHECK (interest_type IN ('flat','reducing_balance')) DEFAULT 'flat',
-  min_term_months INT DEFAULT 1,
-  max_term_months INT DEFAULT 36,
+  interest_period TEXT CHECK (interest_period IN ('weekly','monthly')) DEFAULT 'weekly',
+  min_term_weeks INT DEFAULT 1,
+  max_term_weeks INT DEFAULT 52,
   processing_fee_pct NUMERIC DEFAULT 0,
   late_penalty_pct NUMERIC DEFAULT 0,
   grace_period_days INT DEFAULT 0,
   requires_guarantor BOOLEAN DEFAULT false,
-  requires_collateral BOOLEAN DEFAULT false,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -315,11 +319,9 @@ CREATE TABLE IF NOT EXISTS loan_applications (
   client_id UUID REFERENCES loan_clients(id),
   product_id UUID REFERENCES loan_products(id),
   loan_officer_id UUID,
-  branch_id UUID,
   applied_amount NUMERIC DEFAULT 0,
-  applied_term_months INT DEFAULT 1,
+  applied_term_weeks INT DEFAULT 1,
   purpose TEXT,
-  collateral_description TEXT,
   guarantor_name TEXT,
   guarantor_phone TEXT,
   status TEXT CHECK (status IN ('draft','submitted','under_review','approved','rejected','disbursed','cancelled')) DEFAULT 'draft',
@@ -340,15 +342,14 @@ CREATE TABLE IF NOT EXISTS loans (
   client_id UUID REFERENCES loan_clients(id),
   product_id UUID REFERENCES loan_products(id),
   loan_officer_id UUID,
-  branch_id UUID,
   principal_amount NUMERIC DEFAULT 0,
   interest_rate NUMERIC DEFAULT 0,
   interest_type TEXT DEFAULT 'flat',
-  term_months INT DEFAULT 1,
+  term_weeks INT DEFAULT 1,
   processing_fee NUMERIC DEFAULT 0,
   total_interest NUMERIC DEFAULT 0,
   total_payable NUMERIC DEFAULT 0,
-  monthly_installment NUMERIC DEFAULT 0,
+  weekly_installment NUMERIC DEFAULT 0,
   disbursed_amount NUMERIC DEFAULT 0,
   disbursement_method TEXT,
   disbursement_reference TEXT,
@@ -392,6 +393,7 @@ CREATE TABLE IF NOT EXISTS loan_repayments (
   principal_portion NUMERIC DEFAULT 0,
   interest_portion NUMERIC DEFAULT 0,
   penalty_portion NUMERIC DEFAULT 0,
+  mpesa_confirmed BOOLEAN DEFAULT false,
   collected_by UUID,
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -410,17 +412,6 @@ CREATE TABLE IF NOT EXISTS loan_penalties (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS loan_collateral (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  loan_id UUID REFERENCES loans(id),
-  client_id UUID REFERENCES loan_clients(id),
-  description TEXT,
-  estimated_value NUMERIC DEFAULT 0,
-  collateral_type TEXT CHECK (collateral_type IN ('land','vehicle','equipment','stock','guarantor','other')) DEFAULT 'other',
-  document_ref TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS loan_follow_ups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   loan_id UUID REFERENCES loans(id),
@@ -431,18 +422,6 @@ CREATE TABLE IF NOT EXISTS loan_follow_ups (
   outcome TEXT,
   follow_up_date DATE,
   next_follow_up_date DATE,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS loan_officers (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  business_id TEXT,
-  user_id UUID,
-  name TEXT NOT NULL,
-  phone TEXT,
-  email TEXT,
-  branch_id UUID REFERENCES loan_branches(id),
-  is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -462,8 +441,7 @@ CREATE TABLE IF NOT EXISTS loan_audit_log (
 CREATE TABLE IF NOT EXISTS loan_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id TEXT UNIQUE,
-  company_name TEXT DEFAULT 'Nguzo',
-  company_logo TEXT DEFAULT '🏦',
+  company_name TEXT DEFAULT 'Bripta',
   company_address TEXT,
   company_phone TEXT,
   company_email TEXT,
@@ -471,25 +449,60 @@ CREATE TABLE IF NOT EXISTS loan_settings (
   default_grace_period INT DEFAULT 7,
   default_late_penalty_pct NUMERIC DEFAULT 5,
   default_processing_fee_pct NUMERIC DEFAULT 3,
+  standard_weekly_rate NUMERIC DEFAULT 5,
+  micro_weekly_rate NUMERIC DEFAULT 6.25,
+  micro_threshold NUMERIC DEFAULT 4000,
   loan_no_prefix TEXT DEFAULT 'LN',
-  loan_no_start INT DEFAULT 1,
   app_no_prefix TEXT DEFAULT 'APP',
-  app_no_start INT DEFAULT 1,
   receipt_no_prefix TEXT DEFAULT 'RCP',
-  receipt_no_start INT DEFAULT 1,
-  receipt_header TEXT DEFAULT 'Nguzo',
+  receipt_header TEXT DEFAULT 'Bripta',
   receipt_footer TEXT DEFAULT 'Thank you for your payment',
+  disbursement_method TEXT DEFAULT 'cash',
+  mpesa_paybill TEXT,
+  mpesa_consumer_key TEXT,
+  mpesa_consumer_secret TEXT,
+  mpesa_passkey TEXT,
+  mpesa_shortcode TEXT,
+  mpesa_auto_confirm BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Insert default admin (password: admin123 as SHA-256)
-INSERT INTO loan_staff (name, email, phone, password_hash, role, is_active)
-VALUES ('System Admin', 'admin@nguzo.com', '0700000000',
-  '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', 'admin', true)
-ON CONFLICT (email) DO NOTHING;
+CREATE TABLE IF NOT EXISTS mpesa_callback_queue (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  transaction_type TEXT,
+  trans_id TEXT UNIQUE,
+  trans_time TEXT,
+  trans_amount NUMERIC,
+  business_short_code TEXT,
+  bill_ref_number TEXT,
+  invoice_number TEXT,
+  org_account_balance NUMERIC,
+  third_party_trans_id TEXT,
+  msisdn TEXT,
+  first_name TEXT,
+  middle_name TEXT,
+  last_name TEXT,
+  confirmed BOOLEAN DEFAULT false,
+  loan_id UUID,
+  repayment_id UUID,
+  raw_payload JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Insert default admin staff (link via auth_user_id after first Google/phone login)
+-- To set the first admin: UPDATE loan_staff SET auth_user_id = '<your-supabase-auth-user-uuid>' WHERE role = 'admin';
+INSERT INTO loan_staff (name, email, phone, role, is_active)
+VALUES ('System Admin', 'admin@bripta.com', '0700000000', 'admin', true)
+ON CONFLICT DO NOTHING;
+
+-- Insert default Bripta loan products
+INSERT INTO loan_products (name, description, min_amount, max_amount, interest_rate, interest_type, interest_period, min_term_weeks, max_term_weeks, processing_fee_pct, late_penalty_pct, grace_period_days, requires_guarantor, is_active, business_id)
+VALUES 
+('Standard Loan', 'Loans above KES 4,000 at 5% weekly flat rate. Requires guarantor.', 4001, 1000000, 5, 'flat', 'weekly', 1, 52, 3, 5, 3, true, true, 'bripta'),
+('Micro Loan', 'Loans KES 4,000 and below at 6.25% weekly flat rate. Requires guarantor.', 500, 4000, 6.25, 'flat', 'weekly', 1, 12, 2, 5, 0, true, true, 'bripta')
+ON CONFLICT DO NOTHING;
 
 -- Disable RLS for simplicity (enable and add policies for production)
-ALTER TABLE loan_branches DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_staff DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_clients DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_products DISABLE ROW LEVEL SECURITY;
@@ -498,11 +511,164 @@ ALTER TABLE loans DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_schedules DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_repayments DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_penalties DISABLE ROW LEVEL SECURITY;
-ALTER TABLE loan_collateral DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_follow_ups DISABLE ROW LEVEL SECURITY;
-ALTER TABLE loan_officers DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_audit_log DISABLE ROW LEVEL SECURITY;
 ALTER TABLE loan_settings DISABLE ROW LEVEL SECURITY;
+ALTER TABLE mpesa_callback_queue DISABLE ROW LEVEL SECURITY;
+
+*/
+
+/*
+═══════════════════════════════════════════════════════════
+ BRIPTA — SUPABASE EDGE FUNCTION: mpesa-c2b-callback
+ Deploy this as a Supabase Edge Function.
+ 
+ File: supabase/functions/mpesa-c2b-callback/index.ts
+═══════════════════════════════════════════════════════════
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    )
+
+    const body = await req.json()
+    console.log('M-Pesa C2B Callback:', JSON.stringify(body))
+
+    // Safaricom C2B callback structure
+    const result = body?.Body?.stkCallback || body
+    const transType = result?.TransactionType || 'C2B'
+    const transId = result?.TransID
+    const transTime = result?.TransTime
+    const transAmount = Number(result?.TransAmount || 0)
+    const shortCode = result?.BusinessShortCode
+    const billRef = (result?.BillRefNumber || '').trim().toUpperCase()
+    const msisdn = result?.MSISDN
+    const firstName = result?.FirstName || ''
+    const middleName = result?.MiddleName || ''
+    const lastName = result?.LastName || ''
+
+    if (!transId || !transAmount) {
+      return new Response(JSON.stringify({ ResultCode: 1, ResultDesc: 'Missing fields' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Insert into callback queue
+    const { data: queueEntry, error: qErr } = await supabase
+      .from('mpesa_callback_queue')
+      .insert({
+        transaction_type: transType,
+        trans_id: transId,
+        trans_time: transTime,
+        trans_amount: transAmount,
+        business_short_code: shortCode,
+        bill_ref_number: billRef,
+        msisdn,
+        first_name: firstName,
+        middle_name: middleName,
+        last_name: lastName,
+        raw_payload: body,
+        confirmed: false
+      })
+      .select()
+      .single()
+
+    if (qErr) {
+      console.error('Queue insert error:', qErr)
+      return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Try to match loan by bill_ref_number (loan_no e.g. LN-2025-0001)
+    const { data: loan } = await supabase
+      .from('loans')
+      .select('*')
+      .eq('loan_no', billRef)
+      .eq('status', 'active')
+      .single()
+
+    if (loan) {
+      // Check if auto-confirm is enabled
+      const { data: settings } = await supabase
+        .from('loan_settings')
+        .select('mpesa_auto_confirm')
+        .limit(1)
+        .single()
+
+      const autoConfirm = settings?.mpesa_auto_confirm || false
+
+      if (autoConfirm) {
+        // Auto-record repayment
+        const countRes = await supabase.from('loan_repayments').select('id', { count: 'exact', head: true })
+        const num = (countRes.count || 0) + 1
+        const receiptNo = 'RCP-' + new Date().getFullYear() + '-' + String(num).padStart(5, '0')
+
+        const repRec = {
+          loan_id: loan.id,
+          receipt_no: receiptNo,
+          amount: transAmount,
+          payment_method: 'mpesa',
+          payment_reference: transId,
+          payment_date: new Date().toISOString().slice(0, 10),
+          principal_portion: transAmount * 0.7,
+          interest_portion: transAmount * 0.3,
+          penalty_portion: 0,
+          mpesa_confirmed: true,
+          business_id: loan.business_id,
+          notes: 'Auto-reconciled M-Pesa C2B from ' + msisdn
+        }
+
+        const { data: repData } = await supabase.from('loan_repayments').insert(repRec).select().single()
+
+        // Update loan balance
+        const newPaid = Number(loan.total_paid) + transAmount
+        const newBalance = Number(loan.outstanding_balance) - transAmount
+        const newStatus = newBalance <= 0 ? 'completed' : loan.status
+        await supabase.from('loans').update({
+          total_paid: newPaid,
+          outstanding_balance: Math.max(0, newBalance),
+          status: newStatus
+        }).eq('id', loan.id)
+
+        // Update queue entry
+        await supabase.from('mpesa_callback_queue').update({
+          confirmed: true,
+          loan_id: loan.id,
+          repayment_id: repData?.id
+        }).eq('id', queueEntry.id)
+      } else {
+        // Just link the loan for manual confirmation
+        await supabase.from('mpesa_callback_queue').update({
+          loan_id: loan.id
+        }).eq('id', queueEntry.id)
+      }
+    }
+
+    // Safaricom expects this exact response format
+    return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
+  } catch (err) {
+    console.error('Callback error:', err)
+    return new Response(JSON.stringify({ ResultCode: 0, ResultDesc: 'Accepted' }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    })
+  }
+})
 
 */
 
@@ -517,204 +683,7 @@ let currentUser = null;
 let currentSection = 'dashboard';
 let cachedData = {};
 let charts = {};
-
-// ═══ DEMO DATA ═══
-const IS_DEMO = () => currentUser?.id === 'demo-admin';
-
-const DEMO = {
-  branches: [
-    {id:'b1',name:'Nairobi HQ',location:'Kenyatta Avenue, Nairobi',is_active:true,created_at:'2024-01-15'},
-    {id:'b2',name:'Mombasa Branch',location:'Moi Avenue, Mombasa',is_active:true,created_at:'2024-02-20'},
-    {id:'b3',name:'Kisumu Branch',location:'Oginga Odinga St, Kisumu',is_active:true,created_at:'2024-03-10'},
-    {id:'b4',name:'Eldoret Branch',location:'Uganda Rd, Eldoret',is_active:false,created_at:'2024-06-01'}
-  ],
-  staff: [
-    {id:'s1',name:'System Admin',email:'admin@nguzo.com',phone:'0700000000',role:'admin',is_active:true,last_login:'2025-04-07T14:30:00Z',branch_id:'b1'},
-    {id:'s2',name:'Jane Wanjiku',email:'jane@nguzo.com',phone:'0711222333',role:'branch_manager',is_active:true,last_login:'2025-04-07T09:15:00Z',branch_id:'b1'},
-    {id:'s3',name:'Peter Ochieng',email:'peter@nguzo.com',phone:'0722333444',role:'loan_officer',is_active:true,last_login:'2025-04-06T16:45:00Z',branch_id:'b2'},
-    {id:'s4',name:'Mary Akinyi',email:'mary@nguzo.com',phone:'0733444555',role:'cashier',is_active:true,last_login:'2025-04-07T08:00:00Z',branch_id:'b1'},
-    {id:'s5',name:'John Kamau',email:'john@nguzo.com',phone:'0744555666',role:'loan_officer',is_active:true,last_login:'2025-04-05T11:20:00Z',branch_id:'b3'},
-    {id:'s6',name:'Grace Muthoni',email:'grace@nguzo.com',phone:'0755666777',role:'viewer',is_active:false,last_login:'2025-03-15T10:00:00Z',branch_id:'b1'}
-  ],
-  clients: [
-    {id:'c1',full_name:'James Mwangi',id_number:'28456712',phone:'0712345678',email:'james@email.com',gender:'Male',dob:'1985-03-15',address:'Westlands, Nairobi',occupation:'Business Owner',employer:'Self',monthly_income:150000,credit_score:780,blacklisted:false,next_of_kin_name:'Alice Mwangi',next_of_kin_phone:'0723456789',next_of_kin_relation:'Spouse',created_at:'2024-06-10'},
-    {id:'c2',full_name:'Fatuma Hassan',id_number:'31234567',phone:'0723456789',email:'fatuma@email.com',gender:'Female',dob:'1990-07-22',address:'Tudor, Mombasa',occupation:'Teacher',employer:'Mombasa Primary',monthly_income:65000,credit_score:620,blacklisted:false,next_of_kin_name:'Ali Hassan',next_of_kin_phone:'0734567890',next_of_kin_relation:'Brother',created_at:'2024-07-15'},
-    {id:'c3',full_name:'David Kiplagat',id_number:'25678901',phone:'0734567890',email:'david@email.com',gender:'Male',dob:'1978-11-05',address:'Milimani, Eldoret',occupation:'Farmer',employer:'Self',monthly_income:90000,credit_score:450,blacklisted:false,next_of_kin_name:'Sarah Kiplagat',next_of_kin_phone:'0745678901',next_of_kin_relation:'Wife',created_at:'2024-08-01'},
-    {id:'c4',full_name:'Winnie Achieng',id_number:'33456789',phone:'0745678901',email:'winnie@email.com',gender:'Female',dob:'1992-04-18',address:'Milimani, Kisumu',occupation:'Nurse',employer:'Kisumu County Hospital',monthly_income:72000,credit_score:710,blacklisted:false,next_of_kin_name:'Tom Odhiambo',next_of_kin_phone:'0756789012',next_of_kin_relation:'Husband',created_at:'2024-09-12'},
-    {id:'c5',full_name:'Samuel Njoroge',id_number:'22345678',phone:'0756789012',email:'samuel@email.com',gender:'Male',dob:'1980-01-30',address:'Thika Rd, Nairobi',occupation:'Mechanic',employer:'Self',monthly_income:55000,credit_score:380,blacklisted:true,notes:'Defaulted on 2 previous loans',next_of_kin_name:'Lucy Njoroge',next_of_kin_phone:'0767890123',next_of_kin_relation:'Sister',created_at:'2024-04-20'},
-    {id:'c6',full_name:'Amina Mohamed',id_number:'34567890',phone:'0767890123',email:'amina@email.com',gender:'Female',dob:'1995-09-08',address:'Eastleigh, Nairobi',occupation:'Trader',employer:'Self',monthly_income:45000,credit_score:550,blacklisted:false,next_of_kin_name:'Yusuf Mohamed',next_of_kin_phone:'0778901234',next_of_kin_relation:'Father',created_at:'2024-10-05'},
-    {id:'c7',full_name:'Brian Otieno',id_number:'29876543',phone:'0778901234',email:'brian@email.com',gender:'Male',dob:'1988-12-25',address:'Nyali, Mombasa',occupation:'IT Consultant',employer:'TechCorp Ltd',monthly_income:180000,credit_score:820,blacklisted:false,next_of_kin_name:'Eve Otieno',next_of_kin_phone:'0789012345',next_of_kin_relation:'Wife',created_at:'2024-11-18'},
-    {id:'c8',full_name:'Esther Wambui',id_number:'30123456',phone:'0789012345',email:'esther@email.com',gender:'Female',dob:'1993-06-14',address:'Karen, Nairobi',occupation:'Accountant',employer:'Deloitte Kenya',monthly_income:120000,credit_score:690,blacklisted:false,next_of_kin_name:'Paul Wambui',next_of_kin_phone:'0790123456',next_of_kin_relation:'Brother',created_at:'2025-01-08'}
-  ],
-  products: [
-    {id:'p1',name:'Salary Advance',description:'Quick salary advance for employed individuals. Up to 3x monthly salary.',category:'salary_advance',min_amount:5000,max_amount:300000,interest_rate:5,interest_type:'flat',min_term_months:1,max_term_months:6,processing_fee_pct:2,late_penalty_pct:3,grace_period_days:3,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-01-15'},
-    {id:'p2',name:'Business Loan',description:'Working capital and business expansion loans for SMEs.',category:'business',min_amount:50000,max_amount:5000000,interest_rate:12,interest_type:'reducing_balance',min_term_months:6,max_term_months:36,processing_fee_pct:3,late_penalty_pct:5,grace_period_days:7,requires_guarantor:true,requires_collateral:true,is_active:true,created_at:'2024-01-15'},
-    {id:'p3',name:'Emergency Loan',description:'Instant emergency loans with fast processing.',category:'emergency',min_amount:1000,max_amount:50000,interest_rate:8,interest_type:'flat',min_term_months:1,max_term_months:3,processing_fee_pct:1.5,late_penalty_pct:5,grace_period_days:0,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-02-10'},
-    {id:'p4',name:'Asset Finance',description:'Loans for purchasing vehicles, equipment, and machinery.',category:'asset',min_amount:200000,max_amount:10000000,interest_rate:15,interest_type:'reducing_balance',min_term_months:12,max_term_months:60,processing_fee_pct:4,late_penalty_pct:3,grace_period_days:14,requires_guarantor:true,requires_collateral:true,is_active:true,created_at:'2024-03-01'},
-    {id:'p5',name:'Personal Loan',description:'General purpose personal loans for any need.',category:'personal',min_amount:10000,max_amount:500000,interest_rate:10,interest_type:'flat',min_term_months:3,max_term_months:24,processing_fee_pct:2.5,late_penalty_pct:4,grace_period_days:5,requires_guarantor:false,requires_collateral:false,is_active:true,created_at:'2024-04-15'}
-  ],
-  applications: [
-    {id:'a1',application_no:'APP-2025-0001',client_id:'c1',product_id:'p2',applied_amount:500000,applied_term_months:12,purpose:'Business expansion - new branch',collateral_description:'Toyota Hilux 2020 KCX 123A',guarantor_name:'Alice Mwangi',guarantor_phone:'0723456789',status:'disbursed',approved_by:'s2',approved_at:'2025-01-20T10:00:00Z',created_at:'2025-01-15T09:00:00Z'},
-    {id:'a2',application_no:'APP-2025-0002',client_id:'c2',product_id:'p1',applied_amount:120000,applied_term_months:4,purpose:'School fees for children',status:'disbursed',approved_by:'s2',approved_at:'2025-02-05T14:00:00Z',created_at:'2025-02-01T11:30:00Z'},
-    {id:'a3',application_no:'APP-2025-0003',client_id:'c4',product_id:'p5',applied_amount:200000,applied_term_months:12,purpose:'Home renovation',status:'disbursed',approved_by:'s2',approved_at:'2025-02-20T09:00:00Z',created_at:'2025-02-18T08:00:00Z'},
-    {id:'a4',application_no:'APP-2025-0004',client_id:'c7',product_id:'p4',applied_amount:2500000,applied_term_months:24,purpose:'Purchase delivery truck',collateral_description:'Isuzu FRR 2023',guarantor_name:'Eve Otieno',guarantor_phone:'0789012345',status:'approved',approved_by:'s2',approved_at:'2025-04-05T11:00:00Z',created_at:'2025-04-01T10:00:00Z'},
-    {id:'a5',application_no:'APP-2025-0005',client_id:'c6',product_id:'p3',applied_amount:30000,applied_term_months:2,purpose:'Medical emergency',status:'submitted',created_at:'2025-04-06T15:00:00Z'},
-    {id:'a6',application_no:'APP-2025-0006',client_id:'c8',product_id:'p2',applied_amount:800000,applied_term_months:18,purpose:'Import stock for retail shop',collateral_description:'Shop lease agreement',guarantor_name:'Paul Wambui',guarantor_phone:'0790123456',status:'under_review',created_at:'2025-04-07T09:00:00Z'},
-    {id:'a7',application_no:'APP-2025-0007',client_id:'c3',product_id:'p5',applied_amount:100000,applied_term_months:6,purpose:'Farm inputs',status:'rejected',rejection_reason:'Low credit score and previous arrears history',reviewed_by:'s2',reviewed_at:'2025-03-25T16:00:00Z',created_at:'2025-03-20T14:00:00Z'},
-    {id:'a8',application_no:'APP-2025-0008',client_id:'c1',product_id:'p1',applied_amount:250000,applied_term_months:3,purpose:'Cash flow gap',status:'draft',created_at:'2025-04-08T07:00:00Z'}
-  ],
-  loans: [],
-  schedules: [],
-  repayments: [],
-  penalties: [],
-  follow_ups: [],
-  audit_log: []
-};
-
-// Generate loans from disbursed applications
-(function(){
-  const now = new Date();
-  // Loan 1: James Mwangi - Business Loan 500K, active, slightly overdue
-  const l1 = {id:'l1',loan_no:'LN-2025-0001',application_id:'a1',client_id:'c1',product_id:'p2',loan_officer_id:'s3',branch_id:'b1',principal_amount:500000,interest_rate:12,interest_type:'reducing_balance',term_months:12,processing_fee:15000,total_interest:39374,total_payable:539374,monthly_installment:44948,disbursed_amount:485000,disbursement_method:'bank_transfer',disbursement_reference:'TXN-BK-20250120',disbursement_date:'2025-01-20',first_repayment_date:'2025-02-20',maturity_date:'2026-01-20',status:'active',outstanding_balance:365280,total_paid:174094,arrears_amount:12500,overdue_days:18,created_at:'2025-01-20'};
-  
-  // Loan 2: Fatuma - Salary Advance 120K, active, on track
-  const l2 = {id:'l2',loan_no:'LN-2025-0002',application_id:'a2',client_id:'c2',product_id:'p1',loan_officer_id:'s5',branch_id:'b2',principal_amount:120000,interest_rate:5,interest_type:'flat',term_months:4,processing_fee:2400,total_interest:24000,total_payable:144000,monthly_installment:36000,disbursed_amount:117600,disbursement_method:'mpesa',disbursement_reference:'QK7H2R4N5M',disbursement_date:'2025-02-05',first_repayment_date:'2025-03-05',maturity_date:'2025-06-05',status:'active',outstanding_balance:72000,total_paid:72000,arrears_amount:0,overdue_days:0,created_at:'2025-02-05'};
-  
-  // Loan 3: Winnie - Personal 200K, active, 45 days overdue
-  const l3 = {id:'l3',loan_no:'LN-2025-0003',application_id:'a3',client_id:'c4',product_id:'p5',loan_officer_id:'s3',branch_id:'b3',principal_amount:200000,interest_rate:10,interest_type:'flat',term_months:12,processing_fee:5000,total_interest:240000,total_payable:440000,monthly_installment:36667,disbursed_amount:195000,disbursement_method:'bank_transfer',disbursement_reference:'TXN-BK-20250220',disbursement_date:'2025-02-20',first_repayment_date:'2025-03-20',maturity_date:'2026-02-20',status:'active',outstanding_balance:403333,total_paid:36667,arrears_amount:36667,overdue_days:45,created_at:'2025-02-20'};
-  
-  DEMO.loans = [l1, l2, l3];
-  
-  // Schedules for Loan 1
-  for(let i=1;i<=12;i++){
-    const due = new Date(2025, 1+i-1, 20);
-    const isPaid = i <= 3;
-    const isOverdue = i === 4;
-    DEMO.schedules.push({id:'sch1-'+i,loan_id:'l1',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:41667,interest_due:3281,total_due:44948,principal_paid:isPaid?41667:0,interest_paid:isPaid?3281:0,total_paid:isPaid?44948:0,status:isPaid?'paid':isOverdue?'overdue':'pending'});
-  }
-  // Schedules for Loan 2
-  for(let i=1;i<=4;i++){
-    const due = new Date(2025, 2+i-1, 5);
-    const isPaid = i <= 2;
-    DEMO.schedules.push({id:'sch2-'+i,loan_id:'l2',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:30000,interest_due:6000,total_due:36000,principal_paid:isPaid?30000:0,interest_paid:isPaid?6000:0,total_paid:isPaid?36000:0,status:isPaid?'paid':'pending'});
-  }
-  // Schedules for Loan 3
-  for(let i=1;i<=12;i++){
-    const due = new Date(2025, 2+i-1, 20);
-    const isPaid = i === 1;
-    const isOverdue = i === 2;
-    DEMO.schedules.push({id:'sch3-'+i,loan_id:'l3',installment_no:i,due_date:due.toISOString().slice(0,10),principal_due:16667,interest_due:20000,total_due:36667,principal_paid:isPaid?16667:0,interest_paid:isPaid?20000:0,total_paid:isPaid?36667:0,status:isPaid?'paid':isOverdue?'overdue':'pending'});
-  }
-  
-  // Repayments
-  DEMO.repayments = [
-    {id:'r1',receipt_no:'RCP-2025-0001',loan_id:'l1',amount:44948,payment_method:'mpesa',payment_reference:'QK7A1B2C3D',payment_date:'2025-02-20',principal_portion:41667,interest_portion:3281,penalty_portion:0,created_at:'2025-02-20T10:15:00Z'},
-    {id:'r2',receipt_no:'RCP-2025-0002',loan_id:'l1',amount:44948,payment_method:'mpesa',payment_reference:'QK8E4F5G6H',payment_date:'2025-03-20',principal_portion:41667,interest_portion:3281,penalty_portion:0,created_at:'2025-03-20T09:30:00Z'},
-    {id:'r3',receipt_no:'RCP-2025-0003',loan_id:'l2',amount:36000,payment_method:'mpesa',payment_reference:'QK9I7J8K9L',payment_date:'2025-03-05',principal_portion:30000,interest_portion:6000,penalty_portion:0,created_at:'2025-03-05T11:00:00Z'},
-    {id:'r4',receipt_no:'RCP-2025-0004',loan_id:'l1',amount:84198,payment_method:'bank_transfer',payment_reference:'TXN-BK-APR01',payment_date:'2025-04-02',principal_portion:41667,interest_portion:3281,penalty_portion:39250,notes:'Late payment with penalty',created_at:'2025-04-02T14:20:00Z'},
-    {id:'r5',receipt_no:'RCP-2025-0005',loan_id:'l2',amount:36000,payment_method:'cash',payment_reference:'CASH-0405',payment_date:'2025-04-05',principal_portion:30000,interest_portion:6000,penalty_portion:0,created_at:'2025-04-05T08:45:00Z'},
-    {id:'r6',receipt_no:'RCP-2025-0006',loan_id:'l3',amount:36667,payment_method:'mpesa',payment_reference:'QK0M1N2O3P',payment_date:'2025-03-22',principal_portion:16667,interest_portion:20000,penalty_portion:0,notes:'Paid 2 days late',created_at:'2025-03-22T16:30:00Z'},
-  ];
-  
-  // Follow-ups
-  DEMO.follow_ups = [
-    {id:'fu1',loan_id:'l1',client_id:'c1',officer_id:'s3',follow_up_type:'call',notes:'Called client about overdue installment #4. Promised to pay by end of week.',outcome:'Promise to pay',follow_up_date:'2025-04-05',next_follow_up_date:'2025-04-12',created_at:'2025-04-05T10:00:00Z'},
-    {id:'fu2',loan_id:'l3',client_id:'c4',officer_id:'s5',follow_up_type:'sms',notes:'Sent SMS reminder for installment #2 overdue by 45 days.',outcome:'No response',follow_up_date:'2025-04-03',next_follow_up_date:'2025-04-08',created_at:'2025-04-03T09:00:00Z'},
-    {id:'fu3',loan_id:'l3',client_id:'c4',officer_id:'s5',follow_up_type:'visit',notes:'Visited client at workplace. Client citing financial difficulties. Discussed restructuring options.',outcome:'Restructuring requested',follow_up_date:'2025-04-07',next_follow_up_date:'2025-04-14',created_at:'2025-04-07T14:00:00Z'},
-  ];
-  
-  // Audit log
-  DEMO.audit_log = [
-    {id:'al1',user_id:'s1',action:'login',table_name:'loan_staff',created_at:'2025-04-08T07:00:00Z'},
-    {id:'al2',user_id:'s2',action:'application_approved',table_name:'loan_applications',record_id:'a4',new_value:{application_no:'APP-2025-0004',amount:2500000},created_at:'2025-04-05T11:00:00Z'},
-    {id:'al3',user_id:'s3',action:'loan_disbursed',table_name:'loans',record_id:'l1',new_value:{loan_no:'LN-2025-0001',amount:500000},created_at:'2025-01-20T10:30:00Z'},
-    {id:'al4',user_id:'s4',action:'repayment_recorded',table_name:'loan_repayments',record_id:'r4',new_value:{receipt:'RCP-2025-0004',amount:84198},created_at:'2025-04-02T14:20:00Z'},
-    {id:'al5',user_id:'s5',action:'follow_up_created',table_name:'loan_follow_ups',record_id:'fu3',new_value:{type:'visit',client:'Winnie Achieng'},created_at:'2025-04-07T14:00:00Z'},
-    {id:'al6',user_id:'s2',action:'application_rejected',table_name:'loan_applications',record_id:'a7',new_value:{application_no:'APP-2025-0007',reason:'Low credit score'},created_at:'2025-03-25T16:00:00Z'},
-    {id:'al7',user_id:'s1',action:'settings_changed',table_name:'loan_settings',new_value:{company_name:'Nguzo'},created_at:'2025-04-01T09:00:00Z'},
-    {id:'al8',user_id:'s3',action:'client_created',table_name:'loan_clients',record_id:'c7',new_value:{name:'Brian Otieno'},created_at:'2024-11-18T10:00:00Z'},
-    {id:'al9',user_id:'s1',action:'staff_created',table_name:'loan_staff',record_id:'s5',new_value:{name:'John Kamau',role:'loan_officer'},created_at:'2024-06-15T11:30:00Z'},
-    {id:'al10',user_id:'s4',action:'repayment_recorded',table_name:'loan_repayments',record_id:'r6',new_value:{receipt:'RCP-2025-0006',amount:36667},created_at:'2025-03-22T16:30:00Z'}
-  ];
-})();
-
-// Demo-aware data fetcher
-function demoQuery(table) {
-  const map = {
-    'loans': DEMO.loans,
-    'loan_clients': DEMO.clients,
-    'loan_products': DEMO.products,
-    'loan_applications': DEMO.applications,
-    'loan_schedules': DEMO.schedules,
-    'loan_repayments': DEMO.repayments,
-    'loan_branches': DEMO.branches,
-    'loan_staff': DEMO.staff,
-    'loan_audit_log': DEMO.audit_log,
-    'loan_follow_ups': DEMO.follow_ups,
-    'loan_penalties': DEMO.penalties,
-    'loan_settings': null
-  };
-  return map[table] !== undefined ? map[table] : [];
-}
-
-// Wrap sb for demo mode: returns a chainable mock that resolves to demo data
-const _realSb = sb;
-const sbDemo = (table) => {
-  if (!IS_DEMO()) return _realSb(table);
-  const data = demoQuery(table);
-  const chain = {
-    _data: data ? [...data] : null,
-    select: function() { return chain; },
-    insert: function(rec) { return chain; return chain; },
-    update: function() { return chain; },
-    delete: function() { return chain; },
-    eq: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => r[k] == v); return chain; },
-    neq: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => r[k] != v); return chain; },
-    gt: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) > Number(v)); return chain; },
-    gte: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) >= Number(v)); return chain; },
-    lt: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => Number(r[k]) < Number(v)); return chain; },
-    in: function(k, v) { if(chain._data) chain._data = chain._data.filter(r => v.includes(r[k])); return chain; },
-    order: function() { return chain; },
-    limit: function(n) { if(chain._data) chain._data = chain._data.slice(0, n); return chain; },
-    single: function() { return Promise.resolve({ data: chain._data?.[0] || null, error: null }); },
-    then: function(resolve, reject) { return Promise.resolve({ data: chain._data, error: null }).then(resolve, reject); }
-  };
-  // Make it thenable
-  chain[Symbol.toStringTag] = 'Promise';
-  return chain;
-};
-
-
-// Override sb for demo mode
-const _origSb = sb;
-sb = (table) => {
-  if(!IS_DEMO()) return _origSb(table);
-  const allData = demoQuery(table);
-  let filteredData = allData ? [...allData] : null;
-  const chain = {
-    _data: () => filteredData,
-    select(){ return chain },
-    insert(rec){ 
-      if(Array.isArray(allData)){
-        if(Array.isArray(rec)) rec.forEach(r=>allData.push(r)); else allData.push(rec);
-      }
-      return chain;
-    },
-    update(){ return chain },
-    delete(){ return chain },
-    eq(k,v){ if(filteredData) filteredData=filteredData.filter(r=>r[k]==v); return chain },
-    neq(k,v){ if(filteredData) filteredData=filteredData.filter(r=>r[k]!=v); return chain },
-    gt(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])>Number(v)); return chain },
-    gte(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])>=Number(v)); return chain },
-    lt(k,v){ if(filteredData) filteredData=filteredData.filter(r=>Number(r[k])<Number(v)); return chain },
-    in(k,v){ if(filteredData) filteredData=filteredData.filter(r=>v.includes(r[k])); return chain },
-    order(){ return chain },
-    limit(n){ if(filteredData) filteredData=filteredData.slice(0,n); return chain },
-    single(){ return Promise.resolve({data:filteredData?.[0]||null,error:null}) },
-    then(resolve,reject){ return Promise.resolve({data:filteredData,error:null}).then(resolve,reject) }
-  };
-  return chain;
-};
+let appSettings = null; // cached settings for interest rate lookups
 
 // ═══ UTILS ═══
 const $ = (sel) => document.querySelector(sel);
@@ -725,13 +694,11 @@ const fmtDateTime = (d) => {if(!d)return '-';const dt=new Date(d);return fmtDate
 const today = () => new Date().toISOString().slice(0,10);
 const genId = () => crypto.randomUUID();
 
-async function sha256(msg){const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(msg));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')}
-
 function toast(msg,type='info'){
   const c=$('#toastContainer');
   const t=document.createElement('div');
   t.className=`toast toast-${type}`;
-  t.innerHTML=`${type==='success'?'✓':type==='error'?'✗':type==='warning'?'⚠':'ℹ'} ${msg}`;
+  t.textContent=msg;
   c.appendChild(t);
   setTimeout(()=>t.remove(),4000);
 }
@@ -763,9 +730,9 @@ function paginate(items,page,perPage=25){
 function paginationHtml(p,fn){
   if(p.total<=1)return'';
   let h=`<div class="pagination">`;
-  h+=`<button ${p.page<=1?'disabled':''} onclick="${fn}(${p.page-1})">← Prev</button>`;
+  h+=`<button ${p.page<=1?'disabled':''} onclick="${fn}(${p.page-1})">Prev</button>`;
   h+=`<span style="font-size:13px;color:var(--text-secondary)">Page ${p.page} of ${p.total} (${p.count} records)</span>`;
-  h+=`<button ${p.page>=p.total?'disabled':''} onclick="${fn}(${p.page+1})">Next →</button>`;
+  h+=`<button ${p.page>=p.total?'disabled':''} onclick="${fn}(${p.page+1})">Next</button>`;
   h+=`</div>`;return h;
 }
 
@@ -774,52 +741,112 @@ async function audit(action,table_name,record_id,old_value,new_value){
   try{await sb('loan_audit_log').insert({business_id:currentUser?.business_id,user_id:currentUser?.id,action,table_name,record_id,old_value,new_value})}catch(e){console.error('Audit error',e)}
 }
 
-// ═══ AUTH ═══
-async function handleLogin(){
-  const email=$('#loginEmail').value.trim();
-  const pwd=$('#loginPassword').value;
-  if(!email||!pwd)return toast('Enter email and password','warning');
+// ═══ SETTINGS HELPER ═══
+async function loadSettings(){
   try{
-    const hash=await sha256(pwd);
-    const{data,error}=await sb('loan_staff').select('*').eq('email',email).eq('password_hash',hash).eq('is_active',true).single();
-    if(error||!data){
-      // Demo mode: if table doesn't exist or no match, use demo admin
-      if(email==='admin@nguzo.com'&&pwd==='admin123'){
-        currentUser={id:'demo-admin',business_id:'demo-biz',name:'Demo Admin',email,role:'admin',branch_id:null,is_active:true};
-        localStorage.setItem('nz_session',JSON.stringify({user:currentUser,ts:Date.now()}));
-        toast('Logged in as Demo Admin (tables not yet created)','info');
-        showApp();return;
-      }
-      return toast('Invalid credentials','error');
-    }
-    currentUser=data;
-    await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',data.id);
-    localStorage.setItem('nz_session',JSON.stringify({user:data,ts:Date.now()}));
-    await audit('login','loan_staff',data.id,null,{email});
-    showApp();
+    let{data:settings}=await sb('loan_settings').select('*').limit(1).single();
+    if(!settings)settings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
+    appSettings=settings;
+    return settings;
   }catch(e){
-    // Fallback demo mode on any error
-    if(email==='admin@nguzo.com'&&pwd==='admin123'){
-      currentUser={id:'demo-admin',business_id:'demo-biz',name:'Demo Admin',email,role:'admin',branch_id:null,is_active:true};
-      localStorage.setItem('nz_session',JSON.stringify({user:currentUser,ts:Date.now()}));
-      toast('Logged in as Demo Admin (offline mode)','info');
-      showApp();return;
-    }
-    toast('Login failed: '+e.message,'error');
+    appSettings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
+    return appSettings;
   }
 }
 
-function checkSession(){
-  const s=localStorage.getItem('nz_session');
-  if(!s)return false;
-  const{user,ts}=JSON.parse(s);
-  if(Date.now()-ts>8*60*60*1000){localStorage.removeItem('nz_session');return false}
-  currentUser=user;return true;
+function getAutoRate(amount){
+  const s=appSettings||{standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000};
+  return amount<=s.micro_threshold?s.micro_weekly_rate:s.standard_weekly_rate;
+}
+
+function getAutoTier(amount){
+  const s=appSettings||{micro_threshold:4000};
+  return amount<=s.micro_threshold?'Micro Loan':'Standard Loan';
+}
+
+// ═══ AUTH ═══
+async function signInWithGoogle(){
+  try{
+    const{error}=await supabaseClient.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin+window.location.pathname}});
+    if(error)toast(error.message,'error');
+  }catch(e){toast(e.message,'error')}
+}
+
+async function handlePhoneLogin(){
+  const phone=$('#loginPhone').value.trim();
+  const pwd=$('#loginPassword').value;
+  if(!phone||!pwd)return toast('Enter phone and password','warning');
+  try{
+    const{data,error}=await supabaseClient.auth.signInWithPassword({phone,password:pwd});
+    if(error)return toast(error.message,'error');
+    await resolveUserRole(data.user);
+  }catch(e){toast(e.message,'error')}
+}
+
+async function handlePhoneSignUp(){
+  const phone=$('#signUpPhone').value.trim();
+  const pwd=$('#signUpPassword').value;
+  if(!phone||!pwd)return toast('Enter phone and password','warning');
+  if(pwd.length<6)return toast('Password must be at least 6 characters','warning');
+  try{
+    const{data,error}=await supabaseClient.auth.signUp({phone,password:pwd});
+    if(error)return toast(error.message,'error');
+    toast('Account created! You can now sign in.','success');
+    toggleSignUp();
+  }catch(e){toast(e.message,'error')}
+}
+
+function toggleSignUp(e){
+  if(e)e.preventDefault();
+  const auth=$('#authContainer');const signup=$('#signUpContainer');
+  if(auth.style.display==='none'){auth.style.display='block';signup.style.display='none'}
+  else{auth.style.display='none';signup.style.display='block'}
+}
+
+async function resolveUserRole(authUser){
+  if(!authUser)return toast('Authentication failed','error');
+  try{
+    // Look up by auth_user_id first, then by email/phone
+    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).eq('is_active',true).single();
+    if(!staff&&authUser.email){
+      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).eq('is_active',true).single();
+      if(byEmail){
+        // Link auth_user_id on first login
+        await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byEmail.id);
+        staff=byEmail;
+      }
+    }
+    if(!staff&&authUser.phone){
+      const{data:byPhone}=await sb('loan_staff').select('*').eq('phone',authUser.phone).eq('is_active',true).single();
+      if(byPhone){
+        await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byPhone.id);
+        staff=byPhone;
+      }
+    }
+    if(!staff){
+      return toast('No staff account found. Contact your administrator.','error');
+    }
+    currentUser=staff;
+    await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id);
+    await audit('login','loan_staff',staff.id,null,{email:authUser.email,phone:authUser.phone});
+    await loadSettings();
+    showApp();
+  }catch(e){toast('Login error: '+e.message,'error')}
+}
+
+async function checkAuthSession(){
+  const{data:{session}}=await supabaseClient.auth.getSession();
+  if(session?.user){
+    await resolveUserRole(session.user);
+    return true;
+  }
+  return false;
 }
 
 function handleLogout(){
   audit('logout','loan_staff',currentUser?.id,null,null);
-  currentUser=null;localStorage.removeItem('nz_session');
+  supabaseClient.auth.signOut();
+  currentUser=null;
   $('#appShell').style.display='none';$('#loginScreen').style.display='flex';
 }
 
@@ -832,6 +859,14 @@ function showApp(){
 
 function hasRole(...roles){return roles.includes(currentUser?.role)}
 
+// Listen for auth state changes (handles OAuth redirect)
+supabaseClient.auth.onAuthStateChange(async(event,session)=>{
+  if(event==='SIGNED_IN'&&session?.user&&!currentUser){
+    await loadSettings();
+    await resolveUserRole(session.user);
+  }
+});
+
 // ═══ NAVIGATION ═══
 function navigateTo(section){
   currentSection=section;
@@ -843,37 +878,37 @@ function navigateTo(section){
     dashboard:renderDashboard,clients:renderClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,
-    branches:renderBranches,staff:renderStaff,calculator:renderCalculator,
+    staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
   if(renderers[section])renderers[section]();
-  else main.innerHTML=`<div class="empty-state"><div class="icon">🚧</div><p>Section "${section}" coming soon</p></div>`;
+  else main.innerHTML=`<div class="empty-state"><p>Section "${section}" coming soon</p></div>`;
 }
 
 function toggleTheme(){document.body.classList.toggle('light')}
 
-// ═══ LOAN CALCULATIONS ═══
-function calcFlat(principal,rate,months){
-  const totalInterest=principal*(rate/100)*months;
+// ═══ LOAN CALCULATIONS (WEEKLY) ═══
+function calcFlat(principal,weeklyRate,weeks){
+  const totalInterest=principal*(weeklyRate/100)*weeks;
   const totalPayable=principal+totalInterest;
-  const monthly=totalPayable/months;
+  const weekly=totalPayable/weeks;
   const schedule=[];
-  const pPer=principal/months;
-  const iPer=totalInterest/months;
-  for(let i=1;i<=months;i++)schedule.push({no:i,principal:pPer,interest:iPer,total:monthly,balance:principal-pPer*i});
-  return{monthly,totalInterest,totalPayable,schedule};
+  const pPer=principal/weeks;
+  const iPer=totalInterest/weeks;
+  for(let i=1;i<=weeks;i++)schedule.push({no:i,principal:pPer,interest:iPer,total:weekly,balance:principal-pPer*i});
+  return{weekly,totalInterest,totalPayable,schedule};
 }
 
-function calcReducing(principal,annualRate,months){
-  const r=(annualRate/100)/12;
-  if(r===0){const m=principal/months;return{monthly:m,totalInterest:0,totalPayable:principal,schedule:Array.from({length:months},(_,i)=>({no:i+1,principal:m,interest:0,total:m,balance:principal-m*(i+1)}))};}
-  const monthly=principal*(r*Math.pow(1+r,months))/(Math.pow(1+r,months)-1);
+function calcReducing(principal,weeklyRate,weeks){
+  const r=weeklyRate/100;
+  if(r===0){const w=principal/weeks;return{weekly:w,totalInterest:0,totalPayable:principal,schedule:Array.from({length:weeks},(_,i)=>({no:i+1,principal:w,interest:0,total:w,balance:principal-w*(i+1)}))};}
+  const weekly=principal*(r*Math.pow(1+r,weeks))/(Math.pow(1+r,weeks)-1);
   let bal=principal;const schedule=[];
-  for(let i=1;i<=months;i++){const intPart=bal*r;const prinPart=monthly-intPart;bal-=prinPart;schedule.push({no:i,principal:prinPart,interest:intPart,total:monthly,balance:Math.max(0,bal)})}
-  return{monthly,totalInterest:monthly*months-principal,totalPayable:monthly*months,schedule};
+  for(let i=1;i<=weeks;i++){const intPart=bal*r;const prinPart=weekly-intPart;bal-=prinPart;schedule.push({no:i,principal:prinPart,interest:intPart,total:weekly,balance:Math.max(0,bal)})}
+  return{weekly,totalInterest:weekly*weeks-principal,totalPayable:weekly*weeks,schedule};
 }
 
-function calcLoan(principal,rate,type,months){return type==='reducing_balance'?calcReducing(principal,rate,months):calcFlat(principal,rate,months)}
+function calcLoan(principal,rate,type,weeks){return type==='reducing_balance'?calcReducing(principal,rate,weeks):calcFlat(principal,rate,weeks)}
 
 // ═══ DASHBOARD ═══
 async function renderDashboard(){
@@ -907,7 +942,7 @@ async function renderDashboard(){
     const newApps=allApps.filter(a=>a.created_at>=weekAgo).length;
 
     main.innerHTML=`
-      <div class="page-header"><h1>📊 Dashboard</h1><button class="btn btn-outline" onclick="navigateTo('dashboard')">↻ Refresh</button></div>
+      <div class="page-header"><h1>Dashboard</h1><button class="btn btn-outline" onclick="navigateTo('dashboard')">Refresh</button></div>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
         <div class="kpi-card"><div class="kpi-label">Active Loans</div><div class="kpi-value">${active.length}</div><div class="kpi-sub">Outstanding: ${fmtMoney(outstanding)}</div></div>
@@ -923,12 +958,12 @@ async function renderDashboard(){
         <div class="chart-card"><h3>Monthly Disbursements vs Repayments</h3><canvas id="chartMonthly"></canvas></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">⚠️ Overdue Loans (Top 10)</h3>
+        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">Overdue Loans (Top 10)</h3>
           <div class="table-wrap"><table><thead><tr><th>Loan</th><th>Client</th><th>Overdue</th><th>Amount</th></tr></thead><tbody>
           ${overdue.sort((a,b)=>b.overdue_days-a.overdue_days).slice(0,10).map(l=>`<tr><td>${l.loan_no||'-'}</td><td>${l.client_id?.slice(0,8)||'-'}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>${fmtMoney(l.arrears_amount)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
           </tbody></table></div>
         </div>
-        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">📝 Pending Applications</h3>
+        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">Pending Applications</h3>
           <div class="table-wrap"><table><thead><tr><th>App #</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>
           ${allApps.filter(a=>['submitted','under_review'].includes(a.status)).slice(0,10).map(a=>`<tr><td>${a.application_no||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No pending applications</td></tr>'}
           </tbody></table></div>
@@ -950,7 +985,7 @@ async function renderDashboard(){
     const ctx2=document.getElementById('chartMonthly');
     if(ctx2)charts.monthly=new Chart(ctx2,{type:'bar',data:{labels:months.map(m=>m.slice(5)),datasets:[{label:'Disbursed',data:disbByMonth,backgroundColor:'#8b5cf6'},{label:'Repaid',data:repByMonth,backgroundColor:'#10b981'}]},options:{responsive:true,scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}},plugins:{legend:{labels:{color:'#94a3b8'}}}}});
 
-  }catch(e){main.innerHTML=`<div class="empty-state"><div class="icon">❌</div><p>Error loading dashboard: ${e.message}</p></div>`;toast(e.message,'error')}
+  }catch(e){main.innerHTML=`<div class="empty-state"><p>Error loading dashboard: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
 // ═══ CLIENTS ═══
@@ -963,9 +998,9 @@ async function renderClients(page=1){
     cachedData.clients=clients||[];
     const p=paginate(cachedData.clients,page);
     main.innerHTML=`
-      <div class="page-header"><h1>👥 Clients</h1><div><button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">📥 Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
-      <div class="search-bar"><input class="input" placeholder="Search by name, phone, ID..." oninput="filterClients(this.value)"><select class="select" onchange="filterClientStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="blacklisted">Blacklisted</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Occupation</th><th>Credit Score</th><th>Status</th><th>Actions</th></tr></thead>
+      <div class="page-header"><h1>Clients</h1><div><button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
+      <div class="search-bar"><input class="input" placeholder="Search by name, phone, ID..." oninput="filterClients(this.value)"></div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Occupation</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody id="clientsBody">${renderClientRows(p.items)}</tbody></table></div>
       ${paginationHtml(p,'renderClients')}
     `;
@@ -974,29 +1009,20 @@ async function renderClients(page=1){
 
 function renderClientRows(clients){
   return clients.map(c=>{
-    const scoreBadge=c.credit_score>=700?'green':c.credit_score>=400?'yellow':'red';
     return`<tr>
       <td><strong>${c.full_name}</strong></td><td>${c.id_number||'-'}</td><td>${c.phone||'-'}</td>
-      <td>${c.occupation||'-'}</td><td><span class="badge badge-${scoreBadge}">${c.credit_score}</span></td>
-      <td>${c.blacklisted?'<span class="badge badge-red">Blacklisted</span>':'<span class="badge badge-green">Active</span>'}</td>
+      <td>${c.occupation||'-'}</td>
+      <td><span class="badge badge-green">Active</span></td>
       <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button></td>
     </tr>`}).join('');
 }
 
-function filterClients(q){
-  q=q.toLowerCase();
-  const filtered=(cachedData.clients||[]).filter(c=>(c.full_name||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.id_number||'').toLowerCase().includes(q));
-  document.getElementById('clientsBody').innerHTML=renderClientRows(filtered);
-}
-function filterClientStatus(v){
-  const filtered=v==='blacklisted'?(cachedData.clients||[]).filter(c=>c.blacklisted):v==='active'?(cachedData.clients||[]).filter(c=>!c.blacklisted):(cachedData.clients||[]);
-  document.getElementById('clientsBody').innerHTML=renderClientRows(filtered);
-}
+function filterClients(q){q=q.toLowerCase();const f=(cachedData.clients||[]).filter(c=>(c.full_name||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.id_number||'').includes(q));$('#clientsBody').innerHTML=renderClientRows(f)}
 
 function openAddClientModal(){
   openModal(`
     <h2>Add New Client</h2>
-    <div class="form-row"><div class="form-group"><label>Full Name *</label><input class="input" id="cName"></div><div class="form-group"><label>ID/Passport No *</label><input class="input" id="cIdNo"></div></div>
+    <div class="form-row"><div class="form-group"><label>Full Name *</label><input class="input" id="cName"></div><div class="form-group"><label>National ID No *</label><input class="input" id="cIdNo"></div></div>
     <div class="form-row"><div class="form-group"><label>Phone *</label><input class="input" id="cPhone"></div><div class="form-group"><label>Email</label><input class="input" id="cEmail"></div></div>
     <div class="form-row"><div class="form-group"><label>Gender</label><select class="select" id="cGender"><option value="">Select</option><option>Male</option><option>Female</option><option>Other</option></select></div><div class="form-group"><label>Date of Birth</label><input class="input" type="date" id="cDob"></div></div>
     <div class="form-group"><label>Address</label><input class="input" id="cAddress"></div>
@@ -1026,7 +1052,6 @@ async function viewClient(id){
     const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
     const{data:cLoans}=await sb('loans').select('*').eq('client_id',id);
     if(!c)return toast('Client not found','error');
-    const scoreColor=c.credit_score>=700?'var(--accent-green)':c.credit_score>=400?'var(--accent-yellow)':'var(--accent-red)';
     openModal(`
       <h2>${c.full_name}</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
@@ -1035,16 +1060,13 @@ async function viewClient(id){
         <div><strong>DOB:</strong> ${fmtDate(c.dob)}</div><div><strong>Address:</strong> ${c.address||'-'}</div>
         <div><strong>Occupation:</strong> ${c.occupation||'-'}</div><div><strong>Employer:</strong> ${c.employer||'-'}</div>
         <div><strong>Monthly Income:</strong> ${fmtMoney(c.monthly_income)}</div>
-        <div><strong>Credit Score:</strong> <span style="color:${scoreColor};font-weight:800;font-size:24px">${c.credit_score}</span> / 1000</div>
         <div><strong>Next of Kin:</strong> ${c.next_of_kin_name||'-'} (${c.next_of_kin_relation||'-'}) ${c.next_of_kin_phone||''}</div>
-        <div><strong>Status:</strong> ${c.blacklisted?'<span class="badge badge-red">Blacklisted</span>':'<span class="badge badge-green">Active</span>'}</div>
       </div>
       <h3 style="margin:16px 0 8px;font-size:14px">Loan History</h3>
       <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Status</th></tr></thead><tbody>
       ${(cLoans||[]).map(l=>`<tr><td>${l.loan_no||'-'}</td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td><td>${statusBadge(l.status)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No loans</td></tr>'}
       </tbody></table></div>
       <div class="modal-actions">
-        ${c.blacklisted?`<button class="btn btn-success btn-sm" onclick="toggleBlacklist('${c.id}',false)">Un-blacklist</button>`:`<button class="btn btn-danger btn-sm" onclick="toggleBlacklist('${c.id}',true)">Blacklist</button>`}
         <button class="btn btn-outline" onclick="closeModal()">Close</button>
       </div>
     `,true);
@@ -1074,19 +1096,9 @@ async function updateClient(id){
   }catch(e){toast(e.message,'error')}
 }
 
-async function toggleBlacklist(id,val){
-  const reason=val?prompt('Reason for blacklisting:'):null;
-  if(val&&!reason)return;
-  try{
-    await sb('loan_clients').update({blacklisted:val,notes:val?reason:null}).eq('id',id);
-    await audit(val?'client_blacklisted':'client_unblacklisted','loan_clients',id,null,{reason});
-    toast(val?'Client blacklisted':'Client un-blacklisted','success');closeModal();renderClients();
-  }catch(e){toast(e.message,'error')}
-}
-
 function exportClientsExcel(){
-  const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Monthly Income':c.monthly_income,'Credit Score':c.credit_score,Status:c.blacklisted?'Blacklisted':'Active'}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'Nguzo_Clients.xlsx');
+  const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Monthly Income':c.monthly_income,Status:'Active'}));
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'Bripta_Clients.xlsx');
   toast('Exported to Excel','success');
 }
 
@@ -1097,24 +1109,24 @@ async function renderProducts(){
     const{data:products}=await sb('loan_products').select('*').order('created_at',{ascending:false});
     cachedData.products=products||[];
     main.innerHTML=`
-      <div class="page-header"><h1>📦 Loan Products</h1><button class="btn btn-primary" onclick="openAddProductModal()">+ Add Product</button></div>
+      <div class="page-header"><h1>Loan Products</h1><button class="btn btn-primary" onclick="openAddProductModal()">+ Add Product</button></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
       ${(products||[]).map(p=>`
         <div class="card">
           <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
-            <div><strong style="font-size:16px">${p.name}</strong><br><span class="badge badge-blue">${p.category}</span></div>
+            <div><strong style="font-size:16px">${p.name}</strong></div>
             ${p.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}
           </div>
           <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">${p.description||'No description'}</p>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
             <div><span style="color:var(--text-secondary)">Amount:</span> ${fmtMoney(p.min_amount)} - ${fmtMoney(p.max_amount)}</div>
-            <div><span style="color:var(--text-secondary)">Rate:</span> ${p.interest_rate}% ${p.interest_type==='reducing_balance'?'(reducing)':'(flat)'}</div>
-            <div><span style="color:var(--text-secondary)">Term:</span> ${p.min_term_months}-${p.max_term_months} months</div>
+            <div><span style="color:var(--text-secondary)">Rate:</span> ${p.interest_rate}% / ${p.interest_period||'weekly'}</div>
+            <div><span style="color:var(--text-secondary)">Term:</span> ${p.min_term_weeks}-${p.max_term_weeks} weeks</div>
             <div><span style="color:var(--text-secondary)">Fee:</span> ${p.processing_fee_pct}%</div>
           </div>
           <div style="margin-top:12px;display:flex;gap:6px"><button class="btn btn-outline btn-sm" onclick="editProduct('${p.id}')">Edit</button><button class="btn btn-outline btn-sm" onclick="deleteProduct('${p.id}')">Delete</button></div>
         </div>
-      `).join('')||'<div class="empty-state"><div class="icon">📦</div><p>No loan products yet. Create your first product.</p></div>'}
+      `).join('')||'<div class="empty-state"><p>No loan products yet. Create your first product.</p></div>'}
       </div>
     `;
   }catch(e){toast(e.message,'error')}
@@ -1124,40 +1136,20 @@ function openAddProductModal(prod){
   const p=prod||{};
   openModal(`
     <h2>${p.id?'Edit':'Add'} Loan Product</h2>
-    <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="pName" value="${p.name||''}"></div><div class="form-group"><label>Category</label><select class="select" id="pCategory"><option value="personal" ${p.category==='personal'?'selected':''}>Personal</option><option value="business" ${p.category==='business'?'selected':''}>Business</option><option value="asset" ${p.category==='asset'?'selected':''}>Asset</option><option value="emergency" ${p.category==='emergency'?'selected':''}>Emergency</option><option value="salary_advance" ${p.category==='salary_advance'?'selected':''}>Salary Advance</option></select></div></div>
+    <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="pName" value="${p.name||''}"></div><div class="form-group"><label>Interest Period</label><select class="select" id="pIntPeriod"><option value="weekly" ${(p.interest_period||'weekly')==='weekly'?'selected':''}>Weekly</option><option value="monthly" ${p.interest_period==='monthly'?'selected':''}>Monthly</option></select></div></div>
     <div class="form-group"><label>Description</label><textarea class="textarea" id="pDesc">${p.description||''}</textarea></div>
-    <div class="form-row"><div class="form-group"><label>Min Amount</label><input class="input" type="number" id="pMinAmt" value="${p.min_amount||1000}"></div><div class="form-group"><label>Max Amount</label><input class="input" type="number" id="pMaxAmt" value="${p.max_amount||100000}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Interest Rate (%)</label><input class="input" type="number" step="0.1" id="pRate" value="${p.interest_rate||10}"></div><div class="form-group"><label>Interest Type</label><select class="select" id="pIntType"><option value="flat" ${p.interest_type==='flat'?'selected':''}>Flat Rate</option><option value="reducing_balance" ${p.interest_type==='reducing_balance'?'selected':''}>Reducing Balance</option></select></div></div>
-    <div class="form-row"><div class="form-group"><label>Min Term (months)</label><input class="input" type="number" id="pMinTerm" value="${p.min_term_months||1}"></div><div class="form-group"><label>Max Term (months)</label><input class="input" type="number" id="pMaxTerm" value="${p.max_term_months||36}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Min Amount</label><input class="input" type="number" id="pMinAmt" value="${p.min_amount||500}"></div><div class="form-group"><label>Max Amount</label><input class="input" type="number" id="pMaxAmt" value="${p.max_amount||100000}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Interest Rate (%)</label><input class="input" type="number" step="0.01" id="pRate" value="${p.interest_rate||5}"></div><div class="form-group"><label>Interest Type</label><select class="select" id="pIntType"><option value="flat" ${p.interest_type==='flat'?'selected':''}>Flat Rate</option><option value="reducing_balance" ${p.interest_type==='reducing_balance'?'selected':''}>Reducing Balance</option></select></div></div>
+    <div class="form-row"><div class="form-group"><label>Min Term (weeks)</label><input class="input" type="number" id="pMinTerm" value="${p.min_term_weeks||1}"></div><div class="form-group"><label>Max Term (weeks)</label><input class="input" type="number" id="pMaxTerm" value="${p.max_term_weeks||52}"></div></div>
     <div class="form-row"><div class="form-group"><label>Processing Fee %</label><input class="input" type="number" step="0.1" id="pFee" value="${p.processing_fee_pct||3}"></div><div class="form-group"><label>Late Penalty %</label><input class="input" type="number" step="0.1" id="pPenalty" value="${p.late_penalty_pct||5}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="pGrace" value="${p.grace_period_days||7}"></div><div class="form-group"><label>Active</label><select class="select" id="pActive"><option value="true" ${p.is_active!==false?'selected':''}>Yes</option><option value="false" ${p.is_active===false?'selected':''}>No</option></select></div></div>
-    <div class="form-row"><div class="form-group"><label><input type="checkbox" id="pGuarantor" ${p.requires_guarantor?'checked':''}> Requires Guarantor</label></div><div class="form-group"><label><input type="checkbox" id="pCollateral" ${p.requires_collateral?'checked':''}> Requires Collateral</label></div></div>
-    <div class="card" style="margin-top:16px"><h3 style="font-size:14px;margin-bottom:8px">📱 Loan Calculator Preview</h3>
-      <div class="form-row"><div class="form-group"><label>Sample Amount</label><input class="input" type="number" id="pCalcAmt" value="50000" oninput="previewCalc()"></div><div class="form-group"><label>Sample Term</label><input class="input" type="number" id="pCalcTerm" value="12" oninput="previewCalc()"></div></div>
-      <div id="calcPreview"></div>
-    </div>
+    <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="pGrace" value="${p.grace_period_days||3}"></div><div class="form-group"><label>Active</label><select class="select" id="pActive"><option value="true" ${p.is_active!==false?'selected':''}>Yes</option><option value="false" ${p.is_active===false?'selected':''}>No</option></select></div></div>
+    <div class="form-group"><label><input type="checkbox" id="pGuarantor" ${p.requires_guarantor?'checked':''}> Requires Guarantor</label></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveProduct('${p.id||''}')">${p.id?'Update':'Save'} Product</button></div>
   `,true);
-  setTimeout(previewCalc,100);
-}
-
-function previewCalc(){
-  const amt=Number($('#pCalcAmt')?.value)||50000;
-  const term=Number($('#pCalcTerm')?.value)||12;
-  const rate=Number($('#pRate')?.value)||10;
-  const type=$('#pIntType')?.value||'flat';
-  const c=calcLoan(amt,rate,type,term);
-  const prev=$('#calcPreview');if(!prev)return;
-  prev.innerHTML=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:13px;margin-bottom:8px">
-    <div><strong>Monthly:</strong> ${fmtMoney(c.monthly)}</div><div><strong>Total Interest:</strong> ${fmtMoney(c.totalInterest)}</div><div><strong>Total Payable:</strong> ${fmtMoney(c.totalPayable)}</div>
-  </div>
-  <table><thead><tr><th>#</th><th>Principal</th><th>Interest</th><th>Total</th><th>Balance</th></tr></thead><tbody>
-  ${c.schedule.slice(0,6).map(s=>`<tr><td>${s.no}</td><td>${fmtMoney(s.principal)}</td><td>${fmtMoney(s.interest)}</td><td>${fmtMoney(s.total)}</td><td>${fmtMoney(s.balance)}</td></tr>`).join('')}
-  </tbody></table>`;
 }
 
 async function saveProduct(id){
-  const rec={name:$('#pName').value,category:$('#pCategory').value,description:$('#pDesc').value,min_amount:Number($('#pMinAmt').value),max_amount:Number($('#pMaxAmt').value),interest_rate:Number($('#pRate').value),interest_type:$('#pIntType').value,min_term_months:Number($('#pMinTerm').value),max_term_months:Number($('#pMaxTerm').value),processing_fee_pct:Number($('#pFee').value),late_penalty_pct:Number($('#pPenalty').value),grace_period_days:Number($('#pGrace').value),requires_guarantor:$('#pGuarantor').checked,requires_collateral:$('#pCollateral').checked,is_active:$('#pActive').value==='true',business_id:currentUser?.business_id};
+  const rec={name:$('#pName').value,description:$('#pDesc').value,min_amount:Number($('#pMinAmt').value),max_amount:Number($('#pMaxAmt').value),interest_rate:Number($('#pRate').value),interest_type:$('#pIntType').value,interest_period:$('#pIntPeriod').value,min_term_weeks:Number($('#pMinTerm').value),max_term_weeks:Number($('#pMaxTerm').value),processing_fee_pct:Number($('#pFee').value),late_penalty_pct:Number($('#pPenalty').value),grace_period_days:Number($('#pGrace').value),requires_guarantor:$('#pGuarantor').checked,is_active:$('#pActive').value==='true',business_id:currentUser?.business_id};
   if(!rec.name)return toast('Product name is required','warning');
   try{
     if(id){await sb('loan_products').update(rec).eq('id',id)}else{await sb('loan_products').insert(rec)}
@@ -1184,9 +1176,9 @@ async function renderApplications(page=1){
     cachedData.applications=apps||[];
     const p=paginate(apps||[],page);
     main.innerHTML=`
-      <div class="page-header"><h1>📝 Loan Applications</h1><button class="btn btn-primary" onclick="openNewApplication()">+ New Application</button></div>
+      <div class="page-header"><h1>Loan Applications</h1><button class="btn btn-primary" onclick="openNewApplication()">+ New Application</button></div>
       <div class="search-bar"><input class="input" placeholder="Search application..." oninput="filterApps(this.value)"><select class="select" onchange="filterAppStatus(this.value)"><option value="">All Status</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="under_review">Under Review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="disbursed">Disbursed</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>App #</th><th>Client</th><th>Amount</th><th>Term</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>App #</th><th>Client</th><th>Amount</th><th>Term</th><th>Tier</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
       <tbody id="appsBody">${renderAppRows(p.items)}</tbody></table></div>
       ${paginationHtml(p,'renderApplications')}
     `;
@@ -1196,7 +1188,8 @@ async function renderApplications(page=1){
 function renderAppRows(apps){
   return apps.map(a=>`<tr>
     <td><strong>${a.application_no||'DRAFT'}</strong></td><td>${a.client_id?.slice(0,8)||'-'}</td>
-    <td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_months}m</td>
+    <td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td>
+    <td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td>
     <td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td>
     <td>
       <button class="btn btn-outline btn-sm" onclick="viewApplication('${a.id}')">View</button>
@@ -1208,7 +1201,7 @@ function filterApps(q){q=q.toLowerCase();const f=(cachedData.applications||[]).f
 function filterAppStatus(v){const f=v?(cachedData.applications||[]).filter(a=>a.status===v):(cachedData.applications||[]);$('#appsBody').innerHTML=renderAppRows(f)}
 
 async function openNewApplication(){
-  const{data:clients}=await sb('loan_clients').select('id,full_name,phone').eq('blacklisted',false).order('full_name');
+  const{data:clients}=await sb('loan_clients').select('id,full_name,phone').order('full_name');
   const{data:products}=await sb('loan_products').select('*').eq('is_active',true);
   openModal(`
     <h2>New Loan Application</h2>
@@ -1217,17 +1210,17 @@ async function openNewApplication(){
       <div class="form-group"><label>Select Client *</label><select class="select" id="appClient"><option value="">-- Choose --</option>${(clients||[]).map(c=>`<option value="${c.id}">${c.full_name} (${c.phone||''})</option>`).join('')}</select></div>
     </div>
     <div id="appStep2" style="display:none">
-      <div class="form-group"><label>Loan Product *</label><select class="select" id="appProduct" onchange="onProductSelect()"><option value="">-- Choose --</option>${(products||[]).map(p=>`<option value="${p.id}" data-min="${p.min_amount}" data-max="${p.max_amount}" data-rate="${p.interest_rate}" data-type="${p.interest_type}" data-mint="${p.min_term_months}" data-maxt="${p.max_term_months}">${p.name} (${p.interest_rate}% ${p.interest_type})</option>`).join('')}</select></div>
-      <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="appAmount" oninput="appCalcUpdate()"></div><div class="form-group"><label>Term (months) *</label><input class="input" type="number" id="appTerm" oninput="appCalcUpdate()"></div></div>
+      <div class="form-group"><label>Loan Amount *</label><input class="input" type="number" id="appAmount" oninput="appCalcUpdate()" placeholder="Enter amount"></div>
+      <div id="appTierInfo" class="card" style="margin:8px 0;font-size:13px;display:none"></div>
+      <div class="form-group"><label>Term (weeks) *</label><input class="input" type="number" id="appTerm" oninput="appCalcUpdate()" placeholder="Number of weeks"></div>
       <div class="form-group"><label>Purpose</label><textarea class="textarea" id="appPurpose"></textarea></div>
       <div id="appCalcResult" class="card" style="margin-top:8px"></div>
     </div>
     <div id="appStep3" style="display:none">
-      <div class="form-row"><div class="form-group"><label>Guarantor Name</label><input class="input" id="appGName"></div><div class="form-group"><label>Guarantor Phone</label><input class="input" id="appGPhone"></div></div>
-      <div class="form-group"><label>Collateral Description</label><textarea class="textarea" id="appCollateral"></textarea></div>
+      <div class="form-row"><div class="form-group"><label>Guarantor Name *</label><input class="input" id="appGName"></div><div class="form-group"><label>Guarantor Phone *</label><input class="input" id="appGPhone"></div></div>
     </div>
     <div id="appStep4" style="display:none"><div id="appReview"></div></div>
-    <div class="modal-actions"><button class="btn btn-outline" id="appPrevBtn" onclick="appStepNav(-1)" style="display:none">← Back</button><button class="btn btn-primary" id="appNextBtn" onclick="appStepNav(1)">Next →</button></div>
+    <div class="modal-actions"><button class="btn btn-outline" id="appPrevBtn" onclick="appStepNav(-1)" style="display:none">Back</button><button class="btn btn-primary" id="appNextBtn" onclick="appStepNav(1)">Next</button></div>
   `,true);
   window._appStep=1;window._appProducts=products||[];
 }
@@ -1237,43 +1230,50 @@ function appStepNav(dir){
   const s=window._appStep+dir;
   if(s<1||s>4)return;
   if(s===2&&!$('#appClient').value)return toast('Select a client','warning');
-  if(s===3&&!$('#appProduct').value)return toast('Select a product','warning');
-  if(s===4)buildAppReview();
+  if(s===3){
+    const amt=Number($('#appAmount').value);
+    if(!amt||amt<=0)return toast('Enter a valid loan amount','warning');
+    if(!$('#appTerm').value)return toast('Enter loan term in weeks','warning');
+  }
+  if(s===4){
+    if(!$('#appGName').value||!$('#appGPhone').value)return toast('Guarantor details are required','warning');
+    buildAppReview();
+  }
   window._appStep=s;
   for(let i=1;i<=4;i++){const el=$(`#appStep${i}`);if(el)el.style.display=i===s?'block':'none'}
   $$('.step').forEach((el,i)=>{el.classList.toggle('active',i+1===s);el.classList.toggle('done',i+1<s)});
   $('#appPrevBtn').style.display=s>1?'inline-flex':'none';
-  $('#appNextBtn').textContent=s===4?'Submit Application':'Next →';
+  $('#appNextBtn').textContent=s===4?'Submit Application':'Next';
   if(s===4)$('#appNextBtn').onclick=()=>submitApplication();
   else $('#appNextBtn').onclick=()=>appStepNav(1);
 }
 
-function onProductSelect(){
-  const opt=$('#appProduct').selectedOptions[0];
-  if(!opt||!opt.value)return;
-  $('#appAmount').min=opt.dataset.min;$('#appAmount').max=opt.dataset.max;
-  $('#appAmount').placeholder=`${opt.dataset.min} - ${opt.dataset.max}`;
-  $('#appTerm').min=opt.dataset.mint;$('#appTerm').max=opt.dataset.maxt;
-  appCalcUpdate();
-}
-
 function appCalcUpdate(){
-  const opt=$('#appProduct').selectedOptions[0];if(!opt||!opt.value)return;
   const amt=Number($('#appAmount').value)||0;const term=Number($('#appTerm').value)||0;
-  if(!amt||!term)return;
-  const c=calcLoan(amt,Number(opt.dataset.rate),opt.dataset.type==='reducing_balance'?'reducing_balance':'flat',term);
-  $('#appCalcResult').innerHTML=`<div style="font-size:13px"><strong>Monthly:</strong> ${fmtMoney(c.monthly)} | <strong>Total Interest:</strong> ${fmtMoney(c.totalInterest)} | <strong>Total:</strong> ${fmtMoney(c.totalPayable)}</div>`;
+  const tierInfo=$('#appTierInfo');
+  if(amt>0&&tierInfo){
+    const rate=getAutoRate(amt);
+    const tier=getAutoTier(amt);
+    tierInfo.style.display='block';
+    tierInfo.innerHTML=`Auto-detected: <strong>${tier}</strong> at <strong>${rate}% per week</strong>`;
+    if(term>0){
+      const c=calcLoan(amt,rate,'flat',term);
+      $('#appCalcResult').innerHTML=`<div style="font-size:13px"><strong>Weekly:</strong> ${fmtMoney(c.weekly)} | <strong>Total Interest:</strong> ${fmtMoney(c.totalInterest)} | <strong>Total:</strong> ${fmtMoney(c.totalPayable)}</div>`;
+    }
+  }else if(tierInfo){tierInfo.style.display='none'}
 }
 
 function buildAppReview(){
   const client=$('#appClient').selectedOptions[0]?.textContent||'-';
-  const product=$('#appProduct').selectedOptions[0]?.textContent||'-';
+  const amt=Number($('#appAmount').value);
+  const rate=getAutoRate(amt);
+  const tier=getAutoTier(amt);
   $('#appReview').innerHTML=`<div class="card"><h3 style="font-size:14px;margin-bottom:12px">Application Summary</h3>
-    <p><strong>Client:</strong> ${client}</p><p><strong>Product:</strong> ${product}</p>
-    <p><strong>Amount:</strong> ${fmtMoney($('#appAmount').value)}</p><p><strong>Term:</strong> ${$('#appTerm').value} months</p>
+    <p><strong>Client:</strong> ${client}</p><p><strong>Tier:</strong> ${tier}</p>
+    <p><strong>Amount:</strong> ${fmtMoney(amt)}</p><p><strong>Rate:</strong> ${rate}% per week</p>
+    <p><strong>Term:</strong> ${$('#appTerm').value} weeks</p>
     <p><strong>Purpose:</strong> ${$('#appPurpose').value||'-'}</p>
     <p><strong>Guarantor:</strong> ${$('#appGName').value||'None'} ${$('#appGPhone').value||''}</p>
-    <p><strong>Collateral:</strong> ${$('#appCollateral').value||'None'}</p>
   </div>`;
 }
 
@@ -1282,7 +1282,12 @@ async function submitApplication(){
     const{data:countData}=await sb('loan_applications').select('id',{count:'exact',head:true});
     const num=(countData?.length||0)+1;
     const appNo=`APP-${new Date().getFullYear()}-${String(num).padStart(4,'0')}`;
-    const rec={application_no:appNo,client_id:$('#appClient').value,product_id:$('#appProduct').value,applied_amount:Number($('#appAmount').value),applied_term_months:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,collateral_description:$('#appCollateral').value,status:'submitted',loan_officer_id:currentUser?.id,branch_id:currentUser?.branch_id,business_id:currentUser?.business_id};
+    const amt=Number($('#appAmount').value);
+    const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
+    // Auto-select product by tier
+    const tier=getAutoTier(amt);
+    const{data:matchProduct}=await sb('loan_products').select('id').eq('name',tier).eq('is_active',true).limit(1).single();
+    if(matchProduct)rec.product_id=matchProduct.id;
     const{error}=await sb('loan_applications').insert(rec);
     if(error)throw error;
     await audit('application_created','loan_applications',null,null,rec);
@@ -1293,13 +1298,15 @@ async function submitApplication(){
 async function viewApplication(id){
   const{data:a}=await sb('loan_applications').select('*').eq('id',id).single();
   if(!a)return;
+  const rate=getAutoRate(a.applied_amount);const tier=getAutoTier(a.applied_amount);
   openModal(`
     <h2>Application ${a.application_no||'DRAFT'}</h2>
-    <div style="margin-bottom:12px">${statusBadge(a.status)}</div>
+    <div style="margin-bottom:12px">${statusBadge(a.status)} <span class="badge badge-blue">${tier}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
-      <p><strong>Amount:</strong> ${fmtMoney(a.applied_amount)}</p><p><strong>Term:</strong> ${a.applied_term_months} months</p>
-      <p><strong>Purpose:</strong> ${a.purpose||'-'}</p><p><strong>Date:</strong> ${fmtDate(a.created_at)}</p>
-      <p><strong>Guarantor:</strong> ${a.guarantor_name||'-'}</p><p><strong>Collateral:</strong> ${a.collateral_description||'-'}</p>
+      <p><strong>Amount:</strong> ${fmtMoney(a.applied_amount)}</p><p><strong>Rate:</strong> ${rate}% / week</p>
+      <p><strong>Term:</strong> ${a.applied_term_weeks} weeks</p><p><strong>Date:</strong> ${fmtDate(a.created_at)}</p>
+      <p><strong>Purpose:</strong> ${a.purpose||'-'}</p>
+      <p><strong>Guarantor:</strong> ${a.guarantor_name||'-'} (${a.guarantor_phone||'-'})</p>
       ${a.rejection_reason?`<p style="grid-column:1/-1"><strong>Rejection Reason:</strong> <span style="color:var(--accent-red)">${a.rejection_reason}</span></p>`:''}
     </div>
     <div class="modal-actions">
@@ -1335,9 +1342,9 @@ async function renderDisbursement(){
   try{
     const{data:apps}=await sb('loan_applications').select('*').eq('status','approved').order('approved_at',{ascending:false});
     main.innerHTML=`
-      <div class="page-header"><h1>💸 Disbursement</h1></div>
-      <div class="table-wrap"><table><thead><tr><th>App #</th><th>Client</th><th>Amount</th><th>Term</th><th>Approved</th><th>Actions</th></tr></thead><tbody>
-      ${(apps||[]).map(a=>`<tr><td>${a.application_no}</td><td>${a.client_id?.slice(0,8)||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_months}m</td><td>${fmtDate(a.approved_at)}</td><td><button class="btn btn-primary btn-sm" onclick="openDisburseModal('${a.id}')">Disburse</button></td></tr>`).join('')||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No approved applications awaiting disbursement</td></tr>'}
+      <div class="page-header"><h1>Disbursement</h1></div>
+      <div class="table-wrap"><table><thead><tr><th>App #</th><th>Client</th><th>Amount</th><th>Term</th><th>Tier</th><th>Approved</th><th>Actions</th></tr></thead><tbody>
+      ${(apps||[]).map(a=>`<tr><td>${a.application_no}</td><td>${a.client_id?.slice(0,8)||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td><td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td><td>${fmtDate(a.approved_at)}</td><td><button class="btn btn-primary btn-sm" onclick="openDisburseModal('${a.id}')">Disburse</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No approved applications awaiting disbursement</td></tr>'}
       </tbody></table></div>
     `;
   }catch(e){toast(e.message,'error')}
@@ -1345,52 +1352,50 @@ async function renderDisbursement(){
 
 async function openDisburseModal(appId){
   const{data:app}=await sb('loan_applications').select('*').eq('id',appId).single();
-  const{data:product}=await sb('loan_products').select('*').eq('id',app.product_id).single();
-  if(!app||!product)return toast('Data not found','error');
-  const fee=app.applied_amount*(product.processing_fee_pct/100);
-  const net=app.applied_amount-fee;
-  const firstRep=new Date();firstRep.setDate(firstRep.getDate()+30);
+  if(!app)return toast('Application not found','error');
+  const amt=app.applied_amount;
+  const rate=getAutoRate(amt);
+  const feePct=appSettings?.default_processing_fee_pct||3;
+  const fee=amt*(feePct/100);
+  const net=amt-fee;
+  const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   openModal(`
     <h2>Disburse Loan — ${app.application_no}</h2>
-    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${app.applied_amount}" oninput="updateDisbursePreview('${product.interest_rate}','${product.interest_type}')"></div><div class="form-group"><label>Method</label><select class="select" id="dMethod"><option>cash</option><option>mpesa</option><option>bank_transfer</option><option>cheque</option></select></div></div>
+    <div class="card" style="margin-bottom:12px;font-size:13px">
+      <p><strong>Tier:</strong> ${getAutoTier(amt)} | <strong>Rate:</strong> ${rate}% / week | <strong>Term:</strong> ${app.applied_term_weeks} weeks</p>
+    </div>
+    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Method</label><select class="select" id="dMethod"><option value="cash" selected>Cash</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="dRef"></div><div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="dDate" value="${today()}"></div></div>
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${firstRep.toISOString().slice(0,10)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
-      <p><strong>Processing Fee:</strong> ${fmtMoney(fee)} (${product.processing_fee_pct}%)</p>
+      <p><strong>Processing Fee:</strong> ${fmtMoney(fee)} (${feePct}%)</p>
       <p><strong>Net Disbursement:</strong> ${fmtMoney(net)}</p>
     </div>
-    <div id="disbursePreview" class="card" style="margin-top:8px;max-height:200px;overflow-y:auto"></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmDisburse('${appId}','${product.id}','${app.client_id}','${product.interest_rate}','${product.interest_type}','${app.applied_term_months}','${product.processing_fee_pct}')">Confirm & Disburse</button></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
   `,true);
-  updateDisbursePreview(product.interest_rate,product.interest_type);
 }
 
-function updateDisbursePreview(rate,type){
-  const amt=Number($('#dAmt')?.value)||0;const term=12;
-  const c=calcLoan(amt,Number(rate),type,term);
-  const el=$('#disbursePreview');if(!el)return;
-  el.innerHTML=`<h4 style="font-size:13px;margin-bottom:8px">Repayment Schedule Preview</h4><table><thead><tr><th>#</th><th>Due</th><th>Principal</th><th>Interest</th><th>Total</th></tr></thead><tbody>${c.schedule.slice(0,6).map(s=>`<tr><td>${s.no}</td><td>-</td><td>${fmtMoney(s.principal)}</td><td>${fmtMoney(s.interest)}</td><td>${fmtMoney(s.total)}</td></tr>`).join('')}</tbody></table>`;
-}
-
-async function confirmDisburse(appId,productId,clientId,rate,intType,termMonths,feePct){
+async function confirmDisburse(appId,clientId,termWeeks){
   try{
-    const amt=Number($('#dAmt').value);const term=Number(termMonths);
-    const c=calcLoan(amt,Number(rate),intType,term);
-    const fee=amt*(Number(feePct)/100);
+    const amt=Number($('#dAmt').value);const term=Number(termWeeks);
+    const rate=getAutoRate(amt);
+    const c=calcLoan(amt,rate,'flat',term);
+    const feePct=appSettings?.default_processing_fee_pct||3;
+    const fee=amt*(feePct/100);
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
-    const maturity=new Date(firstRep);maturity.setMonth(maturity.getMonth()+term-1);
+    const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
 
     const{data:countData}=await sb('loans').select('id',{count:'exact',head:true});
     const loanNo=`LN-${new Date().getFullYear()}-${String((countData?.length||0)+1).padStart(4,'0')}`;
 
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,product_id:productId,loan_officer_id:currentUser?.id,branch_id:currentUser?.branch_id,principal_amount:amt,interest_rate:Number(rate),interest_type:intType,term_months:term,processing_fee:fee,total_interest:c.totalInterest,total_payable:c.totalPayable,monthly_installment:c.monthly,disbursed_amount:amt-fee,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id};
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:fee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt-fee,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id};
 
     const{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
     if(lErr)throw lErr;
 
-    // Generate schedule
+    // Generate weekly schedule
     const schedules=c.schedule.map((s,i)=>{
-      const due=new Date(firstRep);due.setMonth(due.getMonth()+i);
+      const due=new Date(firstRep);due.setDate(due.getDate()+i*7);
       return{loan_id:loan.id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
@@ -1411,9 +1416,9 @@ async function renderLoans(page=1){
     cachedData.loans=loans||[];
     const p=paginate(loans||[],page);
     main.innerHTML=`
-      <div class="page-header"><h1>🏦 Active Loans</h1></div>
-      <div class="search-bar"><input class="input" placeholder="Search loan no, client..." oninput="filterLoans(this.value)"><select class="select" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Monthly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
+      <div class="page-header"><h1>Active Loans</h1></div>
+      <div class="search-bar"><input class="input" placeholder="Search loan no..." oninput="filterLoans(this.value)"><select class="select" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select></div>
+      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody id="loansBody">${renderLoanRows(p.items)}</tbody></table></div>
       ${paginationHtml(p,'renderLoans')}
     `;
@@ -1425,7 +1430,7 @@ function renderLoanRows(loans){
     const rowColor=l.overdue_days>30?'border-left:3px solid var(--accent-red)':l.overdue_days>0?'border-left:3px solid var(--accent-orange)':l.status==='active'?'border-left:3px solid var(--accent-green)':'';
     return`<tr style="${rowColor}">
       <td><strong>${l.loan_no||'-'}</strong></td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
-      <td>${fmtMoney(l.monthly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
+      <td>${fmtMoney(l.weekly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
       <td>${statusBadge(l.status)}</td>
       <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> <button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button></td>
     </tr>`}).join('');
@@ -1444,9 +1449,9 @@ async function viewLoan(id){
     <div style="display:flex;gap:8px;margin-bottom:16px">${statusBadge(loan.status)} ${loan.overdue_days>0?`<span class="badge badge-red">${loan.overdue_days} days overdue</span>`:''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:13px;margin-bottom:16px">
       <div><strong>Principal:</strong> ${fmtMoney(loan.principal_amount)}</div>
-      <div><strong>Rate:</strong> ${loan.interest_rate}% (${loan.interest_type})</div>
-      <div><strong>Term:</strong> ${loan.term_months} months</div>
-      <div><strong>Monthly:</strong> ${fmtMoney(loan.monthly_installment)}</div>
+      <div><strong>Rate:</strong> ${loan.interest_rate}% / week</div>
+      <div><strong>Term:</strong> ${loan.term_weeks} weeks</div>
+      <div><strong>Weekly:</strong> ${fmtMoney(loan.weekly_installment)}</div>
       <div><strong>Balance:</strong> <span style="color:var(--accent-yellow)">${fmtMoney(loan.outstanding_balance)}</span></div>
       <div><strong>Total Paid:</strong> <span style="color:var(--accent-green)">${fmtMoney(loan.total_paid)}</span></div>
       <div><strong>Disbursed:</strong> ${fmtDate(loan.disbursement_date)}</div>
@@ -1460,44 +1465,34 @@ async function viewLoan(id){
       </tbody></table></div>
     </div>
     <div id="loanTabPayments" style="display:none">
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Amount</th><th>Method</th><th>Date</th></tr></thead><tbody>
+      <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>Receipt</th><th>Amount</th><th>Method</th><th>Date</th></tr></thead><tbody>
       ${(payments||[]).map(p=>`<tr><td>${p.receipt_no}</td><td>${fmtMoney(p.amount)}</td><td>${p.payment_method||'-'}</td><td>${fmtDate(p.payment_date)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>'}
       </tbody></table></div>
     </div>
     <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="exportLoanPDF('${loan.id}')">Export PDF</button>
       <button class="btn btn-success" onclick="closeModal();openPaymentModal('${loan.id}')">Record Payment</button>
-      <button class="btn btn-outline btn-sm" onclick="exportLoanPDF('${loan.id}')">📄 PDF Statement</button>
-      ${hasRole('admin')&&loan.status==='active'?`<button class="btn btn-danger btn-sm" onclick="writeOffLoan('${loan.id}')">Write Off</button>`:''}
       <button class="btn btn-outline" onclick="closeModal()">Close</button>
     </div>
   `,true);
 }
 
 function showLoanTab(tab,el){
-  document.querySelectorAll('#loanTabSchedule,#loanTabPayments').forEach(t=>t.style.display='none');
-  document.getElementById('loanTab'+tab.charAt(0).toUpperCase()+tab.slice(1)).style.display='block';
-  el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');
-}
-
-async function writeOffLoan(id){
-  if(!await confirm_('Write off this loan? This cannot be undone.'))return;
-  const reason=prompt('Reason for write-off:');if(!reason)return;
-  try{
-    await sb('loans').update({status:'written_off'}).eq('id',id);
-    await audit('loan_written_off','loans',id,null,{reason});
-    toast('Loan written off','success');closeModal();renderLoans();
-  }catch(e){toast(e.message,'error')}
+  $$('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');
+  $('#loanTabSchedule').style.display=tab==='schedule'?'block':'none';
+  $('#loanTabPayments').style.display=tab==='payments'?'block':'none';
 }
 
 async function exportLoanPDF(id){
   const{data:loan}=await sb('loans').select('*').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
-  const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date');
+  const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('created_at');
   if(!loan)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF();
-  doc.setFontSize(18);doc.text('Nguzo - Loan Statement',14,20);
-  doc.setFontSize(10);doc.text(`Loan: ${loan.loan_no} | Principal: ${fmtMoney(loan.principal_amount)} | Balance: ${fmtMoney(loan.outstanding_balance)}`,14,30);
-  doc.text(`Status: ${loan.status} | Rate: ${loan.interest_rate}% | Term: ${loan.term_months} months`,14,36);
+  doc.setFontSize(16);doc.text('Bripta — Loan Statement',14,20);
+  doc.setFontSize(10);doc.text(`Loan: ${loan.loan_no} | Generated: ${fmtDate(today())}`,14,28);
+  doc.text(`Principal: ${fmtMoney(loan.principal_amount)} | Rate: ${loan.interest_rate}%/wk | Term: ${loan.term_weeks} weeks`,14,34);
+  doc.text(`Balance: ${fmtMoney(loan.outstanding_balance)} | Status: ${loan.status}`,14,40);
   doc.autoTable({startY:44,head:[['#','Due Date','Due','Paid','Status']],body:(schedules||[]).map(s=>[s.installment_no,s.due_date,fmtMoney(s.total_due),fmtMoney(s.total_paid),s.status]),styles:{fontSize:8}});
   if(payments?.length){
     doc.text('Payment History',14,doc.lastAutoTable.finalY+10);
@@ -1515,14 +1510,49 @@ async function renderRepayments(page=1){
     cachedData.repayments=reps||[];
     const p=paginate(reps||[],page);
     const todayTotal=(reps||[]).filter(r=>r.payment_date===today()).reduce((s,r)=>s+Number(r.amount||0),0);
+
+    // Check for unconfirmed M-Pesa payments
+    const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
+
     main.innerHTML=`
-      <div class="page-header"><h1>💳 Repayments</h1><div><span style="font-size:13px;color:var(--text-secondary);margin-right:12px">Today: <strong style="color:var(--accent-green)">${fmtMoney(todayTotal)}</strong></span><button class="btn btn-outline btn-sm" onclick="exportRepaymentsExcel()">📥 Excel</button> <button class="btn btn-primary" onclick="openPaymentModal()">+ Record Payment</button></div></div>
+      <div class="page-header"><h1>Repayments</h1><div><span style="font-size:13px;color:var(--text-secondary);margin-right:12px">Today: <strong style="color:var(--accent-green)">${fmtMoney(todayTotal)}</strong></span><button class="btn btn-outline btn-sm" onclick="exportRepaymentsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openPaymentModal()">+ Record Payment</button></div></div>
+      ${(mpesaQueue||[]).length>0?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow)"><h3 style="font-size:14px;margin-bottom:8px;color:var(--accent-yellow)">Pending M-Pesa Confirmations (${mpesaQueue.length})</h3>
+        <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
+        ${mpesaQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button></td></tr>`).join('')}
+        </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Loan</th><th>Amount</th><th>Method</th><th>Reference</th><th>Date</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">🖨️</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded</td></tr>'}
+      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
   }catch(e){toast(e.message,'error')}
+}
+
+async function confirmMpesaPayment(queueId,billRef,amount,transId){
+  try{
+    // Find matching loan
+    const{data:loan}=await sb('loans').select('*').eq('loan_no',billRef.toUpperCase()).eq('status','active').single();
+    if(!loan)return toast('No matching active loan found for: '+billRef,'warning');
+    
+    const{data:countData}=await sb('loan_repayments').select('id',{count:'exact',head:true});
+    const receiptNo=`RCP-${new Date().getFullYear()}-${String((countData?.length||0)+1).padStart(5,'0')}`;
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:today(),principal_portion:amount*0.7,interest_portion:amount*0.3,penalty_portion:0,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
+    const{error}=await sb('loan_repayments').insert(rec);
+    if(error)throw error;
+    
+    const newPaid=Number(loan.total_paid)+amount;
+    const newBalance=Number(loan.outstanding_balance)-amount;
+    await sb('loans').update({total_paid:newPaid,outstanding_balance:Math.max(0,newBalance),status:newBalance<=0?'completed':loan.status}).eq('id',loan.id);
+    await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id}).eq('id',queueId);
+    await audit('mpesa_payment_confirmed','loan_repayments',null,null,rec);
+    toast(`M-Pesa payment ${receiptNo} confirmed!`,'success');renderRepayments();
+  }catch(e){toast(e.message,'error')}
+}
+
+async function dismissMpesaPayment(queueId){
+  if(!await confirm_('Dismiss this M-Pesa payment? It will be marked as confirmed without recording a repayment.'))return;
+  await sb('mpesa_callback_queue').update({confirmed:true}).eq('id',queueId);
+  toast('Payment dismissed','info');renderRepayments();
 }
 
 async function openPaymentModal(loanId){
@@ -1534,7 +1564,7 @@ async function openPaymentModal(loanId){
   openModal(`
     <h2>Record Payment</h2>
     ${loanInfo}
-    ${!loanId?`<div class="form-group"><label>Search Loan (by loan no)</label><input class="input" id="payLoanSearch" placeholder="LN-2024-0001" oninput="searchLoanForPay(this.value)"><div id="payLoanResults" style="margin-top:4px"></div></div>`:''}
+    ${!loanId?`<div class="form-group"><label>Search Loan (by loan no)</label><input class="input" id="payLoanSearch" placeholder="LN-2025-0001" oninput="searchLoanForPay(this.value)"><div id="payLoanResults" style="margin-top:4px"></div></div>`:''}
     <input type="hidden" id="payLoanId" value="${loanId||''}">
     <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod"><option>cash</option><option>mpesa</option><option>bank_transfer</option><option>cheque</option></select></div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
@@ -1564,24 +1594,17 @@ async function savePayment(){
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
 
-    // Update loan
     const newPaid=Number(loan.total_paid)+amount;
     const newBalance=Number(loan.outstanding_balance)-amount;
     const newStatus=newBalance<=0?'completed':loan.status;
     await sb('loans').update({total_paid:newPaid,outstanding_balance:Math.max(0,newBalance),status:newStatus}).eq('id',loanId);
 
-    // Update schedule — mark next pending as paid/partial
     const{data:nextSched}=await sb('loan_schedules').select('*').eq('loan_id',loanId).in('status',['pending','overdue','partial']).order('installment_no').limit(1);
     if(nextSched?.length){
       const s=nextSched[0];const newTotal=Number(s.total_paid)+amount;
       const schedStatus=newTotal>=Number(s.total_due)?'paid':'partial';
       await sb('loan_schedules').update({total_paid:newTotal,status:schedStatus,paid_at:schedStatus==='paid'?new Date().toISOString():null}).eq('id',s.id);
     }
-
-    // Update credit score
-    await sb('loan_clients').select('credit_score').eq('id',loan.client_id).single().then(async({data:cl})=>{
-      if(cl){const newScore=Math.min(1000,cl.credit_score+10);await sb('loan_clients').update({credit_score:newScore}).eq('id',loan.client_id)}
-    });
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
     toast(`Payment ${receiptNo} recorded! ${fmtMoney(amount)}`,'success');closeModal();
@@ -1593,7 +1616,7 @@ async function printReceipt(id){
   const{data:rep}=await sb('loan_repayments').select('*').eq('id',id).single();
   if(!rep)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF({format:[80,140],unit:'mm'});
-  doc.setFontSize(14);doc.text('Nguzo',40,10,{align:'center'});
+  doc.setFontSize(14);doc.text('Bripta',40,10,{align:'center'});
   doc.setFontSize(8);doc.text('Payment Receipt',40,16,{align:'center'});
   doc.line(5,18,75,18);
   doc.setFontSize(9);
@@ -1610,7 +1633,7 @@ async function printReceipt(id){
 
 function exportRepaymentsExcel(){
   const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Amount:r.amount,Method:r.payment_method,Reference:r.payment_reference,Date:r.payment_date}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Nguzo_Repayments.xlsx');
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
   toast('Exported','success');
 }
 
@@ -1625,7 +1648,7 @@ async function renderOverdue(){
     (loans||[]).forEach(l=>{const d=l.overdue_days;if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++});
 
     main.innerHTML=`
-      <div class="page-header"><h1>⚠️ Overdue & Collections</h1></div>
+      <div class="page-header"><h1>Overdue & Collections</h1></div>
       <div class="charts-grid"><div class="chart-card"><h3>Aging Buckets</h3><canvas id="chartAging"></canvas></div>
         <div class="card"><h3 style="font-size:14px;margin-bottom:8px">PAR Metrics</h3>
           <div style="font-size:13px">
@@ -1636,7 +1659,7 @@ async function renderOverdue(){
         </div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Overdue Amount</th><th>Days</th><th>Last Payment</th><th>Actions</th></tr></thead><tbody>
-      ${(loans||[]).map(l=>`<tr><td><strong>${l.loan_no}</strong></td><td>${l.client_id?.slice(0,8)||'-'}</td><td>${fmtMoney(l.arrears_amount)}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>-</td><td><button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button> <button class="btn btn-outline btn-sm" onclick="addFollowUp('${l.id}','${l.client_id}')">Follow-Up</button></td></tr>`).join('')||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No overdue loans 🎉</td></tr>'}
+      ${(loans||[]).map(l=>`<tr><td><strong>${l.loan_no}</strong></td><td>${l.client_id?.slice(0,8)||'-'}</td><td>${fmtMoney(l.arrears_amount)}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>-</td><td><button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button> <button class="btn btn-outline btn-sm" onclick="addFollowUp('${l.id}','${l.client_id}')">Follow-Up</button></td></tr>`).join('')||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
       </tbody></table></div>
     `;
 
@@ -1667,17 +1690,16 @@ async function saveFollowUp(loanId,clientId){
 async function renderReports(){
   const main=$('#mainContent');
   main.innerHTML=`
-    <div class="page-header"><h1>📈 Reports & Analytics</h1></div>
+    <div class="page-header"><h1>Reports & Analytics</h1></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
       ${[
-        {icon:'📊',title:'Portfolio Report',desc:'Total active loans, outstanding, breakdown by product and branch',fn:'genPortfolioReport'},
-        {icon:'💰',title:'Repayment Performance',desc:'Collections by month, on-time vs late rates',fn:'genRepaymentReport'},
-        {icon:'⚠️',title:'Aging / Overdue Report',desc:'All overdue loans with aging buckets and PAR metrics',fn:'genAgingReport'},
-        {icon:'👔',title:'Loan Officer Performance',desc:'Loans issued, portfolio size, collections per officer',fn:'genOfficerReport'},
-        {icon:'📄',title:'Client Statement',desc:'Search client and generate full loan statement PDF',fn:'genClientStatement'},
-        {icon:'💸',title:'Disbursement Report',desc:'Loans disbursed in period grouped by product',fn:'genDisbursementReport'},
-        {icon:'💵',title:'Income Report',desc:'Interest, fees, and penalties collected',fn:'genIncomeReport'}
-      ].map(r=>`<div class="card" style="cursor:pointer" onclick="${r.fn}()"><div style="font-size:24px;margin-bottom:8px">${r.icon}</div><strong>${r.title}</strong><p style="font-size:13px;color:var(--text-secondary);margin-top:4px">${r.desc}</p></div>`).join('')}
+        {title:'Portfolio Report',desc:'Total active loans, outstanding, breakdown by product',fn:'genPortfolioReport'},
+        {title:'Repayment Performance',desc:'Collections by period, on-time vs late rates',fn:'genRepaymentReport'},
+        {title:'Aging / Overdue Report',desc:'All overdue loans with aging buckets and PAR metrics',fn:'genAgingReport'},
+        {title:'Loan Officer Performance',desc:'Loans issued, portfolio size, collections per officer',fn:'genOfficerReport'},
+        {title:'Disbursement Report',desc:'Loans disbursed in period grouped by product',fn:'genDisbursementReport'},
+        {title:'Income Report',desc:'Interest, fees, and penalties collected',fn:'genIncomeReport'}
+      ].map(r=>`<div class="card" style="cursor:pointer" onclick="${r.fn}()"><strong>${r.title}</strong><p style="font-size:13px;color:var(--text-secondary);margin-top:4px">${r.desc}</p></div>`).join('')}
     </div>
   `;
 }
@@ -1687,70 +1709,34 @@ async function genPortfolioReport(){
     const{data:loans}=await sb('loans').select('*');
     const active=(loans||[]).filter(l=>l.status==='active');
     const{jsPDF}=window.jspdf;const doc=new jsPDF();
-    doc.setFontSize(16);doc.text('Nguzo — Portfolio Report',14,20);
+    doc.setFontSize(16);doc.text('Bripta — Portfolio Report',14,20);
     doc.setFontSize(10);doc.text(`Generated: ${fmtDate(today())}`,14,28);
     doc.autoTable({startY:34,head:[['Metric','Value']],body:[['Total Active Loans',active.length],['Total Outstanding',fmtMoney(active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))],['Total Disbursed',fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.disbursed_amount||0),0))]]});
-    doc.save('Portfolio_Report.pdf');toast('Report generated','success');
+    doc.save('Bripta_Portfolio_Report.pdf');toast('Report generated','success');
   }catch(e){toast(e.message,'error')}
 }
 
 async function genRepaymentReport(){
   const{data:reps}=await sb('loan_repayments').select('*');
   const ws=XLSX.utils.json_to_sheet((reps||[]).map(r=>({Receipt:r.receipt_no,Amount:r.amount,Method:r.payment_method,Date:r.payment_date})));
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Repayment_Report.xlsx');
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Bripta_Repayment_Report.xlsx');
   toast('Report exported','success');
 }
 
 async function genAgingReport(){
   const{data:loans}=await sb('loans').select('*').eq('status','active').gt('overdue_days',0);
   const ws=XLSX.utils.json_to_sheet((loans||[]).map(l=>({'Loan #':l.loan_no,Principal:l.principal_amount,Balance:l.outstanding_balance,Overdue:l.overdue_days,Arrears:l.arrears_amount})));
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Aging');XLSX.writeFile(wb,'Aging_Report.xlsx');
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Aging');XLSX.writeFile(wb,'Bripta_Aging_Report.xlsx');
   toast('Report exported','success');
 }
 
 function genOfficerReport(){toast('Officer report — coming soon','info')}
-function genClientStatement(){toast('Select a client from Clients section','info')}
 function genDisbursementReport(){
   const data=(cachedData.loans||[]).map(l=>({'Loan #':l.loan_no,Amount:l.disbursed_amount,Method:l.disbursement_method,Date:l.disbursement_date}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Disbursements');XLSX.writeFile(wb,'Disbursement_Report.xlsx');
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Disbursements');XLSX.writeFile(wb,'Bripta_Disbursement_Report.xlsx');
   toast('Exported','success');
 }
 function genIncomeReport(){toast('Income report — coming soon','info')}
-
-// ═══ BRANCHES ═══
-async function renderBranches(){
-  const main=$('#mainContent');
-  try{
-    const{data:branches}=await sb('loan_branches').select('*').order('name');
-    main.innerHTML=`
-      <div class="page-header"><h1>🏢 Branches</h1><button class="btn btn-primary" onclick="openAddBranchModal()">+ Add Branch</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Location</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(branches||[]).map(b=>`<tr><td><strong>${b.name}</strong></td><td>${b.location||'-'}</td><td>${b.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td><button class="btn btn-outline btn-sm" onclick="editBranch('${b.id}')">Edit</button></td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No branches</td></tr>'}
-      </tbody></table></div>
-    `;
-  }catch(e){toast(e.message,'error')}
-}
-
-function openAddBranchModal(b){
-  b=b||{};
-  openModal(`
-    <h2>${b.id?'Edit':'Add'} Branch</h2>
-    <div class="form-group"><label>Name *</label><input class="input" id="brName" value="${b.name||''}"></div>
-    <div class="form-group"><label>Location</label><input class="input" id="brLoc" value="${b.location||''}"></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveBranch('${b.id||''}')">${b.id?'Update':'Save'}</button></div>
-  `);
-}
-
-async function saveBranch(id){
-  const rec={name:$('#brName').value,location:$('#brLoc').value,business_id:currentUser?.business_id};
-  if(!rec.name)return toast('Name required','warning');
-  try{
-    if(id)await sb('loan_branches').update(rec).eq('id',id);else await sb('loan_branches').insert(rec);
-    toast('Branch saved','success');closeModal();renderBranches();
-  }catch(e){toast(e.message,'error')}
-}
-
-async function editBranch(id){const{data:b}=await sb('loan_branches').select('*').eq('id',id).single();if(b)openAddBranchModal(b)}
 
 // ═══ STAFF ═══
 async function renderStaff(){
@@ -1759,17 +1745,16 @@ async function renderStaff(){
   try{
     const{data:staff}=await sb('loan_staff').select('*').order('name');
     main.innerHTML=`
-      <div class="page-header"><h1>👔 Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
-      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email}</td><td><span class="badge badge-blue">${s.role}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
+      <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
+      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td><span class="badge badge-blue">${s.role}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
       </tbody></table></div>
       <div class="card" style="margin-top:20px"><h3 style="font-size:14px;margin-bottom:8px">Role Permissions</h3>
         <div style="font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
-          <div><span class="badge badge-blue">admin</span> Full access to everything</div>
-          <div><span class="badge badge-blue">branch_manager</span> Full access to own branch</div>
+          <div><span class="badge badge-blue">admin</span> Full access (Manager)</div>
           <div><span class="badge badge-blue">loan_officer</span> Manage own clients & applications</div>
-          <div><span class="badge badge-blue">cashier</span> Record repayments only</div>
-          <div><span class="badge badge-blue">viewer</span> Read-only access</div>
+          <div><span class="badge badge-blue">cashier</span> Record repayments (Cashier/Accountant)</div>
+          <div><span class="badge badge-blue">viewer</span> Read-only (Customer Support)</div>
         </div>
       </div>
     `;
@@ -1780,26 +1765,26 @@ function openAddStaffModal(s){
   s=s||{};
   openModal(`
     <h2>${s.id?'Edit':'Add'} Staff</h2>
-    <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div><div class="form-group"><label>Email *</label><input class="input" id="stEmail" value="${s.email||''}" ${s.id?'disabled':''}></div></div>
-    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div><div class="form-group"><label>Role</label><select class="select" id="stRole"><option value="admin" ${s.role==='admin'?'selected':''}>Admin</option><option value="branch_manager" ${s.role==='branch_manager'?'selected':''}>Branch Manager</option><option value="loan_officer" ${s.role==='loan_officer'?'selected':''}>Loan Officer</option><option value="cashier" ${s.role==='cashier'?'selected':''}>Cashier</option><option value="viewer" ${s.role==='viewer'?'selected':''}>Viewer</option></select></div></div>
-    ${!s.id?`<div class="form-group"><label>Password *</label><input class="input" type="password" id="stPwd"></div>`:''}
+    <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div><div class="form-group"><label>Email</label><input class="input" id="stEmail" value="${s.email||''}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div><div class="form-group"><label>Role</label><select class="select" id="stRole"><option value="admin" ${s.role==='admin'?'selected':''}>Admin (Manager)</option><option value="loan_officer" ${s.role==='loan_officer'?'selected':''}>Loan Officer</option><option value="cashier" ${s.role==='cashier'?'selected':''}>Cashier/Accountant</option><option value="viewer" ${s.role==='viewer'?'selected':''}>Viewer (Support)</option></select></div></div>
     <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">Staff must sign in with Google or phone to link their account. Set their email/phone here to match.</p>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button></div>
   `);
 }
 
 async function saveStaff(id){
-  const name=$('#stName').value;const email=$('#stEmail').value;
-  if(!name||!email)return toast('Name and email required','warning');
+  const name=$('#stName').value;
+  if(!name)return toast('Name is required','warning');
   try{
+    const rec={name,email:$('#stEmail').value||null,phone:$('#stPhone').value||null,role:$('#stRole').value,is_active:$('#stActive').value==='true'};
     if(id){
-      await sb('loan_staff').update({name,phone:$('#stPhone').value,role:$('#stRole').value,is_active:$('#stActive').value==='true'}).eq('id',id);
+      await sb('loan_staff').update(rec).eq('id',id);
     }else{
-      const pwd=$('#stPwd').value;if(!pwd)return toast('Password required','warning');
-      const hash=await sha256(pwd);
-      await sb('loan_staff').insert({name,email,phone:$('#stPhone').value,role:$('#stRole').value,password_hash:hash,is_active:true,business_id:currentUser?.business_id});
+      rec.business_id=currentUser?.business_id;
+      await sb('loan_staff').insert(rec);
     }
-    await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email});
+    await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email:rec.email});
     toast('Staff saved','success');closeModal();renderStaff();
   }catch(e){toast(e.message,'error')}
 }
@@ -1810,14 +1795,15 @@ async function editStaff(id){const{data:s}=await sb('loan_staff').select('*').eq
 function renderCalculator(){
   const main=$('#mainContent');
   main.innerHTML=`
-    <div class="page-header"><h1>🧮 Loan Calculator</h1></div>
+    <div class="page-header"><h1>Loan Calculator</h1></div>
     <div class="card" style="max-width:700px">
-      <div class="form-row"><div class="form-group"><label>Loan Amount</label><input class="input" type="number" id="calcAmt" value="50000" oninput="updateCalc()"></div><div class="form-group"><label>Interest Rate (% per month)</label><input class="input" type="number" step="0.1" id="calcRate" value="10" oninput="updateCalc()"></div></div>
-      <div class="form-row"><div class="form-group"><label>Term (months)</label><input class="input" type="number" id="calcTerm" value="12" oninput="updateCalc()"></div><div class="form-group"><label>Interest Type</label><select class="select" id="calcType" onchange="updateCalc()"><option value="flat">Flat Rate</option><option value="reducing_balance">Reducing Balance</option></select></div></div>
+      <div class="form-row"><div class="form-group"><label>Loan Amount</label><input class="input" type="number" id="calcAmt" value="10000" oninput="updateCalc()"></div><div class="form-group"><label>Interest Rate (% per week)</label><input class="input" type="number" step="0.01" id="calcRate" value="5" oninput="updateCalc()"></div></div>
+      <div class="form-row"><div class="form-group"><label>Term (weeks)</label><input class="input" type="number" id="calcTerm" value="4" oninput="updateCalc()"></div><div class="form-group"><label>Interest Type</label><select class="select" id="calcType" onchange="updateCalc()"><option value="flat">Flat Rate</option><option value="reducing_balance">Reducing Balance</option></select></div></div>
       <div class="form-group"><label>Processing Fee (%)</label><input class="input" type="number" step="0.1" id="calcFee" value="3" oninput="updateCalc()"></div>
+      <div class="card" style="margin-top:8px;font-size:13px" id="calcTierDetect"></div>
       <div id="calcResults" style="margin-top:16px"></div>
-      <button class="btn btn-outline" style="margin-top:12px" onclick="downloadCalcExcel()">📥 Download Schedule (Excel)</button>
-      <button class="btn btn-primary" style="margin-top:12px" onclick="navigateTo('applications')">Start Application →</button>
+      <button class="btn btn-outline" style="margin-top:12px" onclick="downloadCalcExcel()">Download Schedule (Excel)</button>
+      <button class="btn btn-primary" style="margin-top:12px" onclick="navigateTo('applications')">Start Application</button>
     </div>
   `;
   setTimeout(updateCalc,50);
@@ -1828,12 +1814,21 @@ function updateCalc(){
   const amt=Number($('#calcAmt')?.value)||0;const rate=Number($('#calcRate')?.value)||0;
   const term=Number($('#calcTerm')?.value)||1;const type=$('#calcType')?.value||'flat';
   const feePct=Number($('#calcFee')?.value)||0;
+  
+  // Auto-detect tier
+  const tierEl=$('#calcTierDetect');
+  if(tierEl&&amt>0){
+    const autoRate=getAutoRate(amt);const tier=getAutoTier(amt);
+    tierEl.innerHTML=`Auto-detected: <strong>${tier}</strong> at <strong>${autoRate}% per week</strong>`;
+    tierEl.style.display='block';
+  }
+  
   const c=calcLoan(amt,rate,type,term);const fee=amt*(feePct/100);
   lastCalcSchedule=c.schedule;
   const el=$('#calcResults');if(!el)return;
   el.innerHTML=`
     <div class="kpi-grid" style="margin-bottom:16px">
-      <div class="kpi-card"><div class="kpi-label">Monthly Installment</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(c.monthly)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Weekly Installment</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(c.weekly)}</div></div>
       <div class="kpi-card"><div class="kpi-label">Total Interest</div><div class="kpi-value" style="color:var(--accent-yellow)">${fmtMoney(c.totalInterest)}</div></div>
       <div class="kpi-card"><div class="kpi-label">Processing Fee</div><div class="kpi-value">${fmtMoney(fee)}</div></div>
       <div class="kpi-card"><div class="kpi-label">Total Payable</div><div class="kpi-value" style="color:var(--accent-red)">${fmtMoney(c.totalPayable)}</div></div>
@@ -1846,7 +1841,7 @@ function updateCalc(){
 
 function downloadCalcExcel(){
   const data=lastCalcSchedule.map(s=>({'#':s.no,Principal:Number(s.principal.toFixed(2)),Interest:Number(s.interest.toFixed(2)),Installment:Number(s.total.toFixed(2)),Balance:Number(s.balance.toFixed(2))}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Schedule');XLSX.writeFile(wb,'Loan_Schedule.xlsx');
+  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Schedule');XLSX.writeFile(wb,'Bripta_Loan_Schedule.xlsx');
   toast('Downloaded','success');
 }
 
@@ -1855,45 +1850,61 @@ async function renderSettings(){
   if(!hasRole('admin'))return toast('Admin access required','warning');
   const main=$('#mainContent');
   try{
-    let{data:settings}=await sb('loan_settings').select('*').limit(1).single();
-    if(!settings)settings={company_name:'Nguzo',company_logo:'🏦',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,loan_no_prefix:'LN',app_no_prefix:'APP',receipt_no_prefix:'RCP',receipt_header:'Nguzo',receipt_footer:'Thank you for your payment'};
+    const settings=await loadSettings();
+    const callbackUrl=SUPABASE_URL+'/functions/v1/mpesa-c2b-callback';
     main.innerHTML=`
-      <div class="page-header"><h1>⚙️ Settings</h1></div>
+      <div class="page-header"><h1>Settings</h1></div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
         <h3 style="font-size:16px;margin-bottom:16px">Company Settings</h3>
-        <div class="form-row"><div class="form-group"><label>Company Name</label><input class="input" id="setName" value="${settings.company_name||''}"></div><div class="form-group"><label>Logo (emoji/URL)</label><input class="input" id="setLogo" value="${settings.company_logo||''}"></div></div>
+        <div class="form-row"><div class="form-group"><label>Company Name</label><input class="input" id="setName" value="${settings.company_name||'Bripta'}"></div><div class="form-group"><label>Currency</label><input class="input" id="setCurrency" value="${settings.currency||'KES'}"></div></div>
         <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="setPhone" value="${settings.company_phone||''}"></div><div class="form-group"><label>Email</label><input class="input" id="setEmail" value="${settings.company_email||''}"></div></div>
         <div class="form-group"><label>Address</label><input class="input" id="setAddr" value="${settings.company_address||''}"></div>
-        <div class="form-group"><label>Currency</label><input class="input" id="setCurrency" value="${settings.currency||'KES'}"></div>
+      </div>
+      <div class="card" style="max-width:700px;margin-bottom:16px">
+        <h3 style="font-size:16px;margin-bottom:16px">Interest Rates (Weekly)</h3>
+        <div class="form-row"><div class="form-group"><label>Standard Rate (% per week) — loans above threshold</label><input class="input" type="number" step="0.01" id="setStdRate" value="${settings.standard_weekly_rate||5}"></div><div class="form-group"><label>Micro Rate (% per week) — loans at or below threshold</label><input class="input" type="number" step="0.01" id="setMicroRate" value="${settings.micro_weekly_rate||6.25}"></div></div>
+        <div class="form-group"><label>Micro Loan Threshold (KES) — amounts at or below this use micro rate</label><input class="input" type="number" id="setThreshold" value="${settings.micro_threshold||4000}"></div>
       </div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
         <h3 style="font-size:16px;margin-bottom:16px">Defaults</h3>
         <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="setGrace" value="${settings.default_grace_period||7}"></div><div class="form-group"><label>Late Penalty %</label><input class="input" type="number" id="setPenalty" value="${settings.default_late_penalty_pct||5}"></div></div>
         <div class="form-group"><label>Processing Fee %</label><input class="input" type="number" id="setFee" value="${settings.default_processing_fee_pct||3}"></div>
+        <div class="form-group"><label>Default Disbursement Method</label><select class="select" id="setDisbMethod"><option value="cash" ${(settings.disbursement_method||'cash')==='cash'?'selected':''}>Cash (Manual)</option><option value="bank_transfer" ${settings.disbursement_method==='bank_transfer'?'selected':''}>Bank Transfer</option></select></div>
       </div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
         <h3 style="font-size:16px;margin-bottom:16px">Number Formats</h3>
         <div class="form-row"><div class="form-group"><label>Loan # Prefix</label><input class="input" id="setLnPfx" value="${settings.loan_no_prefix||'LN'}"></div><div class="form-group"><label>App # Prefix</label><input class="input" id="setAppPfx" value="${settings.app_no_prefix||'APP'}"></div></div>
         <div class="form-group"><label>Receipt # Prefix</label><input class="input" id="setRcpPfx" value="${settings.receipt_no_prefix||'RCP'}"></div>
       </div>
+      <div class="card" style="max-width:700px;margin-bottom:16px;border-color:var(--accent-green)">
+        <h3 style="font-size:16px;margin-bottom:16px;color:var(--accent-green)">M-Pesa Settings (C2B Repayments)</h3>
+        <div class="form-group"><label>Paybill Number</label><input class="input" id="setPaybill" value="${settings.mpesa_paybill||''}"></div>
+        <div class="form-row"><div class="form-group"><label>Consumer Key</label><input class="input" id="setConsumerKey" value="${settings.mpesa_consumer_key||''}"></div><div class="form-group"><label>Consumer Secret</label><input class="input" type="password" id="setConsumerSecret" value="${settings.mpesa_consumer_secret||''}"></div></div>
+        <div class="form-row"><div class="form-group"><label>Passkey</label><input class="input" type="password" id="setPasskey" value="${settings.mpesa_passkey||''}"></div><div class="form-group"><label>Shortcode</label><input class="input" id="setShortcode" value="${settings.mpesa_shortcode||''}"></div></div>
+        <div class="form-group"><label>Callback URL (auto-generated)</label><input class="input" id="setCallbackUrl" value="${callbackUrl}" readonly style="opacity:0.7"></div>
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <label class="toggle"><input type="checkbox" id="setAutoConfirm" ${settings.mpesa_auto_confirm?'checked':''}><span class="toggle-slider"></span></label>
+          <span style="font-size:13px">Auto-confirm incoming M-Pesa payments (if off, cashier must manually confirm)</span>
+        </div>
+      </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-      <details style="margin-top:24px"><summary style="cursor:pointer;font-weight:700;font-size:14px">📋 SQL Setup Guide (click to expand)</summary>
-        <div class="card" style="margin-top:8px"><pre style="font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text-secondary);max-height:400px;overflow-y:auto" id="sqlBlock"></pre><button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="copySql()">📋 Copy SQL</button></div>
+      <details style="margin-top:24px"><summary style="cursor:pointer;font-weight:700;font-size:14px">SQL Setup Guide (click to expand)</summary>
+        <div class="card" style="margin-top:8px"><pre style="font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text-secondary);max-height:400px;overflow-y:auto" id="sqlBlock"></pre><button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="copySql()">Copy SQL</button></div>
       </details>
     `;
-    // Extract SQL from script comment
     const scripts=document.querySelectorAll('script');
     const mainScript=scripts[scripts.length-1].textContent;
-    const sqlMatch=mainScript.match(/═+\n NGUZO — SQL SETUP[\s\S]*?\*\//);
+    const sqlMatch=mainScript.match(/═+\n BRIPTA — SQL SETUP[\s\S]*?\*\//);
     if(sqlMatch){$('#sqlBlock').textContent=sqlMatch[0].replace(/^\s*\/?\*+\s?/gm,'').replace(/\*\/$/,'')}
   }catch(e){toast(e.message,'error')}
 }
 
 async function saveSettings(){
   try{
-    const rec={company_name:$('#setName').value,company_logo:$('#setLogo').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,business_id:currentUser?.business_id||'default'};
+    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,business_id:currentUser?.business_id||'bripta'};
     const{data:existing}=await sb('loan_settings').select('id').eq('business_id',rec.business_id).single();
     if(existing){await sb('loan_settings').update(rec).eq('id',existing.id)}else{await sb('loan_settings').insert(rec)}
+    appSettings={...appSettings,...rec};
     await audit('settings_changed','loan_settings',null,null,rec);
     toast('Settings saved','success');
   }catch(e){toast(e.message,'error')}
@@ -1913,7 +1924,7 @@ async function renderAuditLog(page=1){
     const{data:logs}=await sb('loan_audit_log').select('*').order('created_at',{ascending:false}).limit(500);
     const p=paginate(logs||[],page);
     main.innerHTML=`
-      <div class="page-header"><h1>📋 Audit Log</h1></div>
+      <div class="page-header"><h1>Audit Log</h1></div>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Details</th></tr></thead><tbody>
       ${p.items.map(l=>`<tr><td style="white-space:nowrap">${fmtDateTime(l.created_at)}</td><td>${l.user_id?.slice(0,8)||'system'}</td><td><span class="badge badge-blue">${l.action}</span></td><td>${l.table_name||'-'}</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${l.new_value?JSON.stringify(l.new_value).slice(0,80):'-'}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No activity recorded</td></tr>'}
       </tbody></table></div>
@@ -1937,7 +1948,10 @@ document.addEventListener('keydown',e=>{
 });
 
 // ═══ INIT ═══
-if(checkSession())showApp();
+(async()=>{
+  const loggedIn=await checkAuthSession();
+  // If not logged in, the login screen is already visible
+})();
 </script>
 </body>
 </html>
