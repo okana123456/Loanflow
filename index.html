@@ -181,26 +181,80 @@ tr:hover{background:rgba(59,130,246,.03)}
 <div class="login-box">
 <h1>Bripta</h1>
 <p class="tagline">Smart Lending. Clear Repayments.</p>
+
+<!-- Auth Tabs -->
 <div id="authContainer">
-  <button class="btn btn-google" style="width:100%;padding:12px;margin-bottom:12px" onclick="signInWithGoogle()">
-    <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-    Sign in with Google
-  </button>
-  <div class="auth-divider">or sign in with phone</div>
-  <div class="form-group"><label>Phone Number</label><input class="input" id="loginPhone" type="tel" placeholder="+254712345678"></div>
-  <div class="form-group"><label>Password</label><input class="input" id="loginPassword" type="password" placeholder="Enter password"></div>
-  <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handlePhoneLogin()">Sign In</button>
-  <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
-    Don't have an account? <a href="#" onclick="toggleSignUp(event)">Sign Up</a>
-  </p>
-</div>
-<div id="signUpContainer" style="display:none">
-  <div class="form-group"><label>Phone Number</label><input class="input" id="signUpPhone" type="tel" placeholder="+254712345678"></div>
-  <div class="form-group"><label>Password</label><input class="input" id="signUpPassword" type="password" placeholder="Create password (min 6 chars)"></div>
-  <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handlePhoneSignUp()">Create Account</button>
-  <p style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
-    Already have an account? <a href="#" onclick="toggleSignUp(event)">Sign In</a>
-  </p>
+  <div class="auth-tabs" style="margin-bottom:20px">
+    <button class="auth-tab active" id="tabSignIn" onclick="switchAuthTab('signin')">Sign In</button>
+    <button class="auth-tab" id="tabSignUp" onclick="switchAuthTab('signup')">Sign Up</button>
+  </div>
+
+  <!-- SIGN IN PANEL -->
+  <div id="panelSignIn">
+    <button class="btn btn-google" style="width:100%;padding:12px;margin-bottom:12px" onclick="signInWithGoogle()">
+      <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Sign in with Google
+    </button>
+    <div class="auth-divider">or sign in with email</div>
+    <div class="form-group">
+      <label>Email Address</label>
+      <input class="input" id="loginEmail" type="email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input class="input" id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handleEmailLogin()">Sign In</button>
+    <p style="margin-top:10px;font-size:12px;color:var(--text-secondary);text-align:right">
+      <a href="#" onclick="showForgotPassword(event)">Forgot Password?</a>
+    </p>
+  </div>
+
+  <!-- SIGN UP PANEL -->
+  <div id="panelSignUp" style="display:none">
+    <div class="form-group">
+      <label>Full Name</label>
+      <input class="input" id="signUpName" type="text" placeholder="Your full name" autocomplete="name">
+    </div>
+    <div class="form-group">
+      <label>Email Address</label>
+      <input class="input" id="signUpEmail" type="email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="form-group">
+      <label>Password <span style="font-size:11px;color:var(--text-secondary)">(min 6 characters)</span></label>
+      <input class="input" id="signUpPassword" type="password" placeholder="Create a password" autocomplete="new-password">
+    </div>
+    <div class="form-group">
+      <label>Confirm Password</label>
+      <input class="input" id="signUpConfirm" type="password" placeholder="Re-enter password" autocomplete="new-password">
+    </div>
+    <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handleEmailSignUp()">Create Account</button>
+    <p style="margin-top:10px;font-size:12px;color:var(--text-secondary)">
+      A confirmation link will be sent to your email address.
+    </p>
+  </div>
+
+  <!-- FORGOT PASSWORD PANEL -->
+  <div id="panelForgot" style="display:none">
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Enter your email address and we'll send you a link to reset your password.</p>
+    <div class="form-group">
+      <label>Email Address</label>
+      <input class="input" id="forgotEmail" type="email" placeholder="you@example.com">
+    </div>
+    <button class="btn btn-primary" style="width:100%;padding:12px" onclick="handleForgotPassword()">Send Reset Link</button>
+    <p style="margin-top:10px;font-size:12px;color:var(--text-secondary)">
+      <a href="#" onclick="switchAuthTab('signin')">← Back to Sign In</a>
+    </p>
+  </div>
+
+  <!-- EMAIL CONFIRMATION NOTICE -->
+  <div id="panelEmailSent" style="display:none;text-align:center;padding:20px 0">
+    <div style="font-size:40px;margin-bottom:12px">📧</div>
+    <h3 style="margin-bottom:8px">Check your email</h3>
+    <p style="font-size:13px;color:var(--text-secondary)" id="emailSentMsg">We've sent a confirmation link to your email address. Click the link to activate your account.</p>
+    <button class="btn btn-outline" style="margin-top:16px;width:100%" onclick="switchAuthTab('signin')">Back to Sign In</button>
+  </div>
+
 </div>
 </div>
 </div>
@@ -764,74 +818,177 @@ function getAutoTier(amount){
   return amount<=s.micro_threshold?'Micro Loan':'Standard Loan';
 }
 
-// ═══ AUTH ═══
+// ═══ AUTH — EMAIL + GOOGLE ═══
+
+function switchAuthTab(tab){
+  // tab: 'signin' | 'signup' | 'forgot'
+  const panels=['panelSignIn','panelSignUp','panelForgot','panelEmailSent'];
+  panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
+  $('#tabSignIn')?.classList.toggle('active',tab==='signin');
+  $('#tabSignUp')?.classList.toggle('active',tab==='signup');
+  if(tab==='signin')$('#panelSignIn').style.display='block';
+  else if(tab==='signup')$('#panelSignUp').style.display='block';
+  else if(tab==='forgot')$('#panelForgot').style.display='block';
+}
+
+function showForgotPassword(e){
+  if(e)e.preventDefault();
+  switchAuthTab('forgot');
+}
+
 async function signInWithGoogle(){
   try{
-    const{error}=await supabaseClient.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin+window.location.pathname}});
+    const{error}=await supabaseClient.auth.signInWithOAuth({
+      provider:'google',
+      options:{redirectTo:window.location.origin+window.location.pathname}
+    });
     if(error)toast(error.message,'error');
   }catch(e){toast(e.message,'error')}
 }
 
-async function handlePhoneLogin(){
-  const phone=$('#loginPhone').value.trim();
+async function handleEmailLogin(){
+  const email=$('#loginEmail').value.trim();
   const pwd=$('#loginPassword').value;
-  if(!phone||!pwd)return toast('Enter phone and password','warning');
+  if(!email||!pwd)return toast('Enter your email and password','warning');
+  const btn=document.querySelector('#panelSignIn .btn-primary');
+  if(btn){btn.disabled=true;btn.textContent='Signing in...';}
   try{
-    const{data,error}=await supabaseClient.auth.signInWithPassword({phone,password:pwd});
-    if(error)return toast(error.message,'error');
+    const{data,error}=await supabaseClient.auth.signInWithPassword({email,password:pwd});
+    if(error){
+      if(error.message.toLowerCase().includes('email not confirmed')){
+        toast('Please confirm your email first. Check your inbox for a confirmation link.','warning');
+      } else if(error.message.toLowerCase().includes('invalid login')){
+        toast('Incorrect email or password. Please try again.','error');
+      } else {
+        toast(error.message,'error');
+      }
+      return;
+    }
     await resolveUserRole(data.user);
   }catch(e){toast(e.message,'error')}
+  finally{if(btn){btn.disabled=false;btn.textContent='Sign In';}}
 }
 
-async function handlePhoneSignUp(){
-  const phone=$('#signUpPhone').value.trim();
+async function handleEmailSignUp(){
+  const name=$('#signUpName').value.trim();
+  const email=$('#signUpEmail').value.trim();
   const pwd=$('#signUpPassword').value;
-  if(!phone||!pwd)return toast('Enter phone and password','warning');
-  if(pwd.length<6)return toast('Password must be at least 6 characters','warning');
+  const confirm=$('#signUpConfirm').value;
+  if(!name)return toast('Enter your full name','warning');
+  if(!email)return toast('Enter your email address','warning');
+  if(!pwd||pwd.length<6)return toast('Password must be at least 6 characters','warning');
+  if(pwd!==confirm)return toast('Passwords do not match','warning');
+  const btn=document.querySelector('#panelSignUp .btn-primary');
+  if(btn){btn.disabled=true;btn.textContent='Creating account...';}
   try{
-    const{data,error}=await supabaseClient.auth.signUp({phone,password:pwd});
+    const{data,error}=await supabaseClient.auth.signUp({
+      email,password:pwd,
+      options:{
+        emailRedirectTo:window.location.origin+window.location.pathname,
+        data:{full_name:name}
+      }
+    });
     if(error)return toast(error.message,'error');
-    toast('Account created! You can now sign in.','success');
-    toggleSignUp();
+
+    // Create a pending loan_staff record linked to email so they can be approved by admin
+    // (pre-create with no auth_user_id so admin can manage it, or auto-link on first login)
+    try{
+      const existing=await sb('loan_staff').select('id').eq('email',email).limit(1);
+      if(!existing.data?.length){
+        await sb('loan_staff').insert({name,email,role:'viewer',is_active:false,auth_user_id:data.user?.id||null});
+      }
+    }catch(_){}
+
+    // Show email sent panel
+    const panels=['panelSignIn','panelSignUp','panelForgot'];
+    panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
+    $('#panelEmailSent').style.display='block';
+    $('#emailSentMsg').textContent=`We've sent a confirmation link to ${email}. Click the link to activate your account, then sign in. An admin must activate your account before you can access the system.`;
   }catch(e){toast(e.message,'error')}
+  finally{if(btn){btn.disabled=false;btn.textContent='Create Account';}}
 }
 
-function toggleSignUp(e){
-  if(e)e.preventDefault();
-  const auth=$('#authContainer');const signup=$('#signUpContainer');
-  if(auth.style.display==='none'){auth.style.display='block';signup.style.display='none'}
-  else{auth.style.display='none';signup.style.display='block'}
+async function handleForgotPassword(){
+  const email=$('#forgotEmail').value.trim();
+  if(!email)return toast('Enter your email address','warning');
+  const btn=document.querySelector('#panelForgot .btn-primary');
+  if(btn){btn.disabled=true;btn.textContent='Sending...';}
+  try{
+    const{error}=await supabaseClient.auth.resetPasswordForEmail(email,{
+      redirectTo:window.location.origin+window.location.pathname+'?reset=1'
+    });
+    if(error)return toast(error.message,'error');
+    const panels=['panelSignIn','panelSignUp','panelForgot'];
+    panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
+    $('#panelEmailSent').style.display='block';
+    $('#emailSentMsg').textContent=`A password reset link has been sent to ${email}. Check your inbox and click the link to set a new password.`;
+  }catch(e){toast(e.message,'error')}
+  finally{if(btn){btn.disabled=false;btn.textContent='Send Reset Link';}}
+}
+
+// Handle password reset redirect (Supabase sends back with hash token)
+async function checkPasswordResetRedirect(){
+  const hash=window.location.hash;
+  const params=new URLSearchParams(window.location.search);
+  if(params.get('reset')==='1'||hash.includes('type=recovery')){
+    const newPwd=prompt('Enter your new password (min 6 characters):');
+    if(!newPwd||newPwd.length<6){toast('Password too short','warning');return;}
+    const{error}=await supabaseClient.auth.updateUser({password:newPwd});
+    if(error)toast(error.message,'error');
+    else{toast('Password updated successfully! Please sign in.','success');supabaseClient.auth.signOut();}
+    window.history.replaceState(null,'',window.location.pathname);
+  }
 }
 
 async function resolveUserRole(authUser){
   if(!authUser)return toast('Authentication failed','error');
   try{
-    // Look up by auth_user_id first, then by email/phone
-    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).eq('is_active',true).single();
+    // 1) Try by auth_user_id
+    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).single();
+
+    // 2) Try by email
     if(!staff&&authUser.email){
-      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).eq('is_active',true).single();
+      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).single();
       if(byEmail){
-        // Link auth_user_id on first login
         await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byEmail.id);
         staff=byEmail;
       }
     }
-    if(!staff&&authUser.phone){
-      const{data:byPhone}=await sb('loan_staff').select('*').eq('phone',authUser.phone).eq('is_active',true).single();
-      if(byPhone){
-        await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byPhone.id);
-        staff=byPhone;
+
+    // 3) Auto-create admin on very first login (no staff in system at all)
+    if(!staff){
+      const{count}=await sb('loan_staff').select('*',{count:'exact',head:true});
+      if(count===0){
+        const name=authUser.user_metadata?.full_name||authUser.email?.split('@')[0]||'Admin';
+        const{data:newStaff}=await sb('loan_staff').insert({
+          name,email:authUser.email,auth_user_id:authUser.id,
+          role:'admin',is_active:true,last_login:new Date().toISOString(),
+          business_id:'bripta'
+        }).select().single();
+        staff=newStaff;
+        toast(`Welcome, ${name}! Admin account created.`,'success');
       }
     }
+
     if(!staff){
-      return toast('No staff account found. Contact your administrator.','error');
+      await supabaseClient.auth.signOut();
+      return toast('No staff account found for this email. Contact your administrator to be added to the system.','error');
     }
+
+    if(!staff.is_active){
+      await supabaseClient.auth.signOut();
+      return toast('Your account is not yet activated. Please contact your administrator.','warning');
+    }
+
     currentUser=staff;
     await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id);
-    await audit('login','loan_staff',staff.id,null,{email:authUser.email,phone:authUser.phone});
+    await audit('login','loan_staff',staff.id,null,{email:authUser.email});
     await loadSettings();
     showApp();
-  }catch(e){toast('Login error: '+e.message,'error')}
+  }catch(e){
+    console.error('resolveUserRole error:',e);
+    toast('Login error: '+e.message,'error');
+  }
 }
 
 async function checkAuthSession(){
@@ -855,6 +1012,8 @@ function showApp(){
   $('#appShell').style.display='flex';
   $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue">${currentUser.role}</span>`;
   navigateTo('dashboard');
+  // Run rollover penalty check on each login
+  setTimeout(applyRolloverPenalties,2000);
 }
 
 function hasRole(...roles){return roles.includes(currentUser?.role)}
@@ -1870,6 +2029,10 @@ async function renderSettings(){
         <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="setGrace" value="${settings.default_grace_period||7}"></div><div class="form-group"><label>Late Penalty %</label><input class="input" type="number" id="setPenalty" value="${settings.default_late_penalty_pct||5}"></div></div>
         <div class="form-group"><label>Processing Fee %</label><input class="input" type="number" id="setFee" value="${settings.default_processing_fee_pct||3}"></div>
         <div class="form-group"><label>Default Disbursement Method</label><select class="select" id="setDisbMethod"><option value="cash" ${(settings.disbursement_method||'cash')==='cash'?'selected':''}>Cash (Manual)</option><option value="bank_transfer" ${settings.disbursement_method==='bank_transfer'?'selected':''}>Bank Transfer</option></select></div>
+        <div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:12px;margin-top:8px">
+          <strong style="font-size:13px;color:var(--accent-red)">Rollover Penalty Policy</strong>
+          <p style="font-size:12px;color:var(--text-secondary);margin-top:4px">After loan maturity date, a <strong>2-day grace period</strong> applies. Thereafter, a <strong>15% rollover penalty</strong> is charged on the outstanding balance. This is calculated automatically each day the system is accessed.</p>
+        </div>
       </div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
         <h3 style="font-size:16px;margin-bottom:16px">Number Formats</h3>
@@ -1933,6 +2096,50 @@ async function renderAuditLog(page=1){
   }catch(e){toast(e.message,'error')}
 }
 
+// ═══ ROLLOVER PENALTY (2-day grace after maturity, then 15% of balance) ═══
+async function applyRolloverPenalties(){
+  try{
+    const todayDate=new Date();todayDate.setHours(0,0,0,0);
+    const{data:activeLoans}=await sb('loans').select('*').eq('status','active');
+    if(!activeLoans?.length)return;
+
+    for(const loan of activeLoans){
+      if(!loan.maturity_date)continue;
+      const maturity=new Date(loan.maturity_date);maturity.setHours(0,0,0,0);
+      const diffDays=Math.floor((todayDate-maturity)/(1000*60*60*24));
+      // Apply rollover if past grace period (2 days) and balance > 0
+      if(diffDays>2&&Number(loan.outstanding_balance)>0){
+        // Check if rollover penalty already applied today
+        const todayStr=todayDate.toISOString().slice(0,10);
+        const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('date_charged',todayStr).eq('reason','Rollover Penalty (15%)').limit(1);
+        if(existing?.length)continue; // already applied today
+
+        // Only apply once after grace expires (check total rollover count vs overdue days)
+        const{data:allRollovers}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason','Rollover Penalty (15%)').eq('is_waived',false);
+        // Apply rollover daily after grace period (or adjust to once total — currently once per day)
+        const penaltyAmt=Number(loan.outstanding_balance)*0.15;
+        await sb('loan_penalties').insert({
+          loan_id:loan.id,
+          penalty_amount:penaltyAmt,
+          reason:'Rollover Penalty (15%)',
+          date_charged:todayStr,
+          is_waived:false
+        });
+        // Add penalty to outstanding balance
+        await sb('loans').update({
+          outstanding_balance:Number(loan.outstanding_balance)+penaltyAmt,
+          arrears_amount:Number(loan.arrears_amount||0)+penaltyAmt,
+          overdue_days:diffDays
+        }).eq('id',loan.id);
+        console.log(`Rollover penalty KES ${penaltyAmt.toFixed(2)} applied to loan ${loan.loan_no}`);
+      } else if(diffDays>0){
+        // Update overdue_days even within grace period
+        await sb('loans').update({overdue_days:diffDays}).eq('id',loan.id);
+      }
+    }
+  }catch(e){console.error('Rollover penalty error:',e)}
+}
+
 // ═══ KEYBOARD SHORTCUTS ═══
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT')return;
@@ -1949,8 +2156,12 @@ document.addEventListener('keydown',e=>{
 
 // ═══ INIT ═══
 (async()=>{
+  await checkPasswordResetRedirect();
   const loggedIn=await checkAuthSession();
-  // If not logged in, the login screen is already visible
+  if(loggedIn){
+    // Run rollover penalty check after login
+    await applyRolloverPenalties();
+  }
 })();
 </script>
 </body>
