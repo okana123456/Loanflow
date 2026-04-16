@@ -730,8 +730,51 @@ Deno.serve(async (req) => {
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ── Pre-init: if URL hash carries an EXPIRED magic link / recovery token,
+// strip it before Supabase tries to consume it (otherwise we get the
+// "Session as retrieved from URL expires in -Xs" error spam and a bad
+// session). Real, fresh recovery tokens (type=recovery, fresh issued_at)
+// are kept and handled by checkPasswordResetRedirect().
+(function preCleanAuthHash(){
+  try{
+    const h=window.location.hash||'';
+    const q=window.location.search||'';
+    // Always strip explicit error redirects
+    if(h.includes('error=')||q.includes('error=')){
+      window.history.replaceState(null,'',window.location.pathname);
+      return;
+    }
+    if(!h.includes('access_token=')&&!h.includes('refresh_token='))return;
+    const params=new URLSearchParams(h.replace(/^#/,''));
+    const expiresAt=Number(params.get('expires_at')||0);
+    const issuedAt=Number(params.get('issued_at')||0);
+    const nowSec=Math.floor(Date.now()/1000);
+    const isRecovery=params.get('type')==='recovery';
+    const isFresh=expiresAt>nowSec && (!issuedAt || (nowSec-issuedAt)<120);
+    if(!isFresh && !isRecovery){
+      // stale link — clean it up and ask user to try again
+      window.history.replaceState(null,'',window.location.pathname);
+    }
+  }catch(_){}
+})();
+
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY,{
+  auth:{
+    persistSession:true,
+    autoRefreshToken:true,
+    detectSessionInUrl:true,
+    flowType:'implicit'
+  }
+});
 let sb = (table) => supabaseClient.from(table);
+
+// Generate a short, unique tenant id for new admin signups
+function genBusinessId(){
+  return 'biz_'+Math.random().toString(36).slice(2,8)+Date.now().toString(36).slice(-4);
+}
+// Random suffix for human-readable doc numbers (avoids 409 unique collisions)
+function rndSuffix(n){return Math.random().toString(36).slice(2,2+n).toUpperCase()}
 
 // ═══ STATE ═══
 let currentUser = null;
@@ -882,42 +925,29 @@ async function handleEmailSignUp(){
   const btn=document.querySelector('#panelSignUp .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Creating account...';}
   try{
+    // Each new admin signup gets a unique business_id stamped onto user_metadata.
+    // Tenant rows (loan_businesses + loan_staff admin) are created on first login
+    // inside resolveUserRole() — that's the only moment we have an authenticated
+    // session that can satisfy RLS.
+    const newBizId=genBusinessId();
     const{data,error}=await supabaseClient.auth.signUp({
       email,password:pwd,
       options:{
-        emailRedirectTo:'https://loanflow-roan.vercel.app/',
-        data:{full_name:name}
+        emailRedirectTo:window.location.origin+window.location.pathname,
+        data:{full_name:name, business_id:newBizId, business_name:name+"'s Business"}
       }
     });
-    // Supabase returns no error for already-registered emails (security by design)
-    // but data.user.identities will be empty — detect and handle it
     if(error)return toast(error.message,'error');
     if(data.user&&data.user.identities&&data.user.identities.length===0){
-      // Email already registered — offer to resend confirmation or reset password
       const panels=['panelSignIn','panelSignUp','panelForgot'];
       panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
       $('#panelEmailSent').style.display='block';
-      $('#emailSentMsg').textContent=`This email is already registered. If you haven\'t confirmed it yet, use the button below to resend the link. If you already confirmed, just sign in.`;
+      $('#emailSentMsg').textContent=`This email is already registered. If you haven't confirmed it yet, use the button below to resend the link. If you already confirmed, just sign in.`;
       $('#resendEmailBtn').style.display='inline-block';
       $('#resendEmailBtn').dataset.email=email;
       return;
     }
-
-    // Store email for resend button
     $('#resendEmailBtn').dataset.email=email;
-
-    // Pre-create staff record so login works immediately after confirmation
-    try{
-      const existing=await sb('loan_staff').select('id').eq('email',email).limit(1);
-      if(!existing.data?.length){
-        await sb('loan_staff').insert({
-          name,email,
-          role:'admin',   // change to 'loan_officer' if preferred
-          is_active:true,
-          auth_user_id:data.user?.id||null
-        });
-      }
-    }catch(_){}
 
     // Auto-login if Supabase email confirmations are disabled
     if(data.session){
@@ -926,7 +956,6 @@ async function handleEmailSignUp(){
       return;
     }
 
-    // Show email sent panel
     const panels=['panelSignIn','panelSignUp','panelForgot'];
     panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
     $('#panelEmailSent').style.display='block';
@@ -942,7 +971,7 @@ async function resendConfirmationEmail(){
   if(!email)return toast('Email address not found. Please go back and sign up again.','warning');
   btn.disabled=true;btn.textContent='Sending...';
   try{
-    const{error}=await supabaseClient.auth.resend({type:'signup',email,options:{emailRedirectTo:'https://loanflow-roan.vercel.app/'}});
+    const{error}=await supabaseClient.auth.resend({type:'signup',email,options:{emailRedirectTo:window.location.origin+window.location.pathname}});
     if(error)return toast(error.message,'error');
     toast('Confirmation email resent! Check your inbox.','success');
   }catch(e){toast(e.message,'error')}
@@ -955,24 +984,34 @@ async function handleForgotPassword(){
   const btn=document.querySelector('#panelForgot .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   try{
+    // CRITICAL: redirectTo MUST exactly match an entry under
+    // Supabase → Authentication → URL Configuration → Redirect URLs.
+    // Add: window.location.origin + window.location.pathname there.
     const{error}=await supabaseClient.auth.resetPasswordForEmail(email,{
-      // FIX: Hardcode your Vercel URL here so the email knows exactly where to go
-      redirectTo: 'https://loanflow-roan.vercel.app/?reset=1'
+      redirectTo: window.location.origin + window.location.pathname + '?reset=1'
     });
     if(error)return toast(error.message,'error');
     const panels=['panelSignIn','panelSignUp','panelForgot'];
     panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
     $('#panelEmailSent').style.display='block';
-    $('#emailSentMsg').textContent=`A password reset link has been sent to ${email}. Check your inbox and click the link to set a new password.`;
+    $('#emailSentMsg').textContent=`A password reset link has been sent to ${email}. Check your inbox (and spam folder) and click the link to set a new password.`;
   }catch(e){toast(e.message,'error')}
   finally{if(btn){btn.disabled=false;btn.textContent='Send Reset Link';}}
 }
 
-// Handle password reset redirect (Supabase sends back with hash token)
+// Detect recovery flow: Supabase puts the recovery token in the URL hash
+// (#access_token=...&type=recovery). We let supabase-js consume it
+// (autoSignIn) and the SIGNED_IN event fires with a recovery session.
+// We then open the password-reset modal and BLOCK the normal app load
+// until the user sets a new password.
+let _isRecoveryFlow = false;
 async function checkPasswordResetRedirect(){
-  const hash=window.location.hash;
+  const hash=window.location.hash||'';
   const params=new URLSearchParams(window.location.search);
   if(params.get('reset')==='1'||hash.includes('type=recovery')){
+    _isRecoveryFlow = true;
+    // Wait a tick for supabase to parse the hash
+    await new Promise(r=>setTimeout(r,200));
     openModal(`
       <h2>Reset Your Password</h2>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -982,70 +1021,101 @@ async function checkPasswordResetRedirect(){
         <label>New Password (min 6 characters)</label>
         <input class="input" type="password" id="newResetPassword" placeholder="••••••••">
       </div>
+      <div class="form-group">
+        <label>Confirm New Password</label>
+        <input class="input" type="password" id="newResetPassword2" placeholder="••••••••">
+      </div>
       <div class="modal-actions">
         <button class="btn btn-primary" onclick="submitNewPassword()">Update Password</button>
       </div>
     `);
+    // Strip the URL params so a refresh doesn't re-trigger
     window.history.replaceState(null,'',window.location.pathname);
+    return true;
   }
+  return false;
 }
 
 async function submitNewPassword(){
   const newPwd=$('#newResetPassword').value;
+  const newPwd2=$('#newResetPassword2')?.value;
   if(!newPwd||newPwd.length<6)return toast('Password must be at least 6 characters long.','warning');
+  if(newPwd2!==undefined && newPwd!==newPwd2)return toast('Passwords do not match','warning');
   try{
     const{error}=await supabaseClient.auth.updateUser({password:newPwd});
     if(error)throw error;
     toast('Password updated successfully! Please sign in.','success');
     closeModal();
-    supabaseClient.auth.signOut();
+    await supabaseClient.auth.signOut();
+    _isRecoveryFlow=false;
     switchAuthTab('signin');
   }catch(e){toast(e.message,'error');}
 }
 
 async function resolveUserRole(authUser){
   if(!authUser)return toast('Authentication failed','error');
+  if(_isRecoveryFlow)return;
   try{
-    // 1) Try by auth_user_id
-    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).single();
+    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).maybeSingle();
 
-    // 2) Try by email
     if(!staff&&authUser.email){
-      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).single();
+      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).maybeSingle();
       if(byEmail){
         await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byEmail.id);
         staff=byEmail;
       }
     }
 
-    // 3) Auto-create admin on very first login (no staff in system at all)
+    // Brand-new user → bootstrap their OWN tenant + admin staff row.
     if(!staff){
-      const{count}=await sb('loan_staff').select('*',{count:'exact',head:true});
-      if(count===0){
-        const name=authUser.user_metadata?.full_name||authUser.email?.split('@')[0]||'Admin';
-        const{data:newStaff}=await sb('loan_staff').insert({
-          name,email:authUser.email,auth_user_id:authUser.id,
-          role:'admin',is_active:true,last_login:new Date().toISOString(),
-          business_id:'bripta'
-        }).select().single();
-        staff=newStaff;
-        toast(`Welcome, ${name}! Admin account created.`,'success');
+      const meta=authUser.user_metadata||{};
+      const name=meta.full_name||meta.name||authUser.email?.split('@')[0]||'Admin';
+      const bizId=meta.business_id||genBusinessId();
+      const bizName=meta.business_name||(name+"'s Business");
+
+      const{error:bizErr}=await sb('loan_businesses').insert({
+        business_id:bizId, name:bizName, owner_user_id:authUser.id
+      });
+      if(bizErr && !String(bizErr.message||'').toLowerCase().includes('duplicate')){
+        console.error('business create error:',bizErr);
       }
+
+      const{data:newStaff,error:stErr}=await sb('loan_staff').insert({
+        business_id:bizId,
+        auth_user_id:authUser.id,
+        name, email:authUser.email,
+        role:'admin', is_active:true,
+        last_login:new Date().toISOString()
+      }).select().maybeSingle();
+      if(stErr){
+        console.error('staff bootstrap error:',stErr);
+        await supabaseClient.auth.signOut();
+        return toast('Could not create your workspace: '+stErr.message,'error');
+      }
+      staff=newStaff;
+
+      try{await sb('loan_settings').insert({business_id:bizId, company_name:bizName})}catch(_){}
+      try{
+        await sb('loan_products').insert([
+          {business_id:bizId,name:'Standard Loan',description:'Loans above KES 4,000 at 5% weekly flat rate.',min_amount:4001,max_amount:1000000,interest_rate:5,interest_type:'flat',interest_period:'weekly',min_term_weeks:1,max_term_weeks:52,processing_fee_pct:3,late_penalty_pct:5,grace_period_days:3,requires_guarantor:true,is_active:true},
+          {business_id:bizId,name:'Micro Loan',description:'Loans KES 4,000 and below at 6.25% weekly flat rate.',min_amount:500,max_amount:4000,interest_rate:6.25,interest_type:'flat',interest_period:'weekly',min_term_weeks:1,max_term_weeks:12,processing_fee_pct:2,late_penalty_pct:5,grace_period_days:0,requires_guarantor:true,is_active:true}
+        ]);
+      }catch(_){}
+      toast(`Welcome, ${name}! Your workspace has been created.`,'success');
     }
 
     if(!staff){
       await supabaseClient.auth.signOut();
-      return toast('No staff account found for this email. Contact your administrator to be added to the system.','error');
+      return toast('No staff account found. Contact your administrator.','error');
     }
-
     if(!staff.is_active){
       await supabaseClient.auth.signOut();
-      return toast('Your account is not yet activated. Please contact your administrator.','warning');
+      return toast('Your account is not active. Contact your administrator.','warning');
     }
 
     currentUser=staff;
     await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id);
-    await audit('login','loan_staff',staff.id,null,{email:authUser.email});
+    try{await audit('login','loan_staff',staff.id,null,{email:authUser.email})}catch(_){}
     await loadSettings();
     showApp();
   }catch(e){
@@ -1056,36 +1126,41 @@ async function resolveUserRole(authUser){
 
 async function checkAuthSession(){
   const{data:{session}}=await supabaseClient.auth.getSession();
-  if(session?.user){
+  if(session?.user && !_isRecoveryFlow){
     await resolveUserRole(session.user);
     return true;
   }
   return false;
 }
 
-function handleLogout(){
-  audit('logout','loan_staff',currentUser?.id,null,null);
-  supabaseClient.auth.signOut();
+async function handleLogout(){
+  try{await audit('logout','loan_staff',currentUser?.id,null,null)}catch(_){}
+  await supabaseClient.auth.signOut();
   currentUser=null;
   $('#appShell').style.display='none';$('#loginScreen').style.display='flex';
+  switchAuthTab('signin');
 }
 
 function showApp(){
   $('#loginScreen').style.display='none';
   $('#appShell').style.display='flex';
-  $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue">${currentUser.role}</span>`;
+  $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue">${currentUser.role}</span><br><span style="font-size:10px;opacity:.7">${currentUser.business_id}</span>`;
   navigateTo('dashboard');
-  // Run rollover penalty check on each login
   setTimeout(applyRolloverPenalties,2000);
 }
 
 function hasRole(...roles){return roles.includes(currentUser?.role)}
 
-// Listen for auth state changes (handles OAuth redirect)
+// Listen for auth state changes (OAuth redirect, post-confirmation login)
 supabaseClient.auth.onAuthStateChange(async(event,session)=>{
+  if(_isRecoveryFlow)return; // password-reset modal owns the flow
   if(event==='SIGNED_IN'&&session?.user&&!currentUser){
-    await loadSettings();
     await resolveUserRole(session.user);
+  }
+  if(event==='SIGNED_OUT'){
+    currentUser=null;
+    $('#appShell').style.display='none';
+    $('#loginScreen').style.display='flex';
   }
 });
 
@@ -1296,7 +1371,7 @@ async function viewClient(id){
 }
 
 async function editClient(id){
-  const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
+  const{data:c}=await sb('loan_clients').select('*').eq('id',id).maybeSingle();
   if(!c)return toast('Client not found','error');
   openModal(`
     <h2>Edit Client</h2>
@@ -1304,7 +1379,11 @@ async function editClient(id){
     <div class="form-row"><div class="form-group"><label>Email</label><input class="input" id="ecEmail" value="${c.email||''}"></div><div class="form-group"><label>Occupation</label><input class="input" id="ecOccupation" value="${c.occupation||''}"></div></div>
     <div class="form-group"><label>Monthly Income</label><input class="input" type="number" id="ecIncome" value="${c.monthly_income||0}"></div>
     <div class="form-group"><label>Address</label><input class="input" id="ecAddress" value="${c.address||''}"></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="updateClient('${c.id}')">Update</button></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="deleteClient('${c.id}')">Delete Client</button>
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="updateClient('${c.id}')">Update</button>
+    </div>
   `,true);
 }
 
@@ -1315,6 +1394,16 @@ async function updateClient(id){
     if(error)throw error;
     await audit('client_updated','loan_clients',id,null,upd);
     toast('Client updated','success');closeModal();renderClients();
+  }catch(e){toast(e.message,'error')}
+}
+
+async function deleteClient(id){
+  if(!await confirm_('Delete this client and ALL their loans/applications/repayments? This cannot be undone.'))return;
+  try{
+    const{error}=await sb('loan_clients').delete().eq('id',id);
+    if(error)throw error;
+    await audit('client_deleted','loan_clients',id,null,null);
+    toast('Client deleted','success');closeModal();renderClients();
   }catch(e){toast(e.message,'error')}
 }
 
@@ -1501,14 +1590,11 @@ function buildAppReview(){
 
 async function submitApplication(){
   try{
-    const{data:countData}=await sb('loan_applications').select('id',{count:'exact',head:true});
-    const num=(countData?.length||0)+1;
-    const appNo=`APP-${new Date().getFullYear()}-${String(num).padStart(4,'0')}`;
+    const appNo=`APP-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}-${rndSuffix(3)}`;
     const amt=Number($('#appAmount').value);
     const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
-    // Auto-select product by tier
     const tier=getAutoTier(amt);
-    const{data:matchProduct}=await sb('loan_products').select('id').eq('name',tier).eq('is_active',true).limit(1).single();
+    const{data:matchProduct}=await sb('loan_products').select('id').eq('name',tier).eq('is_active',true).limit(1).maybeSingle();
     if(matchProduct)rec.product_id=matchProduct.id;
     const{error}=await sb('loan_applications').insert(rec);
     if(error)throw error;
@@ -1534,7 +1620,7 @@ async function viewApplication(id){
     <div class="modal-actions">
       ${a.status==='approved'?`<button class="btn btn-primary" onclick="closeModal();navigateTo('disbursement')">Proceed to Disbursement</button>`:''}
       ${a.status==='submitted'&&hasRole('admin','branch_manager')?`<button class="btn btn-success" onclick="approveApp('${a.id}')">Approve</button><button class="btn btn-danger" onclick="rejectApp('${a.id}')">Reject</button>`:''}
-      <button class="btn btn-outline" onclick="closeModal()">Close</button>
+      ${a.status!=='disbursed'&&hasRole('admin','branch_manager')?`<button class="btn btn-danger" onclick="deleteApplication('${a.id}')">Delete</button>`:''}<button class="btn btn-outline" onclick="closeModal()">Close</button>
     </div>
   `);
 }
@@ -1547,6 +1633,8 @@ async function approveApp(id){
     toast('Application approved!','success');closeModal();renderApplications();
   }catch(e){toast(e.message,'error')}
 }
+
+async function deleteApplication(id){if(!await confirm_('Delete this application? This cannot be undone.'))return;try{const{error}=await sb('loan_applications').delete().eq('id',id);if(error)throw error;await audit('application_deleted','loan_applications',id,null,null);toast('Application deleted','success');closeModal();renderApplications();}catch(e){toast(e.message,'error')}}
 
 async function rejectApp(id){
   const reason=prompt('Reason for rejection:');
@@ -1607,8 +1695,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
     const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
 
-    const{data:countData}=await sb('loans').select('id',{count:'exact',head:true});
-    const loanNo=`LN-${new Date().getFullYear()}-${String((countData?.length||0)+1).padStart(4,'0')}`;
+    const loanNo=`LN-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}-${rndSuffix(3)}`;
 
     const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:fee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt-fee,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id};
 
@@ -1618,7 +1705,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // Generate weekly schedule
     const schedules=c.schedule.map((s,i)=>{
       const due=new Date(firstRep);due.setDate(due.getDate()+i*7);
-      return{loan_id:loan.id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
+      return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
     if(sErr)throw sErr;
@@ -1654,9 +1741,11 @@ function renderLoanRows(loans){
       <td><strong>${l.loan_no||'-'}</strong></td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
       <td>${fmtMoney(l.weekly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
       <td>${statusBadge(l.status)}</td>
-      <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> <button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button></td>
+      <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> <button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button> ${hasRole('admin')?`<button class="btn btn-danger btn-sm" onclick="deleteLoan('${l.id}')">Delete</button>`:''}</td>
     </tr>`}).join('');
 }
+
+async function deleteLoan(id){if(!await confirm_('Delete this loan and ALL its schedules/repayments? This cannot be undone.'))return;try{const{error}=await sb('loans').delete().eq('id',id);if(error)throw error;await audit('loan_deleted','loans',id,null,null);toast('Loan deleted','success');renderLoans();}catch(e){toast(e.message,'error')}}
 
 function filterLoans(q){q=q.toLowerCase();const f=(cachedData.loans||[]).filter(l=>(l.loan_no||'').toLowerCase().includes(q));$('#loansBody').innerHTML=renderLoanRows(f)}
 function filterLoanStatus(v){const f=v?(cachedData.loans||[]).filter(l=>l.status===v):(cachedData.loans||[]);$('#loansBody').innerHTML=renderLoanRows(f)}
@@ -1743,7 +1832,7 @@ async function renderRepayments(page=1){
         ${mpesaQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button></td></tr>`).join('')}
         </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Loan</th><th>Amount</th><th>Method</th><th>Reference</th><th>Date</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded</td></tr>'}
+      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button> ${hasRole('admin')?`<button class="btn btn-danger btn-sm" onclick="deleteRepayment('${r.id}','${r.loan_id}',${r.amount})">Delete</button>`:''}</td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -1756,8 +1845,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const{data:loan}=await sb('loans').select('*').eq('loan_no',billRef.toUpperCase()).eq('status','active').single();
     if(!loan)return toast('No matching active loan found for: '+billRef,'warning');
     
-    const{data:countData}=await sb('loan_repayments').select('id',{count:'exact',head:true});
-    const receiptNo=`RCP-${new Date().getFullYear()}-${String((countData?.length||0)+1).padStart(5,'0')}`;
+    const receiptNo=`RCP-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}-${rndSuffix(3)}`;
     const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:today(),principal_portion:amount*0.7,interest_portion:amount*0.3,penalty_portion:0,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
@@ -1809,8 +1897,7 @@ async function savePayment(){
     const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
     if(!loan)throw new Error('Loan not found');
 
-    const{data:countData}=await sb('loan_repayments').select('id',{count:'exact',head:true});
-    const receiptNo=`RCP-${new Date().getFullYear()}-${String((countData?.length||0)+1).padStart(5,'0')}`;
+    const receiptNo=`RCP-${new Date().getFullYear()}-${Date.now().toString(36).toUpperCase()}-${rndSuffix(3)}`;
 
     const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:$('#payDate').value,principal_portion:amount*0.7,interest_portion:amount*0.3,penalty_portion:0,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
@@ -1852,6 +1939,8 @@ async function printReceipt(id){
   doc.text('Thank you for your payment',40,y,{align:'center'});
   doc.save(`Receipt_${rep.receipt_no}.pdf`);toast('Receipt downloaded','success');
 }
+
+async function deleteRepayment(id,loanId,amount){if(!await confirm_('Delete this repayment? Loan balance will be restored.'))return;try{const{error}=await sb('loan_repayments').delete().eq('id',id);if(error)throw error;if(loanId&&amount){const{data:loan}=await sb('loans').select('outstanding_balance,total_paid,status').eq('id',loanId).maybeSingle();if(loan){await sb('loans').update({outstanding_balance:Number(loan.outstanding_balance)+Number(amount),total_paid:Math.max(0,Number(loan.total_paid)-Number(amount)),status:'active'}).eq('id',loanId);}}await audit('repayment_deleted','loan_repayments',id,null,{amount});toast('Repayment deleted','success');renderRepayments();}catch(e){toast(e.message,'error')}}
 
 function exportRepaymentsExcel(){
   const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Amount:r.amount,Method:r.payment_method,Reference:r.payment_reference,Date:r.payment_date}));
@@ -1903,7 +1992,7 @@ async function addFollowUp(loanId,clientId){
 
 async function saveFollowUp(loanId,clientId){
   try{
-    await sb('loan_follow_ups').insert({loan_id:loanId,client_id:clientId,officer_id:currentUser?.id,follow_up_type:$('#fuType').value,notes:$('#fuNotes').value,outcome:$('#fuOutcome').value,follow_up_date:today(),next_follow_up_date:$('#fuNext').value||null});
+    await sb('loan_follow_ups').insert({loan_id:loanId,client_id:clientId,business_id:currentUser?.business_id,officer_id:currentUser?.id,follow_up_type:$('#fuType').value,notes:$('#fuNotes').value,outcome:$('#fuOutcome').value,follow_up_date:today(),next_follow_up_date:$('#fuNext').value||null});
     toast('Follow-up recorded','success');closeModal();
   }catch(e){toast(e.message,'error')}
 }
@@ -1991,7 +2080,7 @@ function openAddStaffModal(s){
     <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div><div class="form-group"><label>Role</label><select class="select" id="stRole"><option value="admin" ${s.role==='admin'?'selected':''}>Admin (Manager)</option><option value="loan_officer" ${s.role==='loan_officer'?'selected':''}>Loan Officer</option><option value="cashier" ${s.role==='cashier'?'selected':''}>Cashier/Accountant</option><option value="viewer" ${s.role==='viewer'?'selected':''}>Viewer (Support)</option></select></div></div>
     <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
     <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">Staff must sign in with Google or phone to link their account. Set their email/phone here to match.</p>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button></div>
+    <div class="modal-actions">${s.id?`<button class="btn btn-danger" onclick="deleteStaff('${s.id}')">Delete</button>`:''}<button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button></div>
   `);
 }
 
@@ -2012,6 +2101,7 @@ async function saveStaff(id){
 }
 
 async function editStaff(id){const{data:s}=await sb('loan_staff').select('*').eq('id',id).single();if(s)openAddStaffModal(s)}
+async function deleteStaff(id){if(!await confirm_('Delete this staff member?'))return;try{const{error}=await sb('loan_staff').delete().eq('id',id);if(error)throw error;await audit('staff_deleted','loan_staff',id,null,null);toast('Staff deleted','success');closeModal();renderStaff();}catch(e){toast(e.message,'error')}}
 
 // ═══ CALCULATOR ═══
 function renderCalculator(){
@@ -2182,7 +2272,7 @@ async function applyRolloverPenalties(){
         // Apply rollover daily after grace period (or adjust to once total — currently once per day)
         const penaltyAmt=Number(loan.outstanding_balance)*0.15;
         await sb('loan_penalties').insert({
-          loan_id:loan.id,
+          loan_id:loan.id,business_id:loan.business_id,
           penalty_amount:penaltyAmt,
           reason:'Rollover Penalty (15%)',
           date_charged:todayStr,
