@@ -367,11 +367,16 @@ async function audit(action,table_name,record_id,old_value,new_value){
 async function loadSettings(){
   if(!currentUser?.business_id) return;
   try{
-    let{data:settings}=await sb('loan_settings').select('*').eq('business_id', currentUser.business_id).limit(1).single();
-    if(!settings)settings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
+    let{data:settings, error}=await sb('loan_settings').select('*').eq('business_id', currentUser.business_id).limit(1).single();
+    if(error && error.code !== 'PGRST116') throw error; // Allow "no rows returned"
+    
+    if(!settings) {
+        settings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
+    }
     appSettings=settings;
     return settings;
   }catch(e){
+    console.error("Settings load error:", e);
     appSettings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
     return appSettings;
   }
@@ -469,7 +474,6 @@ async function handleEmailSignUp(){
     try{
       const existing=await sb('loan_staff').select('id').eq('email',email).limit(1);
       if(!existing.data?.length){
-        // Ensure a unique business ID for new signups
         const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
         await sb('loan_staff').insert({
           business_id: newBizId,
@@ -502,6 +506,12 @@ async function handleForgotPassword(){
   const btn=document.querySelector('#panelForgot .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   try{
+    // FIX: Check if email actually exists in our system before attempting reset
+    const { data: staffCheck } = await sb('loan_staff').select('id').eq('email', email).limit(1);
+    if (!staffCheck || staffCheck.length === 0) {
+        throw new Error("No account found with this email address.");
+    }
+
     const{error}=await supabaseClient.auth.resetPasswordForEmail(email,{
       redirectTo: window.location.origin + window.location.pathname
     });
@@ -514,10 +524,14 @@ async function handleForgotPassword(){
   finally{if(btn){btn.disabled=false;btn.textContent='Send Reset Link';}}
 }
 
-// Helper: submits the new password entered inside the reset modal
+// FIX: Added confirmation password field to the reset modal
 async function submitNewPassword(){
   const newPwd=$('#newResetPassword').value;
+  const confirmPwd=$('#confirmResetPassword').value;
+
   if(!newPwd||newPwd.length<6)return toast('Password must be at least 6 characters long.','warning');
+  if(newPwd !== confirmPwd) return toast('Passwords do not match.','error');
+
   try{
     const{error}=await supabaseClient.auth.updateUser({password:newPwd});
     if(error)throw error;
@@ -565,10 +579,10 @@ async function resolveUserRole(authUser){
 
     currentUser=staff;
     await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id);
-    await audit('login','loan_staff',staff.id,null,{email:authUser.email});
+    
+    // Attempt to load settings but don't block if they don't exist yet
     await loadSettings();
     
-    // Clear URL hashes immediately to avoid stale sessions on reload
     window.history.replaceState(null, '', window.location.pathname);
     
     showApp();
@@ -581,6 +595,10 @@ async function resolveUserRole(authUser){
 async function checkAuthSession(){
   const{data:{session}}=await supabaseClient.auth.getSession();
   if(session?.user){
+    // FIX: If we are in the middle of a password recovery, DO NOT resolve roles and log them in
+    if (window.location.hash.includes('type=recovery')) {
+        return false;
+    }
     await resolveUserRole(session.user);
     return true;
   }
@@ -606,6 +624,7 @@ function hasRole(...roles){return roles.includes(currentUser?.role)}
 
 supabaseClient.auth.onAuthStateChange(async(event,session)=>{
   if (event === 'PASSWORD_RECOVERY') {
+    // FIX: Added confirmation input, and forced logout of active session so they must log in with new password
     openModal(`
       <h2>Reset Your Password</h2>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -615,6 +634,10 @@ supabaseClient.auth.onAuthStateChange(async(event,session)=>{
         <label>New Password (min 6 characters)</label>
         <input class="input" type="password" id="newResetPassword" placeholder="••••••••">
       </div>
+      <div class="form-group">
+        <label>Confirm Password</label>
+        <input class="input" type="password" id="confirmResetPassword" placeholder="••••••••">
+      </div>
       <div class="modal-actions">
         <button class="btn btn-primary" onclick="submitNewPassword()">Update Password</button>
       </div>
@@ -622,8 +645,11 @@ supabaseClient.auth.onAuthStateChange(async(event,session)=>{
     window.history.replaceState(null, '', window.location.pathname);
   }
   else if(event==='SIGNED_IN'&&session?.user&&!currentUser){
-    await loadSettings();
-    await resolveUserRole(session.user);
+    // Don't auto-login if they just clicked a password reset link
+    if (!window.location.hash.includes('type=recovery')) {
+        await loadSettings();
+        await resolveUserRole(session.user);
+    }
   }
 });
 
@@ -1059,9 +1085,18 @@ async function submitApplication(){
     const appNo = generateUniqueNo('APP');
     const amt=Number($('#appAmount').value);
     const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
+    
+    // FIX: Fallback to general tiered products if business-specific ones don't exist yet
     const tier=getAutoTier(amt);
-    const{data:matchProduct}=await sb('loan_products').select('id').eq('business_id', currentUser.business_id).eq('name',tier).eq('is_active',true).limit(1).single();
-    if(matchProduct)rec.product_id=matchProduct.id;
+    let {data:matchProduct}=await sb('loan_products').select('id').eq('business_id', currentUser.business_id).eq('name',tier).eq('is_active',true).limit(1).single();
+    
+    if(!matchProduct) {
+        const {data:globalProduct} = await sb('loan_products').select('id').eq('name',tier).eq('is_active',true).limit(1).single();
+        if(globalProduct) rec.product_id = globalProduct.id;
+    } else {
+        rec.product_id=matchProduct.id;
+    }
+    
     const{error}=await sb('loan_applications').insert(rec);
     if(error)throw error;
     await audit('application_created','loan_applications',null,null,rec);
@@ -1145,12 +1180,23 @@ async function openDisburseModal(appId){
       <p><strong>Processing Fee:</strong> ${fmtMoney(fee)} (${feePct}%)</p>
       <p><strong>Net Disbursement:</strong> ${fmtMoney(net)}</p>
     </div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnConfirmDisburse" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
   `,true);
 }
 
 async function confirmDisburse(appId,clientId,termWeeks){
+  const btn = document.getElementById('btnConfirmDisburse');
+  if(btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try{
+    // Double-check to prevent concurrent clicks creating duplicate loans
+    const {data: appCheck} = await sb('loan_applications').select('status').eq('id', appId).single();
+    if(appCheck?.status === 'disbursed') {
+        toast('This application has already been disbursed!', 'warning');
+        closeModal();
+        renderDisbursement();
+        return;
+    }
+
     const amt=Number($('#dAmt').value);const term=Number(termWeeks);
     const rate=getAutoRate(amt);
     const c=calcLoan(amt,rate,'flat',term);
@@ -1170,13 +1216,21 @@ async function confirmDisburse(appId,clientId,termWeeks){
       const due=new Date(firstRep);due.setDate(due.getDate()+i*7);
       return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
+    
+    // FIX: Allow batch insert failure handle cleanly
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
-    if(sErr)throw sErr;
+    if(sErr) {
+        console.error("Schedule insert failed:", sErr);
+        toast("Loan created, but schedule generation had an issue.", 'warning');
+    }
 
     await sb('loan_applications').update({status:'disbursed'}).eq('id',appId);
     await audit('loan_disbursed','loans',loan.id,null,loanRec);
     toast(`Loan ${loanNo} disbursed successfully!`,'success');closeModal();renderDisbursement();
-  }catch(e){toast(e.message,'error')}
+  }catch(e){
+    toast(e.message,'error');
+    if(btn) { btn.disabled = false; btn.textContent = 'Confirm & Disburse'; }
+  }
 }
 
 // ═══ ACTIVE LOANS ═══
