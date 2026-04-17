@@ -279,13 +279,7 @@ const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
 // Added custom storageKey to prevent GoTrue orphaned lock hanging in the browser
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { 
-        storageKey: 'bripta-auth-mobile-safe',
-        storage: window.localStorage,
-        autoRefreshToken: true,
-        persistSession: true,
-        detectSessionInUrl: true
-    }
+    auth: { storageKey: 'bripta-main-auth-v2' }
 });
 // Secondary client used ONLY for Admin creating staff without logging themselves out
 const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -511,15 +505,22 @@ async function handleEmailLogin(){
   const btn=document.querySelector('#panelSignIn .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Signing in...';}
   
-  // Mobile Safety: Prevent permanent hanging if connection drops or lock gets stuck
+  // Nuke stuck locks right before sign in
+  try {
+      for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('lock:')) localStorage.removeItem(key);
+      }
+  } catch(e) {}
+
   let isDone = false;
   const watchdog = setTimeout(() => {
       if(!isDone && btn) { 
           btn.disabled = false; 
           btn.textContent = 'Sign In'; 
-          toast('Connection timeout. Please check your internet or refresh the page.', 'error');
+          toast('Connection timeout or browser hang. Please try again.', 'error');
       }
-  }, 10000);
+  }, 8000);
 
   try{
     const{data,error}=await supabaseClient.auth.signInWithPassword({email,password:pwd});
@@ -721,11 +722,16 @@ function showApp(){
   $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue" style="max-width:200px;white-space:normal;display:inline-block">${displayRole}</span>`;
   buildSidebar();
   
-  // Navigate to correct default view based on roles
-  if(hasRole('admin', 'branch_manager')) navigateTo('dashboard');
-  else if(hasRole('cashier')) navigateTo('repayments');
-  else if(hasRole('loan_officer')) navigateTo('clients');
-  else navigateTo('calculator');
+  // Restore previous section or navigate to default view based on roles
+  const savedSection = localStorage.getItem('bripta_last_section');
+  if (savedSection) {
+      navigateTo(savedSection);
+  } else {
+      if(hasRole('admin', 'branch_manager')) navigateTo('dashboard');
+      else if(hasRole('cashier')) navigateTo('repayments');
+      else if(hasRole('loan_officer')) navigateTo('clients');
+      else navigateTo('calculator');
+  }
   
   setTimeout(applyRolloverPenalties,2000);
 }
@@ -858,6 +864,7 @@ supabaseClient.auth.onAuthStateChange(async(event,session)=>{
 // ═══ NAVIGATION ═══
 function navigateTo(section){
   currentSection=section;
+  try { localStorage.setItem('bripta_last_section', section); } catch(e) {}
   $$('.nav-item').forEach(n=>{n.classList.toggle('active',n.dataset.section===section)});
   document.querySelector('.sidebar')?.classList.remove('open');
   const main=$('#mainContent');
@@ -1554,16 +1561,34 @@ async function renderRepayments(page=1){
     const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.repayments=reps||[];
 
+    const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
+    const filteredReps = filterByDate(cachedData.repayments, 'payment_date', f);
+    const p = paginate(filteredReps, page);
+    
+    const periodTotal = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
+
     const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
+    // Filter mpesaQueue by business
+    const myQueue = (mpesaQueue||[]).filter(q => q.business_short_code === currentUser.business_id || !q.business_short_code);
 
     main.innerHTML=`
-      <div class="page-header"><h1>Repayments</h1><div><span style="font-size:13px;color:var(--text-secondary);margin-right:12px">Today: <strong style="color:var(--accent-green)">${fmtMoney(todayTotal)}</strong></span><button class="btn btn-outline btn-sm" onclick="exportRepaymentsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openPaymentModal()">+ Record Payment</button></div></div>
-      ${(mpesaQueue||[]).length>0?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow)"><h3 style="font-size:14px;margin-bottom:8px;color:var(--accent-yellow)">Pending M-Pesa Confirmations (${mpesaQueue.length})</h3>
+      <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
+        <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px">
+            <h1 style="margin:0">Repayments</h1>
+            <div>
+                <span style="font-size:13px;color:var(--text-secondary);margin-right:12px">Period Total: <strong style="color:var(--accent-green)">${fmtMoney(periodTotal)}</strong></span>
+                <button class="btn btn-outline btn-sm" onclick="exportRepaymentsExcel()">Export Excel</button> 
+                <button class="btn btn-primary btn-sm" onclick="openPaymentModal()">+ Record Payment</button>
+            </div>
+        </div>
+        ${getDateFilterHtml('repayments')}
+      </div>
+      ${myQueue.length>0?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow)"><h3 style="font-size:14px;margin-bottom:8px;color:var(--accent-yellow)">Pending M-Pesa Confirmations (${myQueue.length})</h3>
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
-        ${mpesaQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button></td></tr>`).join('')}
+        ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button></td></tr>`).join('')}
         </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Loan</th><th>Amount</th><th>Method</th><th>Reference</th><th>Date</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded</td></tr>'}
+      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
