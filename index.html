@@ -276,7 +276,10 @@ tr:hover{background:rgba(59,130,246,.03)}
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Added custom storageKey to prevent GoTrue orphaned lock hanging in the browser
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { storageKey: 'bripta-main-auth-v2' }
+});
 // Secondary client used ONLY for Admin creating staff without logging themselves out
 const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, storageKey: 'bripta-admin-auth' }
@@ -1687,6 +1690,10 @@ async function renderOverdue(){
 async function addFollowUp(loanId,clientId){
   openModal(`
     <h2>Add Follow-Up</h2>
+    <div style="margin-bottom:16px; display:flex; gap:8px;">
+        <a href="tel:${clientId}" class="btn btn-success btn-sm" title="Click to call from your device">📞 Call Client</a>
+        <a href="sms:${clientId}" class="btn btn-primary btn-sm" title="Click to text from your device">💬 SMS Client</a>
+    </div>
     <div class="form-group"><label>Type</label><select class="select" id="fuType"><option value="call">Phone Call</option><option value="visit">Field Visit</option><option value="sms">SMS</option><option value="email">Email</option><option value="legal_notice">Legal Notice</option></select></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="fuNotes"></textarea></div>
     <div class="form-group"><label>Outcome</label><input class="input" id="fuOutcome"></div>
