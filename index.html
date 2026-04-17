@@ -149,6 +149,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 .charts-grid{grid-template-columns:1fr}
 .modal{margin:10px;max-height:95vh;border-radius:12px}
 .search-bar .input,.search-bar .select{max-width:100%;flex:1}
+.login-box { padding: 32px 20px; width: 92%; margin: 0 auto; }
 }
 </style>
 </head>
@@ -278,7 +279,13 @@ const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
 // Added custom storageKey to prevent GoTrue orphaned lock hanging in the browser
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { storageKey: 'bripta-main-auth-v2' }
+    auth: { 
+        storageKey: 'bripta-auth-mobile-safe',
+        storage: window.localStorage,
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true
+    }
 });
 // Secondary client used ONLY for Admin creating staff without logging themselves out
 const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -503,8 +510,21 @@ async function handleEmailLogin(){
   if(!email||!pwd)return toast('Enter your email and password','warning');
   const btn=document.querySelector('#panelSignIn .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Signing in...';}
+  
+  // Mobile Safety: Prevent permanent hanging if connection drops or lock gets stuck
+  let isDone = false;
+  const watchdog = setTimeout(() => {
+      if(!isDone && btn) { 
+          btn.disabled = false; 
+          btn.textContent = 'Sign In'; 
+          toast('Connection timeout. Please check your internet or refresh the page.', 'error');
+      }
+  }, 10000);
+
   try{
     const{data,error}=await supabaseClient.auth.signInWithPassword({email,password:pwd});
+    isDone = true;
+    clearTimeout(watchdog);
     if(error){
       if(error.message.toLowerCase().includes('email not confirmed')){
         toast('Please confirm your email first. Check your inbox for a confirmation link.','warning');
