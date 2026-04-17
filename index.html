@@ -507,9 +507,9 @@ async function handleForgotPassword(){
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   try{
     // FIX: Check if email actually exists in our system before attempting reset
-    const { data: staffCheck } = await sb('loan_staff').select('id').eq('email', email).limit(1);
+    const { data: staffCheck } = await sb('loan_staff').select('id').ilike('email', email).limit(1);
     if (!staffCheck || staffCheck.length === 0) {
-        throw new Error("No account found with this email address.");
+        throw new Error("This email is not registered in the system.");
     }
 
     const{error}=await supabaseClient.auth.resetPasswordForEmail(email,{
@@ -535,9 +535,10 @@ async function submitNewPassword(){
   try{
     const{error}=await supabaseClient.auth.updateUser({password:newPwd});
     if(error)throw error;
-    toast('Password updated successfully! Please sign in.','success');
+    toast('Password updated successfully! Please sign in with your new password.','success');
     closeModal();
-    supabaseClient.auth.signOut();
+    await supabaseClient.auth.signOut();
+    document.getElementById('loginPassword').value = '';
     switchAuthTab('signin');
   }catch(e){toast(e.message,'error');}
 }
