@@ -279,7 +279,7 @@ const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 // Secondary client used ONLY for Admin creating staff without logging themselves out
 const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false }
+    auth: { persistSession: false, autoRefreshToken: false, storageKey: 'bripta-admin-auth' }
 });
 let sb = (table) => supabaseClient.from(table);
 
@@ -355,8 +355,8 @@ async function audit(action,table_name,record_id,old_value,new_value){
 async function loadSettings(){
   if(!currentUser?.business_id) return;
   try{
-    let{data:settings, error}=await sb('loan_settings').select('*').eq('business_id', currentUser.business_id).limit(1).single();
-    if(error && error.code !== 'PGRST116') throw error; // Allow "no rows returned"
+    let{data:settings, error}=await sb('loan_settings').select('*').eq('business_id', currentUser.business_id).maybeSingle();
+    if(error) throw error;
     
     if(!settings) {
         settings={company_name:'Bripta',currency:'KES',default_grace_period:7,default_late_penalty_pct:5,default_processing_fee_pct:3,standard_weekly_rate:5,micro_weekly_rate:6.25,micro_threshold:4000,disbursement_method:'cash',mpesa_auto_confirm:false};
@@ -1735,6 +1735,13 @@ function openAddStaffModal(s){
       </div>
     </div>
     
+    ${s.id ? `
+    <div style="margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-dark);">
+      <strong style="font-size: 13px; display: block; margin-bottom: 8px;">Security</strong>
+      <button class="btn btn-outline btn-sm" onclick="sendStaffReset('${s.email}')">Send Password Reset Link</button>
+      <p style="font-size: 11px; color: var(--text-secondary); margin-top: 6px;">Passwords are encrypted and cannot be viewed. If they forgot their password, send them a reset link.</p>
+    </div>
+    ` : ''}
     <div class="modal-actions">
       ${s.id && s.id !== currentUser.id ? `<button class="btn btn-danger" style="margin-right:auto" onclick="deleteStaff('${s.id}')">Delete Staff</button>` : ''}
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
@@ -1772,7 +1779,7 @@ async function saveStaff(id){
         if (authErr) {
             // Handle case where email exists in Auth but not in our staff table
             if (authErr.message.includes('already registered')) {
-                toast('Note: Email already exists in Auth system. Linking to existing credentials.', 'info');
+                toast('Note: This email is already registered in the system. The password you just typed was ignored; they must use their existing password.', 'warning');
             } else {
                 throw authErr;
             }
@@ -1796,6 +1803,17 @@ async function saveStaff(id){
     toast(e.message,'error');
     if(btn) { btn.disabled = false; btn.textContent = id ? 'Update' : 'Save'; }
   }
+}
+
+async function sendStaffReset(email) {
+    if(!await confirm_('Send a password reset link to ' + email + '?')) return;
+    try {
+        const {error} = await supabaseClient.auth.resetPasswordForEmail(email, {
+            redirectTo: window.location.origin + window.location.pathname
+        });
+        if(error) throw error;
+        toast('Reset link sent to ' + email, 'success');
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 async function deleteStaff(id) {
