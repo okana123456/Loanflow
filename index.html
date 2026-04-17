@@ -277,6 +277,10 @@ tr:hover{background:rgba(59,130,246,.03)}
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Secondary client used ONLY for Admin creating staff without logging themselves out
+const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+});
 let sb = (table) => supabaseClient.from(table);
 
 // ═══ STATE ═══
@@ -456,8 +460,8 @@ async function handleEmailSignUp(){
     if(error)return toast(error.message,'error');
 
     try{
-      const existing=await sb('loan_staff').select('id').eq('email',email).limit(1);
-      if(!existing.data?.length){
+      const existing=await sb('loan_staff').select('id').ilike('email',email).limit(1);
+      if(!existing.data || existing.data.length === 0){
         const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
         await sb('loan_staff').insert({
           business_id: newBizId,
@@ -530,26 +534,36 @@ async function submitNewPassword(){
 async function resolveUserRole(authUser){
   if(!authUser)return toast('Authentication failed','error');
   try{
-    let{data:staff}=await sb('loan_staff').select('*').eq('auth_user_id',authUser.id).single();
+    let staff = null;
+    
+    // 1. Try to find by exact auth_user_id first
+    let { data: staffData } = await sb('loan_staff').select('*').eq('auth_user_id', authUser.id).limit(1);
+    if (staffData && staffData.length > 0) {
+        staff = staffData[0];
+    }
 
-    if(!staff&&authUser.email){
-      const{data:byEmail}=await sb('loan_staff').select('*').eq('email',authUser.email).single();
-      if(byEmail){
-        await sb('loan_staff').update({auth_user_id:authUser.id,last_login:new Date().toISOString()}).eq('id',byEmail.id);
-        staff=byEmail;
+    // 2. If not found by ID, try to link by email (case-insensitive)
+    if(!staff && authUser.email){
+      const { data: byEmailData } = await sb('loan_staff').select('*').ilike('email', authUser.email).limit(1);
+      if(byEmailData && byEmailData.length > 0){
+        staff = byEmailData[0];
+        // Link their new auth ID to the pre-created staff record
+        await sb('loan_staff').update({auth_user_id: authUser.id, last_login: new Date().toISOString()}).eq('id', staff.id);
       }
     }
 
+    // 3. If STILL not found anywhere, treat as a brand new company signing up
     if(!staff){
-      const name=authUser.user_metadata?.full_name||authUser.email?.split('@')[0]||'Admin';
+      const name = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Admin';
       const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
-      const{data:newStaff}=await sb('loan_staff').insert({
+      const { data: newStaffData, error: insertErr } = await sb('loan_staff').insert({
         business_id: newBizId,
-        name,email:authUser.email,auth_user_id:authUser.id,
-        role:'admin',is_active:true,last_login:new Date().toISOString()
-      }).select().single();
-      staff=newStaff;
-      toast(`Welcome, ${name}! Admin account created.`,'success');
+        name, email: authUser.email, auth_user_id: authUser.id,
+        role: 'admin', is_active: true, last_login: new Date().toISOString()
+      }).select();
+      if(insertErr) throw insertErr;
+      staff = newStaffData[0];
+      toast(`Welcome, ${name}! Admin account created.`, 'success');
     }
 
     if(!staff){
@@ -603,7 +617,13 @@ function showApp(){
   const displayRole = (currentUser.role||'viewer').split(',').map(r => r.replace(/_/g, ' ').toUpperCase()).join(', ');
   $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue" style="max-width:200px;white-space:normal;display:inline-block">${displayRole}</span>`;
   buildSidebar();
-  navigateTo('dashboard');
+  
+  // Navigate to correct default view based on roles
+  if(hasRole('admin', 'branch_manager')) navigateTo('dashboard');
+  else if(hasRole('cashier')) navigateTo('repayments');
+  else if(hasRole('loan_officer')) navigateTo('clients');
+  else navigateTo('calculator');
+  
   setTimeout(applyRolloverPenalties,2000);
 }
 
@@ -612,21 +632,21 @@ function buildSidebar() {
   const nav = document.getElementById('sidebarNav');
   
   const menu = [
-    { id: 'dashboard', icon: 'D', label: 'Dashboard', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    { id: 'dashboard', icon: 'D', label: 'Dashboard', roles: ['admin', 'branch_manager'] },
     
     { isHeader: true, label: 'Lending', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
-    { id: 'clients', icon: 'C', label: 'Clients', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
-    { id: 'products', icon: 'P', label: 'Loan Products', roles: ['admin', 'branch_manager', 'viewer'] },
-    { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
+    { id: 'clients', icon: 'C', label: 'Clients', roles: ['admin', 'branch_manager', 'loan_officer'] },
+    { id: 'products', icon: 'P', label: 'Loan Products', roles: ['admin', 'branch_manager'] },
+    { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
-    { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
-    { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier', 'viewer'] },
-    { id: 'overdue', icon: '!', label: 'Overdue', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
+    { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier'] },
+    { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'overdue', icon: '!', label: 'Overdue', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
     { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
     { id: 'reports', icon: '+', label: 'Reports', roles: ['admin', 'branch_manager'] },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
-    { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
     { isHeader: true, label: 'System', roles: ['admin'] },
     { id: 'settings', icon: '*', label: 'Settings', roles: ['admin'] },
@@ -1689,10 +1709,22 @@ function openAddStaffModal(s){
   
   openModal(`
     <h2>${s.id?'Edit':'Add'} Staff</h2>
-    <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div><div class="form-group"><label>Email</label><input class="input" id="stEmail" value="${s.email||''}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div>
+      <div class="form-group"><label>Email *</label><input class="input" id="stEmail" value="${s.email||''}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div>
       <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
     </div>
+    
+    ${!s.id ? `
+    <div class="form-group">
+      <label>Set Initial Password *</label>
+      <input class="input" type="password" id="stPwd" placeholder="Min 6 characters">
+    </div>
+    ` : ''}
+
     <div class="form-group">
       <label>Roles (Select all that apply)</label>
       <div style="display:flex;gap:12px;flex-wrap:wrap;background:var(--bg-dark);padding:12px;border-radius:8px;border:1px solid var(--border)">
@@ -1700,32 +1732,81 @@ function openAddStaffModal(s){
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="branch_manager" ${isChecked('branch_manager')}> Manager</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="loan_officer" ${isChecked('loan_officer')}> Loan Officer</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="cashier" ${isChecked('cashier')}> Cashier</label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="viewer" ${isChecked('viewer')}> Viewer</label>
       </div>
     </div>
-    <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">Staff must sign in with their registered email and create their own password.</p>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button></div>
+    
+    <div class="modal-actions">
+      ${s.id && s.id !== currentUser.id ? `<button class="btn btn-danger" style="margin-right:auto" onclick="deleteStaff('${s.id}')">Delete Staff</button>` : ''}
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button>
+    </div>
   `);
 }
 
 async function saveStaff(id){
   const name=$('#stName').value;
-  if(!name)return toast('Name is required','warning');
+  const email=$('#stEmail').value;
+  if(!name || !email)return toast('Name and Email are required','warning');
   
   const selectedRoles = Array.from($$('.st-role-cb:checked')).map(cb => cb.value).join(',');
   if(!selectedRoles) return toast('Select at least one role', 'warning');
   
+  const btn = document.querySelector('.modal-actions .btn-primary');
+  if(btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
   try{
-    const rec={name,email:$('#stEmail').value||null,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true'};
+    let authUserId = null;
+    
+    // If creating a NEW staff member, register them with Supabase Auth first
+    if (!id) {
+        const pwd = $('#stPwd').value;
+        if (!pwd || pwd.length < 6) throw new Error('Password must be at least 6 characters');
+        
+        // Use the secondary client so the Admin doesn't get logged out!
+        const { data: authData, error: authErr } = await adminAuthClient.auth.signUp({
+            email: email,
+            password: pwd,
+            options: { data: { full_name: name } }
+        });
+        
+        if (authErr) {
+            // Handle case where email exists in Auth but not in our staff table
+            if (authErr.message.includes('already registered')) {
+                toast('Note: Email already exists in Auth system. Linking to existing credentials.', 'info');
+            } else {
+                throw authErr;
+            }
+        } else {
+            authUserId = authData.user?.id;
+        }
+    }
+
+    const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true'};
+    
     if(id){
       await sb('loan_staff').update(rec).eq('id',id);
     }else{
       rec.business_id=currentUser?.business_id;
+      if (authUserId) rec.auth_user_id = authUserId;
       await sb('loan_staff').insert(rec);
     }
     await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email:rec.email});
-    toast('Staff saved','success');closeModal();renderStaff();
-  }catch(e){toast(e.message,'error')}
+    toast('Staff saved successfully','success');closeModal();renderStaff();
+  }catch(e){
+    toast(e.message,'error');
+    if(btn) { btn.disabled = false; btn.textContent = id ? 'Update' : 'Save'; }
+  }
+}
+
+async function deleteStaff(id) {
+    if(!await confirm_('Are you sure you want to permanently delete this staff member? They will lose all access.')) return;
+    try {
+        await sb('loan_staff').delete().eq('id', id);
+        await audit('staff_deleted', 'loan_staff', id, null, null);
+        toast('Staff member deleted', 'success');
+        closeModal();
+        renderStaff();
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 async function editStaff(id){const{data:s}=await sb('loan_staff').select('*').eq('id',id).single();if(s)openAddStaffModal(s)}
