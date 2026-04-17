@@ -253,30 +253,14 @@ tr:hover{background:rgba(59,130,246,.03)}
 <h2>Bripta</h2>
 <span>Smart Lending. Clear Repayments.</span>
 </div>
-<nav class="sidebar-nav">
-<div class="nav-item active" data-section="dashboard" onclick="navigateTo('dashboard')"><span class="icon">D</span>Dashboard</div>
-<div class="nav-section-label">Lending</div>
-<div class="nav-item" data-section="clients" onclick="navigateTo('clients')"><span class="icon">C</span>Clients</div>
-<div class="nav-item" data-section="products" onclick="navigateTo('products')"><span class="icon">P</span>Loan Products</div>
-<div class="nav-item" data-section="applications" onclick="navigateTo('applications')"><span class="icon">A</span>Applications</div>
-<div class="nav-item" data-section="disbursement" onclick="navigateTo('disbursement')"><span class="icon">$</span>Disbursement</div>
-<div class="nav-item" data-section="loans" onclick="navigateTo('loans')"><span class="icon">L</span>Active Loans</div>
-<div class="nav-item" data-section="repayments" onclick="navigateTo('repayments')"><span class="icon">R</span>Repayments</div>
-<div class="nav-item" data-section="overdue" onclick="navigateTo('overdue')"><span class="icon">!</span>Overdue</div>
-<div class="nav-section-label">Management</div>
-<div class="nav-item" data-section="reports" onclick="navigateTo('reports')"><span class="icon">+</span>Reports</div>
-<div class="nav-item" data-section="staff" onclick="navigateTo('staff')"><span class="icon">S</span>Staff</div>
-<div class="nav-item" data-section="calculator" onclick="navigateTo('calculator')"><span class="icon">#</span>Calculator</div>
-<div class="nav-section-label">System</div>
-<div class="nav-item" data-section="settings" onclick="navigateTo('settings')"><span class="icon">*</span>Settings</div>
-<div class="nav-item" data-section="auditlog" onclick="navigateTo('auditlog')"><span class="icon">~</span>Audit Log</div>
-</nav>
+<nav class="sidebar-nav" id="sidebarNav"></nav>
 <div class="sidebar-footer">
 <div class="user-info" id="sidebarUser">Admin</div>
 <div style="display:flex;gap:6px;margin-bottom:6px">
 <label class="toggle" title="Toggle light mode"><input type="checkbox" id="themeToggle" onchange="toggleTheme()"><span class="toggle-slider"></span></label>
 <span style="font-size:11px;line-height:24px">Light</span>
 </div>
+<button onclick="openSwitchUserModal()" style="margin-bottom:6px">Switch User</button>
 <button onclick="handleLogout()">Logout</button>
 </div>
 </aside>
@@ -616,12 +600,105 @@ function handleLogout(){
 function showApp(){
   $('#loginScreen').style.display='none';
   $('#appShell').style.display='flex';
-  $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue">${currentUser.role}</span>`;
+  const displayRole = (currentUser.role||'viewer').split(',').map(r => r.replace(/_/g, ' ').toUpperCase()).join(', ');
+  $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue" style="max-width:200px;white-space:normal;display:inline-block">${displayRole}</span>`;
+  buildSidebar();
   navigateTo('dashboard');
   setTimeout(applyRolloverPenalties,2000);
 }
 
-function hasRole(...roles){return roles.includes(currentUser?.role)}
+function buildSidebar() {
+  const userRoles = (currentUser.role || 'viewer').split(',');
+  const nav = document.getElementById('sidebarNav');
+  
+  const menu = [
+    { id: 'dashboard', icon: 'D', label: 'Dashboard', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    
+    { isHeader: true, label: 'Lending', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    { id: 'clients', icon: 'C', label: 'Clients', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
+    { id: 'products', icon: 'P', label: 'Loan Products', roles: ['admin', 'branch_manager', 'viewer'] },
+    { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
+    { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier', 'viewer'] },
+    { id: 'overdue', icon: '!', label: 'Overdue', roles: ['admin', 'branch_manager', 'loan_officer', 'viewer'] },
+    
+    { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
+    { id: 'reports', icon: '+', label: 'Reports', roles: ['admin', 'branch_manager'] },
+    { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
+    { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
+    
+    { isHeader: true, label: 'System', roles: ['admin'] },
+    { id: 'settings', icon: '*', label: 'Settings', roles: ['admin'] },
+    { id: 'auditlog', icon: '~', label: 'Audit Log', roles: ['admin'] }
+  ];
+
+  nav.innerHTML = menu.filter(item => item.roles.some(r => userRoles.includes(r))).map(item => {
+    if (item.isHeader) return `<div class="nav-section-label">${item.label}</div>`;
+    return `<div class="nav-item ${currentSection===item.id?'active':''}" data-section="${item.id}" onclick="navigateTo('${item.id}')"><span class="icon">${item.icon}</span>${item.label}</div>`;
+  }).join('');
+}
+
+function hasRole(...roles){
+    const userRoles = (currentUser?.role || '').split(',');
+    return roles.some(r => userRoles.includes(r));
+}
+
+async function openSwitchUserModal() {
+    const { data: staff } = await sb('loan_staff').select('*')
+        .eq('business_id', currentUser.business_id)
+        .eq('is_active', true)
+        .not('email', 'is', null);
+        
+    let h = `<h2>Switch User</h2><p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Select an account to quickly switch sessions.</p><div style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto">`;
+    
+    const otherStaff = (staff||[]).filter(s => s.id !== currentUser.id);
+    if(otherStaff.length === 0) {
+        h += `<div class="empty-state"><p>No other active users found in this business.</p></div>`;
+    } else {
+        otherStaff.forEach(s => {
+            const rList = (s.role||'').replace(/_/g,' ').toUpperCase();
+            h += `<div class="card" style="cursor:pointer;padding:12px;border-color:var(--border);transition:border-color 0.2s" onmouseover="this.style.borderColor='var(--accent-blue)'" onmouseout="this.style.borderColor='var(--border)'" onclick="promptSwitchUser('${s.email}', '${s.name}')">
+                <strong style="display:block;margin-bottom:4px">${s.name}</strong>
+                <span style="font-size:12px;color:var(--text-secondary)">${s.email}</span>
+                <div style="margin-top:6px"><span class="badge badge-blue" style="font-size:9px">${rList}</span></div>
+            </div>`;
+        });
+    }
+    h += `</div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button></div>`;
+    openModal(h);
+}
+
+function promptSwitchUser(email, name) {
+    openModal(`
+        <h2>Sign In as ${name}</h2>
+        <div class="form-group">
+            <label>Password for ${email}</label>
+            <input class="input" type="password" id="switchPwd" placeholder="Enter password">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="openSwitchUserModal()">Back</button>
+            <button class="btn btn-primary" onclick="executeSwitchUser('${email}')">Sign In</button>
+        </div>
+    `);
+}
+
+async function executeSwitchUser(email) {
+    const pwd = $('#switchPwd').value;
+    if(!pwd) return toast('Enter password', 'warning');
+    const btn = document.querySelector('.modal-actions .btn-primary');
+    if(btn) { btn.disabled=true; btn.textContent='Switching...'; }
+    try {
+        const { data, error } = await supabaseClient.auth.signInWithPassword({email, password: pwd});
+        if(error) throw error;
+        closeModal();
+        await resolveUserRole(data.user);
+        toast(`Switched to ${email}`, 'success');
+    } catch(e) {
+        toast(e.message, 'error');
+        if(btn) { btn.disabled=false; btn.textContent='Sign In'; }
+    }
+}
 
 supabaseClient.auth.onAuthStateChange(async(event,session)=>{
   if (event === 'PASSWORD_RECOVERY') {
@@ -1591,7 +1668,7 @@ async function renderStaff(){
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
-      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td><span class="badge badge-blue">${s.role}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
+      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
       </tbody></table></div>
       <div class="card" style="margin-top:20px"><h3 style="font-size:14px;margin-bottom:8px">Role Permissions</h3>
         <div style="font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
@@ -1607,12 +1684,26 @@ async function renderStaff(){
 
 function openAddStaffModal(s){
   s=s||{};
+  const currentRoles = (s.role || 'viewer').split(',');
+  const isChecked = (val) => currentRoles.includes(val) ? 'checked' : '';
+  
   openModal(`
     <h2>${s.id?'Edit':'Add'} Staff</h2>
     <div class="form-row"><div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div><div class="form-group"><label>Email</label><input class="input" id="stEmail" value="${s.email||''}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div><div class="form-group"><label>Role</label><select class="select" id="stRole"><option value="admin" ${s.role==='admin'?'selected':''}>Admin (Manager)</option><option value="loan_officer" ${s.role==='loan_officer'?'selected':''}>Loan Officer</option><option value="cashier" ${s.role==='cashier'?'selected':''}>Cashier/Accountant</option><option value="viewer" ${s.role==='viewer'?'selected':''}>Viewer (Support)</option></select></div></div>
-    <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
-    <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">Staff must sign in with Google or phone to link their account. Set their email/phone here to match.</p>
+    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div>
+      <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
+    </div>
+    <div class="form-group">
+      <label>Roles (Select all that apply)</label>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;background:var(--bg-dark);padding:12px;border-radius:8px;border:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="admin" ${isChecked('admin')}> Admin</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="branch_manager" ${isChecked('branch_manager')}> Manager</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="loan_officer" ${isChecked('loan_officer')}> Loan Officer</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="cashier" ${isChecked('cashier')}> Cashier</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" class="st-role-cb" value="viewer" ${isChecked('viewer')}> Viewer</label>
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:8px">Staff must sign in with their registered email and create their own password.</p>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button></div>
   `);
 }
@@ -1620,8 +1711,12 @@ function openAddStaffModal(s){
 async function saveStaff(id){
   const name=$('#stName').value;
   if(!name)return toast('Name is required','warning');
+  
+  const selectedRoles = Array.from($$('.st-role-cb:checked')).map(cb => cb.value).join(',');
+  if(!selectedRoles) return toast('Select at least one role', 'warning');
+  
   try{
-    const rec={name,email:$('#stEmail').value||null,phone:$('#stPhone').value||null,role:$('#stRole').value,is_active:$('#stActive').value==='true'};
+    const rec={name,email:$('#stEmail').value||null,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true'};
     if(id){
       await sb('loan_staff').update(rec).eq('id',id);
     }else{
