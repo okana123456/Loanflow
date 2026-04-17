@@ -292,6 +292,86 @@ let appSettings = null;
 
 // ═══ UTILS ═══
 const $ = (sel) => document.querySelector(sel);
+
+// Date Filter State
+let appFilters = {
+    dashboard: { type: 'this_month', start: '', end: '' },
+    accounting: { type: 'this_month', start: '', end: '' },
+    repayments: { type: 'this_month', start: '', end: '' }
+};
+
+function getDateFilterHtml(section) {
+    const f = appFilters[section];
+    if(!f) return '';
+    return `
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px">
+        <select class="select" style="max-width:180px; padding:8px 12px; font-size:13px" onchange="updateDateFilter('${section}', this.value)">
+            <option value="all" ${f.type==='all'?'selected':''}>All Time</option>
+            <option value="today" ${f.type==='today'?'selected':''}>Today</option>
+            <option value="yesterday" ${f.type==='yesterday'?'selected':''}>Yesterday</option>
+            <option value="this_week" ${f.type==='this_week'?'selected':''}>This Week</option>
+            <option value="this_month" ${f.type==='this_month'?'selected':''}>This Month</option>
+            <option value="custom" ${f.type==='custom'?'selected':''}>Custom Range</option>
+        </select>
+        <div id="${section}CustomDates" style="display:${f.type==='custom'?'flex':'none'}; gap:8px; align-items:center">
+            <input type="date" class="input" style="padding:8px 12px; font-size:13px" id="${section}Start" value="${f.start||''}">
+            <span style="font-size:13px; color:var(--text-secondary)">to</span>
+            <input type="date" class="input" style="padding:8px 12px; font-size:13px" id="${section}End" value="${f.end||''}">
+            <button class="btn btn-primary btn-sm" onclick="applyCustomDate('${section}')">Apply</button>
+        </div>
+    </div>`;
+}
+
+function updateDateFilter(section, type) {
+    appFilters[section].type = type;
+    if(type !== 'custom') {
+        if(section==='dashboard') renderDashboard();
+        if(section==='accounting') renderAccounting();
+        if(section==='repayments') renderRepayments(1);
+    } else {
+        document.getElementById(section+'CustomDates').style.display = 'flex';
+    }
+}
+
+function applyCustomDate(section) {
+    appFilters[section].start = document.getElementById(section+'Start').value;
+    appFilters[section].end = document.getElementById(section+'End').value;
+    if(section==='dashboard') renderDashboard();
+    if(section==='accounting') renderAccounting();
+    if(section==='repayments') renderRepayments(1);
+}
+
+function filterByDate(data, dateField, filterState) {
+    if (filterState.type === 'all') return data;
+    const now = new Date();
+    let sDate, eDate;
+    
+    if (filterState.type === 'today') {
+        sDate = now.toISOString().slice(0,10);
+        eDate = sDate;
+    } else if (filterState.type === 'yesterday') {
+        const y = new Date(now); y.setDate(y.getDate()-1);
+        sDate = y.toISOString().slice(0,10);
+        eDate = sDate;
+    } else if (filterState.type === 'this_week') {
+        const w = new Date(now); w.setDate(w.getDate() - w.getDay() + 1);
+        sDate = w.toISOString().slice(0,10);
+        eDate = now.toISOString().slice(0,10);
+    } else if (filterState.type === 'this_month') {
+        sDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+        eDate = new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().slice(0,10);
+    } else if (filterState.type === 'custom') {
+        sDate = filterState.start; eDate = filterState.end;
+        if(!sDate || !eDate) return data; 
+    }
+
+    return data.filter(item => {
+        const d = item[dateField];
+        if (!d) return false;
+        const ds = d.split('T')[0];
+        return ds >= sDate && ds <= eDate;
+    });
+}
 const $$ = (sel) => document.querySelectorAll(sel);
 const fmtMoney = (n) => 'KES ' + Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => {if(!d)return '-';const dt=new Date(d);return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`};
@@ -645,6 +725,7 @@ function buildSidebar() {
     
     { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
     { id: 'reports', icon: '+', label: 'Reports', roles: ['admin', 'branch_manager'] },
+    { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager'] },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
     { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
@@ -762,7 +843,7 @@ function navigateTo(section){
     dashboard:renderDashboard,clients:renderClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,
-    staff:renderStaff,calculator:renderCalculator,
+    accounting:renderAccounting,staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
   if(renderers[section])renderers[section]();
@@ -811,6 +892,13 @@ async function renderDashboard(){
     const allApps=appsR.data||[];
     cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps};
 
+    // Apply Filters to Flow Metrics
+    const f = appFilters.dashboard;
+    const filteredDisbursed = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
+    const filteredReps = filterByDate(allReps, 'payment_date', f);
+    const filteredApps = filterByDate(allApps, 'created_at', f);
+
+    // Global Snapshots (Not filtered by date)
     const active=allLoans.filter(l=>l.status==='active');
     const portfolio=active.reduce((s,l)=>s+Number(l.principal_amount||0),0);
     const outstanding=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
@@ -819,25 +907,35 @@ async function renderDashboard(){
     const par30val=par30.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const par30pct=portfolio>0?(par30val/portfolio*100):0;
 
-    const now=new Date();const monthStart=new Date(now.getFullYear(),now.getMonth(),1).toISOString().slice(0,10);
-    const disbThisMonth=allLoans.filter(l=>l.disbursement_date&&l.disbursement_date>=monthStart).reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
-    const repToday=allReps.filter(r=>r.payment_date===today()).reduce((s,r)=>s+Number(r.amount||0),0);
-    const dueToday=allScheds.filter(s=>s.due_date===today()&&s.status!=='paid').length;
-    const weekAgo=new Date(now-7*86400000).toISOString();
-    const newApps=allApps.filter(a=>a.created_at>=weekAgo).length;
+    // Filtered Metrics
+    const disbPeriod = filteredDisbursed.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
+    const repPeriod = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
+    const appsPeriod = filteredApps.length;
 
     main.innerHTML=`
-      <div class="page-header"><h1>Dashboard</h1><button class="btn btn-outline" onclick="navigateTo('dashboard')">Refresh</button></div>
+      <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
+        <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
+            <h1 style="margin:0">Dashboard</h1>
+            <button class="btn btn-outline" onclick="navigateTo('dashboard')">Refresh</button>
+        </div>
+        ${getDateFilterHtml('dashboard')}
+      </div>
+      
+      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px">Selected Period Performance</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Disbursed</div><div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbPeriod)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Repayments Collected</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(repPeriod)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">New Applications</div><div class="kpi-value" style="color:var(--accent-blue)">${appsPeriod}</div></div>
+      </div>
+
+      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; margin-top:12px; border-bottom:1px solid var(--border); padding-bottom:8px">Global Portfolio Snapshot (All Time)</h3>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
-        <div class="kpi-card"><div class="kpi-label">Active Loans</div><div class="kpi-value">${active.length}</div><div class="kpi-sub">Outstanding: ${fmtMoney(outstanding)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Disbursed This Month</div><div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbThisMonth)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Repayments Today</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(repToday)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Active Outstanding</div><div class="kpi-value">${fmtMoney(outstanding)}</div></div>
         <div class="kpi-card"><div class="kpi-label">Overdue Loans</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div></div>
         <div class="kpi-card"><div class="kpi-label">PAR 30</div><div class="kpi-value" style="color:${par30pct>10?'var(--accent-red)':'var(--accent-yellow)'}">${par30pct.toFixed(1)}%</div></div>
-        <div class="kpi-card"><div class="kpi-label">Due Today</div><div class="kpi-value">${dueToday}</div></div>
-        <div class="kpi-card"><div class="kpi-label">New Applications</div><div class="kpi-value" style="color:var(--accent-blue)">${newApps}</div><div class="kpi-sub">This week</div></div>
       </div>
+      
       <div class="charts-grid">
         <div class="chart-card"><h3>Loan Status Breakdown</h3><canvas id="chartStatus"></canvas></div>
         <div class="chart-card"><h3>Monthly Disbursements vs Repayments</h3><canvas id="chartMonthly"></canvas></div>
@@ -1432,8 +1530,6 @@ async function renderRepayments(page=1){
   try{
     const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.repayments=reps||[];
-    const p=paginate(reps||[],page);
-    const todayTotal=(reps||[]).filter(r=>r.payment_date===today()).reduce((s,r)=>s+Number(r.amount||0),0);
 
     const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
 
@@ -1677,6 +1773,69 @@ async function genIncomeReport(){
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Income');
     XLSX.writeFile(wb, 'Bripta_Income_Report.xlsx');
     toast('Income Report exported', 'success');
+}
+
+
+// ═══ ACCOUNTING ═══
+async function renderAccounting() {
+  const main=$('#mainContent');
+  if(!currentUser?.business_id) return;
+  try{
+    const[loansR,repR]=await Promise.all([
+      sb('loans').select('*').eq('business_id', currentUser.business_id),
+      sb('loan_repayments').select('*').eq('business_id', currentUser.business_id)
+    ]);
+    const allLoans = loansR.data||[];
+    const allReps = repR.data||[];
+    
+    const f = appFilters.accounting;
+    const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
+    const filteredReps = filterByDate(allReps, 'payment_date', f);
+
+    const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
+    const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
+    
+    const principalRecovered = filteredReps.reduce((s,r)=>s+Number(r.principal_portion||0),0);
+    const interestCollected = filteredReps.reduce((s,r)=>s+Number(r.interest_portion||0),0);
+    const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
+    
+    const totalRevenue = processingFees + interestCollected + penaltiesCollected;
+
+    main.innerHTML=`
+      <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
+        <h1 style="margin-bottom:12px">Accounting & Revenue</h1>
+        ${getDateFilterHtml('accounting')}
+      </div>
+      
+      <div class="kpi-grid">
+        <div class="kpi-card" style="border-top: 4px solid var(--accent-green)"><div class="kpi-label">Net Profit (Revenue)</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(totalRevenue)}</div><div class="kpi-sub">Fees + Interest + Penalties</div></div>
+        <div class="kpi-card"><div class="kpi-label">Processing Fees</div><div class="kpi-value">${fmtMoney(processingFees)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Interest Collected</div><div class="kpi-value">${fmtMoney(interestCollected)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Penalties Collected</div><div class="kpi-value">${fmtMoney(penaltiesCollected)}</div></div>
+      </div>
+      
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px">
+        <div class="card">
+            <h3 style="font-size:16px;margin-bottom:16px;color:var(--accent-purple)">Capital Movement</h3>
+            <div style="display:flex;justify-content:space-between;margin-bottom:12px;font-size:14px;border-bottom:1px solid var(--border);padding-bottom:8px">
+                <span>Principal Disbursed (Money Out)</span>
+                <strong style="color:var(--accent-red)">${fmtMoney(principalDisbursed)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:14px">
+                <span>Principal Recovered (Money In)</span>
+                <strong style="color:var(--accent-blue)">${fmtMoney(principalRecovered)}</strong>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3 style="font-size:14px;margin-bottom:12px">Note on Revenue Calculation</h3>
+            <p style="font-size:13px;color:var(--text-secondary);line-height:1.6">
+                <strong>Net Profit / Revenue</strong> represents the gross income generated from your lending operations during the selected period. It does not currently account for operational expenses (staff salaries, rent, software) or bad debt write-offs.
+            </p>
+        </div>
+      </div>
+    `;
+  } catch(e) { toast(e.message,'error') }
 }
 
 // ═══ STAFF ═══
