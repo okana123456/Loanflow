@@ -288,9 +288,31 @@ let sb = (table) => supabaseClient.from(table);
 // ═══ STATE ═══
 let currentUser = null;
 let currentSection = 'dashboard';
-let cachedData = {};
+let cachedData = { clients: [], loans: [], applications: [], repayments: [], schedules: [] };
+let clientsMap = {}; // id -> client record, populated by loadClientsCache()
 let charts = {};
-let appSettings = null; 
+let appSettings = null;
+
+// ── Client cache helpers (used by Disbursement, Applications, Active Loans, Payments) ──
+async function loadClientsCache(force){
+  if(!currentUser?.business_id) return clientsMap;
+  if(!force && Object.keys(clientsMap).length) return clientsMap;
+  try{
+    const { data } = await sb('loan_clients').select('id,full_name,phone,id_number').eq('business_id', currentUser.business_id);
+    cachedData.clients = data || cachedData.clients || [];
+    clientsMap = {};
+    (data||[]).forEach(c => { clientsMap[c.id] = c; });
+  }catch(e){ console.warn('loadClientsCache failed:', e.message); }
+  return clientsMap;
+}
+function clientNameById(id){
+  if(!id) return '-';
+  const c = clientsMap[id];
+  if(c) return c.full_name || '-';
+  // fallback: scan cachedData.clients
+  const f = (cachedData.clients||[]).find(x => x.id === id);
+  return f ? (f.full_name || '-') : (id.slice ? id.slice(0,8) : '-');
+}
 
 // ═══ KEEP ALIVE PING ═══
 // Pings Supabase to reset the 7-day pause timer
@@ -805,7 +827,7 @@ function showApp(){
   } else {
       if(hasRole('admin', 'branch_manager')) navigateTo('dashboard');
       else if(hasRole('cashier')) navigateTo('repayments');
-      else if(hasRole('loan_officer')) navigateTo('clients');
+      else if(hasRole('loan_officer')) navigateTo('officerDashboard');
       else navigateTo('calculator');
   }
   
@@ -818,6 +840,7 @@ function buildSidebar() {
   
   const menu = [
     { id: 'dashboard', icon: 'D', label: 'Dashboard', roles: ['admin', 'branch_manager'] },
+    { id: 'officerDashboard', icon: 'O', label: 'My Performance', roles: ['loan_officer'] },
     
     { isHeader: true, label: 'Lending', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
     { id: 'clients', icon: 'C', label: 'Clients', roles: ['admin', 'branch_manager', 'loan_officer'] },
@@ -963,7 +986,7 @@ function navigateTo(section){
   const main=$('#mainContent');
   showLoading(main);
   const renderers={
-    dashboard:renderDashboard,clients:renderClients,products:renderProducts,
+    dashboard:renderDashboard,officerDashboard:renderOfficerDashboard,clients:renderClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,
     accounting:renderAccounting,staff:renderStaff,calculator:renderCalculator,
@@ -1005,17 +1028,20 @@ async function renderDashboard(){
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   try{
-    const[loansR,schedR,repR,appsR]=await Promise.all([
+    const[loansR,schedR,repR,appsR,clientsR]=await Promise.all([
       sb('loans').select('*').eq('business_id', currentUser.business_id),
       sb('loan_schedules').select('*').eq('business_id', currentUser.business_id),
       sb('loan_repayments').select('*').eq('business_id', currentUser.business_id),
-      sb('loan_applications').select('*').eq('business_id', currentUser.business_id)
+      sb('loan_applications').select('*').eq('business_id', currentUser.business_id),
+      sb('loan_clients').select('*').eq('business_id', currentUser.business_id)
     ]);
     const allLoans=loansR.data||[];
     const allScheds=schedR.data||[];
     const allReps=repR.data||[];
     const allApps=appsR.data||[];
-    cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps};
+    const allClients=clientsR.data||[];
+    cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps,clients:allClients};
+    clientsMap={}; allClients.forEach(c=>{clientsMap[c.id]=c;});
 
     // Apply Filters to Flow Metrics
     const f = appFilters.dashboard;
@@ -1037,6 +1063,31 @@ async function renderDashboard(){
     const repPeriod = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const appsPeriod = filteredApps.length;
 
+    // ── New: client + collection metrics ──
+    const totalClients = allClients.length;
+    const activeClientIds = new Set(allLoans.filter(l=>l.status==='active').map(l=>l.client_id));
+    const activeClients = activeClientIds.size;
+    const inactiveClients = Math.max(0, totalClients - activeClients);
+
+    // Loan count for current month (disbursed loans this month)
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+    const monthEnd = new Date(monthStart); monthEnd.setMonth(monthEnd.getMonth()+1);
+    const loansThisMonth = allLoans.filter(l => l.disbursement_date && new Date(l.disbursement_date) >= monthStart && new Date(l.disbursement_date) < monthEnd).length;
+
+    // New clients in selected period (use dashboard date filter on created_at)
+    const newClientsPeriod = filterByDate(allClients, 'created_at', f).length;
+
+    // Collection rate: amount collected / amount due, for today and this month
+    const todayStr = today();
+    const dueToday = allScheds.filter(s => s.due_date === todayStr).reduce((s,x)=>s+Number(x.total_due||0),0);
+    const paidToday = allReps.filter(r => r.payment_date === todayStr).reduce((s,x)=>s+Number(x.amount||0),0);
+    const collectionRateDaily = dueToday>0 ? Math.min(999, (paidToday/dueToday)*100) : (paidToday>0?100:0);
+
+    const monthStartStr = monthStart.toISOString().slice(0,10);
+    const dueMonth = allScheds.filter(s => s.due_date && s.due_date >= monthStartStr && new Date(s.due_date) < monthEnd).reduce((s,x)=>s+Number(x.total_due||0),0);
+    const paidMonth = allReps.filter(r => r.payment_date && r.payment_date >= monthStartStr && new Date(r.payment_date) < monthEnd).reduce((s,x)=>s+Number(x.amount||0),0);
+    const collectionRateMonthly = dueMonth>0 ? Math.min(999, (paidMonth/dueMonth)*100) : (paidMonth>0?100:0);
+
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1053,7 +1104,22 @@ async function renderDashboard(){
         <div class="kpi-card"><div class="kpi-label">New Applications</div><div class="kpi-value" style="color:var(--accent-blue)">${appsPeriod}</div></div>
       </div>
 
-      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; margin-top:12px; border-bottom:1px solid var(--border); padding-bottom:8px">Global Portfolio Snapshot (All Time)</h3>
+      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; margin-top:16px; border-bottom:1px solid var(--border); padding-bottom:8px">Clients</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Total Clients</div><div class="kpi-value" style="color:var(--accent-blue)">${totalClients}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">have at least one active loan</div></div>
+        <div class="kpi-card"><div class="kpi-label">Inactive Clients</div><div class="kpi-value" style="color:var(--accent-yellow)">${inactiveClients}</div></div>
+        <div class="kpi-card"><div class="kpi-label">New Clients (period)</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsPeriod}</div></div>
+      </div>
+
+      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; margin-top:16px; border-bottom:1px solid var(--border); padding-bottom:8px">This Month</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Loans Disbursed (this month)</div><div class="kpi-value" style="color:var(--accent-blue)">${loansThisMonth}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Collection Rate — Daily</div><div class="kpi-value" style="color:${collectionRateDaily>=80?'var(--accent-green)':collectionRateDaily>=50?'var(--accent-yellow)':'var(--accent-red)'}">${collectionRateDaily.toFixed(1)}%</div><div class="kpi-sub">${fmtMoney(paidToday)} of ${fmtMoney(dueToday)} due today</div></div>
+        <div class="kpi-card"><div class="kpi-label">Collection Rate — Monthly</div><div class="kpi-value" style="color:${collectionRateMonthly>=80?'var(--accent-green)':collectionRateMonthly>=50?'var(--accent-yellow)':'var(--accent-red)'}">${collectionRateMonthly.toFixed(1)}%</div><div class="kpi-sub">${fmtMoney(paidMonth)} of ${fmtMoney(dueMonth)} due this month</div></div>
+      </div>
+
+      <h3 style="font-size:14px; color:var(--text-secondary); margin-bottom:12px; margin-top:16px; border-bottom:1px solid var(--border); padding-bottom:8px">Global Portfolio Snapshot (All Time)</h3>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
         <div class="kpi-card"><div class="kpi-label">Active Outstanding</div><div class="kpi-value">${fmtMoney(outstanding)}</div></div>
@@ -1095,6 +1161,72 @@ async function renderDashboard(){
   }catch(e){main.innerHTML=`<div class="empty-state"><p>Error loading dashboard: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
+// ═══ LOAN OFFICER DASHBOARD ═══
+async function renderOfficerDashboard(){
+  const main=$('#mainContent');
+  if(!currentUser?.business_id) return;
+  try{
+    await loadClientsCache(true);
+    const officerId = currentUser.id;
+    const [loansR, repsR, appsR] = await Promise.all([
+      sb('loans').select('*').eq('business_id', currentUser.business_id).eq('loan_officer_id', officerId),
+      sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).eq('collected_by', officerId),
+      sb('loan_applications').select('*').eq('business_id', currentUser.business_id).eq('loan_officer_id', officerId)
+    ]);
+    const myLoans = loansR.data || [];
+    const myReps  = repsR.data || [];
+    const myApps  = appsR.data || [];
+
+    const active = myLoans.filter(l=>l.status==='active');
+    const portfolio = active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
+    const overdue = active.filter(l=>l.overdue_days>0);
+
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+    const monthStartStr = monthStart.toISOString().slice(0,10);
+    const monthEnd = new Date(monthStart); monthEnd.setMonth(monthEnd.getMonth()+1);
+
+    const disbursedThisMonth = myLoans.filter(l => l.disbursement_date && l.disbursement_date >= monthStartStr).length;
+    const collectedThisMonth = myReps.filter(r => r.payment_date && r.payment_date >= monthStartStr).reduce((s,r)=>s+Number(r.amount||0),0);
+    const collectedToday = myReps.filter(r => r.payment_date === today()).reduce((s,r)=>s+Number(r.amount||0),0);
+
+    const par30val = active.filter(l=>l.overdue_days>30).reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
+    const par30pct = portfolio>0 ? (par30val/portfolio*100) : 0;
+
+    main.innerHTML = `
+      <div class="page-header"><h1>My Performance</h1><button class="btn btn-outline" onclick="navigateTo('officerDashboard')">Refresh</button></div>
+      <p style="color:var(--text-secondary);margin-bottom:16px">Welcome ${currentUser.name||currentUser.email}. Here is your personal performance snapshot.</p>
+
+      <h3 style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:8px">My Portfolio</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">My Active Loans</div><div class="kpi-value" style="color:var(--accent-blue)">${active.length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">My Outstanding Portfolio</div><div class="kpi-value">${fmtMoney(portfolio)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">My Overdue Loans</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">My PAR 30</div><div class="kpi-value" style="color:${par30pct>10?'var(--accent-red)':'var(--accent-yellow)'}">${par30pct.toFixed(1)}%</div></div>
+      </div>
+
+      <h3 style="font-size:14px;color:var(--text-secondary);margin:16px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px">Activity</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="kpi-label">Loans Disbursed (this month)</div><div class="kpi-value" style="color:var(--accent-purple)">${disbursedThisMonth}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Collected Today</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(collectedToday)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Collected This Month</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(collectedThisMonth)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">My Applications (total)</div><div class="kpi-value" style="color:var(--accent-blue)">${myApps.length}</div></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px">
+        <div class="card">
+          <h3 style="margin-bottom:12px;font-size:14px;font-weight:700">My Overdue Loans</h3>
+          <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Overdue</th><th>Balance</th></tr></thead><tbody>
+          ${overdue.sort((a,b)=>b.overdue_days-a.overdue_days).slice(0,15).map(l=>`<tr><td>${l.loan_no||'-'}</td><td>${clientNameById(l.client_id)}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>${fmtMoney(l.outstanding_balance)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No overdue loans 🎉</td></tr>'}
+          </tbody></table></div>
+        </div>
+      </div>
+    `;
+  } catch(e){
+    main.innerHTML = `<div class="empty-state"><p>Error loading dashboard: ${e.message}</p></div>`;
+    toast(e.message,'error');
+  }
+}
+
 // ═══ CLIENTS ═══
 let clientPage=1;
 async function renderClients(page=1){
@@ -1104,6 +1236,7 @@ async function renderClients(page=1){
     const{data:clients,error}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     if(error)throw error;
     cachedData.clients=clients||[];
+    clientsMap = {}; (cachedData.clients||[]).forEach(c => { clientsMap[c.id] = c; });
     const p=paginate(cachedData.clients,page);
     main.innerHTML=`
       <div class="page-header"><h1>Clients</h1><div><button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
@@ -1135,23 +1268,60 @@ function openAddClientModal(){
     <div class="form-row"><div class="form-group"><label>Gender</label><select class="select" id="cGender"><option value="">Select</option><option>Male</option><option>Female</option><option>Other</option></select></div><div class="form-group"><label>Date of Birth</label><input class="input" type="date" id="cDob"></div></div>
     <div class="form-group"><label>Address</label><input class="input" id="cAddress"></div>
     <div class="form-row"><div class="form-group"><label>Occupation</label><input class="input" id="cOccupation"></div><div class="form-group"><label>Employer</label><input class="input" id="cEmployer"></div></div>
-    <div class="form-group"><label>Monthly Income</label><input class="input" type="number" id="cIncome"></div>
-    <div class="form-row"><div class="form-group"><label>Next of Kin Name</label><input class="input" id="cNokName"></div><div class="form-group"><label>Next of Kin Phone</label><input class="input" id="cNokPhone"></div></div>
-    <div class="form-group"><label>Next of Kin Relation</label><input class="input" id="cNokRel"></div>
+    <div class="form-group"><label>Daily Income (KES)</label><input class="input" type="number" id="cIncome" placeholder="Average daily income"></div>
+    <div class="card" style="background:rgba(59,130,246,0.07);border-color:var(--accent-blue);font-size:13px;margin-bottom:8px">
+      <strong>Registration Fee:</strong> KES 200 (one-time, charged at registration). This is recorded as income.
+    </div>
+    <h3 style="font-size:14px;margin:12px 0 8px;color:var(--text-secondary)">Guarantor Details</h3>
+    <div class="form-row"><div class="form-group"><label>Guarantor Name *</label><input class="input" id="cGuarName"></div><div class="form-group"><label>Guarantor Phone *</label><input class="input" id="cGuarPhone"></div></div>
+    <div class="form-row"><div class="form-group"><label>Guarantor ID No</label><input class="input" id="cGuarIdNo"></div><div class="form-group"><label>Relationship</label><input class="input" id="cGuarRel"></div></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveClient()">Save Client</button></div>
   `,true);
 }
 
+const REGISTRATION_FEE = 200; // KES, charged on every new client and counted as income
+const PROCESSING_FEE = 500;   // KES, flat processing fee per loan
+
 async function saveClient(){
   const name=$('#cName').value.trim();const idNo=$('#cIdNo').value.trim();const phone=$('#cPhone').value.trim();
+  const guarName=($('#cGuarName')?.value||'').trim();
+  const guarPhone=($('#cGuarPhone')?.value||'').trim();
   if(!name||!idNo||!phone)return toast('Name, ID No, and Phone are required','warning');
+  if(!guarName||!guarPhone)return toast('Guarantor name and phone are required','warning');
   try{
-    const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:$('#cNotes').value,business_id:currentUser?.business_id,created_by:currentUser?.id};
+    // NOTE: monthly_income column is reused to store DAILY income (label change only,
+    // schema unchanged). next_of_kin_* columns are reused to store guarantor info so
+    // no DB migration is needed.
+    const rec={
+      full_name:name,id_number:idNo,phone,
+      email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,
+      address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,
+      monthly_income:Number($('#cIncome').value)||0,
+      next_of_kin_name:guarName,
+      next_of_kin_phone:guarPhone,
+      next_of_kin_relation:($('#cGuarRel')?.value||'')+(($('#cGuarIdNo')?.value)?(' | ID: '+$('#cGuarIdNo').value):''),
+      notes:$('#cNotes').value,
+      business_id:currentUser?.business_id,created_by:currentUser?.id
+    };
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
+
+    // Record the KES 200 registration fee as income (best-effort; ignore if table missing)
+    try{
+      await sb('loan_income').insert({
+        business_id:currentUser?.business_id,
+        client_id:data.id,
+        type:'registration_fee',
+        amount:REGISTRATION_FEE,
+        description:'Client registration fee',
+        recorded_by:currentUser?.id,
+        recorded_at:new Date().toISOString()
+      });
+    }catch(feeErr){ console.warn('Registration-fee income not stored:', feeErr.message); }
+
     await audit('client_created','loan_clients',data.id,null,rec);
-    toast('Client added successfully','success');closeModal();renderClients();
+    toast('Client added (Registration fee KES 200 recorded)','success');closeModal();renderClients();
   }catch(e){toast(e.message,'error')}
 }
 
@@ -1167,8 +1337,8 @@ async function viewClient(id){
         <div><strong>Email:</strong> ${c.email||'-'}</div><div><strong>Gender:</strong> ${c.gender||'-'}</div>
         <div><strong>DOB:</strong> ${fmtDate(c.dob)}</div><div><strong>Address:</strong> ${c.address||'-'}</div>
         <div><strong>Occupation:</strong> ${c.occupation||'-'}</div><div><strong>Employer:</strong> ${c.employer||'-'}</div>
-        <div><strong>Monthly Income:</strong> ${fmtMoney(c.monthly_income)}</div>
-        <div><strong>Next of Kin:</strong> ${c.next_of_kin_name||'-'} (${c.next_of_kin_relation||'-'}) ${c.next_of_kin_phone||''}</div>
+        <div><strong>Daily Income:</strong> ${fmtMoney(c.monthly_income)}</div>
+        <div><strong>Guarantor:</strong> ${c.next_of_kin_name||'-'} (${c.next_of_kin_relation||'-'}) ${c.next_of_kin_phone||''}</div>
       </div>
       <h3 style="margin:16px 0 8px;font-size:14px">Loan History</h3>
       <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Status</th></tr></thead><tbody>
@@ -1188,10 +1358,10 @@ async function editClient(id){
     <h2>Edit Client</h2>
     <div class="form-row"><div class="form-group"><label>Full Name</label><input class="input" id="ecName" value="${c.full_name||''}"></div><div class="form-group"><label>Phone</label><input class="input" id="ecPhone" value="${c.phone||''}"></div></div>
     <div class="form-row"><div class="form-group"><label>Email</label><input class="input" id="ecEmail" value="${c.email||''}"></div><div class="form-group"><label>Occupation</label><input class="input" id="ecOccupation" value="${c.occupation||''}"></div></div>
-    <div class="form-group"><label>Monthly Income</label><input class="input" type="number" id="ecIncome" value="${c.monthly_income||0}"></div>
+    <div class="form-group"><label>Daily Income (KES)</label><input class="input" type="number" id="ecIncome" value="${c.monthly_income||0}"></div>
     <div class="form-group"><label>Address</label><input class="input" id="ecAddress" value="${c.address||''}"></div>
     <div class="modal-actions">
-      <button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient('${c.id}')">Delete Client</button>
+      ${hasRole('admin')?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient('${c.id}')">Delete Client</button>`:''}
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="updateClient('${c.id}')">Update</button>
     </div>
@@ -1209,6 +1379,7 @@ async function updateClient(id){
 }
 
 async function deleteClient(id){
+  if(!hasRole('admin')) return toast('Only admins can delete clients','warning');
   if(!await confirm_('Are you sure you want to delete this client?')) return;
   const { data: loans } = await sb('loans').select('id').eq('client_id', id);
   if (loans && loans.length > 0) return toast('Cannot delete client with existing loans', 'error');
@@ -1221,7 +1392,7 @@ async function deleteClient(id){
 }
 
 function exportClientsExcel(){
-  const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Monthly Income':c.monthly_income,Status:'Active'}));
+  const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Daily Income':c.monthly_income,'Guarantor':c.next_of_kin_name||'',Status:'Active'}));
   const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'Bripta_Clients.xlsx');
   toast('Exported to Excel','success');
 }
@@ -1233,7 +1404,7 @@ async function renderProducts(){
     const{data:products}=await sb('loan_products').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.products=products||[];
     main.innerHTML=`
-      <div class="page-header"><h1>Loan Products</h1><button class="btn btn-primary" onclick="openAddProductModal()">+ Add Product</button></div>
+      <div class="page-header"><h1>Loan Products</h1>${hasRole('admin')?`<button class="btn btn-primary" onclick="openAddProductModal()">+ Add Product</button>`:''}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
       ${(products||[]).map(p=>`
         <div class="card">
@@ -1273,6 +1444,7 @@ function openAddProductModal(prod){
 }
 
 async function saveProduct(id){
+  if(!hasRole('admin')) return toast('Only admins can save loan products','warning');
   const rec={name:$('#pName').value,description:$('#pDesc').value,min_amount:Number($('#pMinAmt').value),max_amount:Number($('#pMaxAmt').value),interest_rate:Number($('#pRate').value),interest_type:$('#pIntType').value,interest_period:$('#pIntPeriod').value,min_term_weeks:Number($('#pMinTerm').value),max_term_weeks:Number($('#pMaxTerm').value),processing_fee_pct:Number($('#pFee').value),late_penalty_pct:Number($('#pPenalty').value),grace_period_days:Number($('#pGrace').value),requires_guarantor:$('#pGuarantor').checked,is_active:$('#pActive').value==='true',business_id:currentUser?.business_id};
   if(!rec.name)return toast('Product name is required','warning');
   try{
@@ -1288,6 +1460,7 @@ async function editProduct(id){
 
 async function deleteProduct(id){
   if(!await confirm_('Delete this product?'))return;
+  if(!hasRole('admin')) return toast('Only admins can delete loan products','warning');
   try{await sb('loan_products').delete().eq('id',id);toast('Product deleted','success');renderProducts();}catch(e){toast(e.message,'error')}
 }
 
@@ -1296,6 +1469,7 @@ let appPage=1;
 async function renderApplications(page=1){
   appPage=page;const main=$('#mainContent');
   try{
+    await loadClientsCache(true);
     const{data:apps}=await sb('loan_applications').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.applications=apps||[];
     const p=paginate(apps||[],page);
@@ -1311,7 +1485,7 @@ async function renderApplications(page=1){
 
 function renderAppRows(apps){
   return apps.map(a=>`<tr>
-    <td><strong>${a.application_no||'DRAFT'}</strong></td><td>${a.client_id?.slice(0,8)||'-'}</td>
+    <td><strong>${a.application_no||'DRAFT'}</strong></td><td>${clientNameById(a.client_id)}</td>
     <td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td>
     <td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td>
     <td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td>
@@ -1329,9 +1503,10 @@ async function openNewApplication(){
   const{data:products}=await sb('loan_products').select('*').eq('business_id', currentUser.business_id).eq('is_active',true);
   openModal(`
     <h2>New Loan Application</h2>
-    <div class="steps"><div class="step active" data-step="1">1. Client</div><div class="step" data-step="2">2. Loan Details</div><div class="step" data-step="3">3. Guarantor</div><div class="step" data-step="4">4. Review</div></div>
+    <div class="steps"><div class="step active" data-step="1">1. Client</div><div class="step" data-step="2">2. Loan Details</div><div class="step" data-step="3">3. Review</div></div>
     <div id="appStep1">
-      <div class="form-group"><label>Select Client *</label><select class="select" id="appClient"><option value="">-- Choose --</option>${(clients||[]).map(c=>`<option value="${c.id}">${c.full_name} (${c.phone||''})</option>`).join('')}</select></div>
+      <div class="form-group"><label>Select Client *</label><select class="select" id="appClient" onchange="appShowGuarantor()"><option value="">-- Choose --</option>${(clients||[]).map(c=>`<option value="${c.id}" data-guar-name="${(c.next_of_kin_name||'').replace(/"/g,'&quot;')}" data-guar-phone="${(c.next_of_kin_phone||'').replace(/"/g,'&quot;')}">${c.full_name} (${c.phone||''})</option>`).join('')}</select></div>
+      <div id="appGuarPreview" class="card" style="display:none;font-size:13px;margin-top:8px"></div>
     </div>
     <div id="appStep2" style="display:none">
       <div class="form-group"><label>Loan Amount *</label><input class="input" type="number" id="appAmount" oninput="appCalcUpdate()" placeholder="Enter amount"></div>
@@ -1340,35 +1515,46 @@ async function openNewApplication(){
       <div class="form-group"><label>Purpose</label><textarea class="textarea" id="appPurpose"></textarea></div>
       <div id="appCalcResult" class="card" style="margin-top:8px"></div>
     </div>
-    <div id="appStep3" style="display:none">
-      <div class="form-row"><div class="form-group"><label>Guarantor Name *</label><input class="input" id="appGName"></div><div class="form-group"><label>Guarantor Phone *</label><input class="input" id="appGPhone"></div></div>
-    </div>
-    <div id="appStep4" style="display:none"><div id="appReview"></div></div>
+    <div id="appStep3" style="display:none"><div id="appReview"></div></div>
     <div class="modal-actions"><button class="btn btn-outline" id="appPrevBtn" onclick="appStepNav(-1)" style="display:none">Back</button><button class="btn btn-primary" id="appNextBtn" onclick="appStepNav(1)">Next</button></div>
   `,true);
-  window._appStep=1;window._appProducts=products||[];
+  window._appStep=1;window._appProducts=products||[];window._appClients=clients||[];
+}
+
+function appShowGuarantor(){
+  const sel=$('#appClient'); if(!sel) return;
+  const opt=sel.selectedOptions[0]; const box=$('#appGuarPreview');
+  if(!opt||!opt.value){ if(box){box.style.display='none';} return; }
+  const gn=opt.getAttribute('data-guar-name')||'';
+  const gp=opt.getAttribute('data-guar-phone')||'';
+  if(box){
+    if(gn||gp){
+      box.style.display='block';
+      box.innerHTML='<strong>Guarantor on file:</strong> '+(gn||'-')+' '+(gp?('('+gp+')'):'');
+    } else {
+      box.style.display='block';
+      box.innerHTML='<span style="color:var(--accent-yellow)">No guarantor on file. Please update this client\'s registration first.</span>';
+    }
+  }
 }
 
 window._appStep=1;
 function appStepNav(dir){
   const s=window._appStep+dir;
-  if(s<1||s>4)return;
+  if(s<1||s>3)return;
   if(s===2&&!$('#appClient').value)return toast('Select a client','warning');
   if(s===3){
     const amt=Number($('#appAmount').value);
     if(!amt||amt<=0)return toast('Enter a valid loan amount','warning');
     if(!$('#appTerm').value)return toast('Enter loan term in weeks','warning');
-  }
-  if(s===4){
-    if(!$('#appGName').value||!$('#appGPhone').value)return toast('Guarantor details are required','warning');
     buildAppReview();
   }
   window._appStep=s;
-  for(let i=1;i<=4;i++){const el=$(`#appStep${i}`);if(el)el.style.display=i===s?'block':'none'}
+  for(let i=1;i<=3;i++){const el=$(`#appStep${i}`);if(el)el.style.display=i===s?'block':'none'}
   $$('.step').forEach((el,i)=>{el.classList.toggle('active',i+1===s);el.classList.toggle('done',i+1<s)});
   $('#appPrevBtn').style.display=s>1?'inline-flex':'none';
-  $('#appNextBtn').textContent=s===4?'Submit Application':'Next';
-  if(s===4)$('#appNextBtn').onclick=()=>submitApplication();
+  $('#appNextBtn').textContent=s===3?'Submit Application':'Next';
+  if(s===3)$('#appNextBtn').onclick=()=>submitApplication();
   else $('#appNextBtn').onclick=()=>appStepNav(1);
 }
 
@@ -1388,7 +1574,10 @@ function appCalcUpdate(){
 }
 
 function buildAppReview(){
-  const client=$('#appClient').selectedOptions[0]?.textContent||'-';
+  const opt=$('#appClient').selectedOptions[0];
+  const client=opt?.textContent||'-';
+  const gn=opt?.getAttribute('data-guar-name')||'';
+  const gp=opt?.getAttribute('data-guar-phone')||'';
   const amt=Number($('#appAmount').value);
   const rate=getAutoRate(amt);
   const tier=getAutoTier(amt);
@@ -1397,7 +1586,8 @@ function buildAppReview(){
     <p><strong>Amount:</strong> ${fmtMoney(amt)}</p><p><strong>Rate:</strong> ${rate}% per week</p>
     <p><strong>Term:</strong> ${$('#appTerm').value} weeks</p>
     <p><strong>Purpose:</strong> ${$('#appPurpose').value||'-'}</p>
-    <p><strong>Guarantor:</strong> ${$('#appGName').value||'None'} ${$('#appGPhone').value||''}</p>
+    <p><strong>Guarantor (from client record):</strong> ${gn||'-'} ${gp?('('+gp+')'):''}</p>
+    <p><strong>Processing Fee:</strong> ${fmtMoney(PROCESSING_FEE)} (flat)</p>
   </div>`;
 }
 
@@ -1405,7 +1595,10 @@ async function submitApplication(){
   try{
     const appNo = generateUniqueNo('APP');
     const amt=Number($('#appAmount').value);
-    const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
+    const opt=$('#appClient').selectedOptions[0];
+    const guarName=opt?.getAttribute('data-guar-name')||'';
+    const guarPhone=opt?.getAttribute('data-guar-phone')||'';
+    const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:guarName,guarantor_phone:guarPhone,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
     
     const tier=getAutoTier(amt);
     let {data:matchProduct}=await sb('loan_products').select('id').eq('business_id', currentUser.business_id).eq('name',tier).eq('is_active',true).limit(1).single();
@@ -1432,6 +1625,7 @@ async function viewApplication(id){
     <h2>Application ${a.application_no||'DRAFT'}</h2>
     <div style="margin-bottom:12px">${statusBadge(a.status)} <span class="badge badge-blue">${tier}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+      <p style="grid-column:1/-1"><strong>Client:</strong> ${clientNameById(a.client_id)}</p>
       <p><strong>Amount:</strong> ${fmtMoney(a.applied_amount)}</p><p><strong>Rate:</strong> ${rate}% / week</p>
       <p><strong>Term:</strong> ${a.applied_term_weeks} weeks</p><p><strong>Date:</strong> ${fmtDate(a.created_at)}</p>
       <p><strong>Purpose:</strong> ${a.purpose||'-'}</p>
@@ -1469,35 +1663,38 @@ async function rejectApp(id){
 async function renderDisbursement(){
   const main=$('#mainContent');
   try{
+    await loadClientsCache(true);
     const{data:apps}=await sb('loan_applications').select('*').eq('business_id', currentUser.business_id).eq('status','approved').order('approved_at',{ascending:false});
     main.innerHTML=`
       <div class="page-header"><h1>Disbursement</h1></div>
       <div class="table-wrap"><table><thead><tr><th>App #</th><th>Client</th><th>Amount</th><th>Term</th><th>Tier</th><th>Approved</th><th>Actions</th></tr></thead><tbody>
-      ${(apps||[]).map(a=>`<tr><td>${a.application_no}</td><td>${a.client_id?.slice(0,8)||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td><td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td><td>${fmtDate(a.approved_at)}</td><td><button class="btn btn-primary btn-sm" onclick="openDisburseModal('${a.id}')">Disburse</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No approved applications awaiting disbursement</td></tr>'}
+      ${(apps||[]).map(a=>`<tr><td>${a.application_no}</td><td><strong>${clientNameById(a.client_id)}</strong></td><td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td><td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td><td>${fmtDate(a.approved_at)}</td><td><button class="btn btn-primary btn-sm" onclick="openDisburseModal('${a.id}')">Disburse</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No approved applications awaiting disbursement</td></tr>'}
       </tbody></table></div>
     `;
   }catch(e){toast(e.message,'error')}
 }
 
 async function openDisburseModal(appId){
+  await loadClientsCache();
   const{data:app}=await sb('loan_applications').select('*').eq('id',appId).single();
   if(!app)return toast('Application not found','error');
   const amt=app.applied_amount;
   const rate=getAutoRate(amt);
-  const feePct=appSettings?.default_processing_fee_pct||3;
-  const fee=amt*(feePct/100);
+  const fee=PROCESSING_FEE;       // flat KES 500
   const net=amt-fee;
+  const clientName=clientNameById(app.client_id);
   const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   openModal(`
     <h2>Disburse Loan — ${app.application_no}</h2>
-    <div class="card" style="margin-bottom:12px;font-size:13px">
-      <p><strong>Tier:</strong> ${getAutoTier(amt)} | <strong>Rate:</strong> ${rate}% / week | <strong>Term:</strong> ${app.applied_term_weeks} weeks</p>
+    <div class="card" style="margin-bottom:12px;font-size:13px;background:rgba(59,130,246,0.07);border-color:var(--accent-blue)">
+      <p style="font-size:14px"><strong>Client:</strong> ${clientName}</p>
+      <p style="margin-top:4px"><strong>Tier:</strong> ${getAutoTier(amt)} | <strong>Rate:</strong> ${rate}% / week | <strong>Term:</strong> ${app.applied_term_weeks} weeks</p>
     </div>
-    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Method</label><select class="select" id="dMethod"><option value="cash" selected>Cash</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
-    <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="dRef"></div><div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="dDate" value="${today()}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Method</label><select class="select" id="dMethod"><option value="cash" selected>Cash</option><option value="mpesa">M-Pesa</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
+    <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="dRef" placeholder="e.g. M-Pesa code"></div><div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="dDate" value="${today()}"></div></div>
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${firstRep.toISOString().slice(0,10)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
-      <p><strong>Processing Fee:</strong> ${fmtMoney(fee)} (${feePct}%)</p>
+      <p><strong>Processing Fee:</strong> ${fmtMoney(fee)} (flat)</p>
       <p><strong>Net Disbursement:</strong> ${fmtMoney(net)}</p>
     </div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnConfirmDisburse" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
@@ -1519,8 +1716,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const amt=Number($('#dAmt').value);const term=Number(termWeeks);
     const rate=getAutoRate(amt);
     const c=calcLoan(amt,rate,'flat',term);
-    const feePct=appSettings?.default_processing_fee_pct||3;
-    const fee=amt*(feePct/100);
+    const fee=PROCESSING_FEE; // flat KES 500
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
     const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
 
@@ -1556,13 +1752,14 @@ let loanPage=1;
 async function renderLoans(page=1){
   loanPage=page;const main=$('#mainContent');
   try{
+    await loadClientsCache(true);
     const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.loans=loans||[];
     const p=paginate(loans||[],page);
     main.innerHTML=`
       <div class="page-header"><h1>Active Loans</h1></div>
-      <div class="search-bar"><input class="input" placeholder="Search loan no..." oninput="filterLoans(this.value)"><select class="select" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
+      <div class="search-bar"><input class="input" placeholder="Search by loan no or client name..." oninput="filterLoans(this.value)"><select class="select" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select></div>
+      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody id="loansBody">${renderLoanRows(p.items)}</tbody></table></div>
       ${paginationHtml(p,'renderLoans')}
     `;
@@ -1573,14 +1770,23 @@ function renderLoanRows(loans){
   return loans.map(l=>{
     const rowColor=l.overdue_days>30?'border-left:3px solid var(--accent-red)':l.overdue_days>0?'border-left:3px solid var(--accent-orange)':l.status==='active'?'border-left:3px solid var(--accent-green)':'';
     return`<tr style="${rowColor}">
-      <td><strong>${l.loan_no||'-'}</strong></td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
+      <td><strong>${l.loan_no||'-'}</strong></td>
+      <td><strong>${clientNameById(l.client_id)}</strong></td>
+      <td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
       <td>${fmtMoney(l.weekly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
       <td>${statusBadge(l.status)}</td>
       <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> ${Number(l.outstanding_balance) <= 0 ? '<span class="badge badge-green">Paid in Full</span>' : `<button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button>`}</td>
     </tr>`}).join('');
 }
 
-function filterLoans(q){q=q.toLowerCase();const f=(cachedData.loans||[]).filter(l=>(l.loan_no||'').toLowerCase().includes(q));$('#loansBody').innerHTML=renderLoanRows(f)}
+function filterLoans(q){
+  q=(q||'').toLowerCase();
+  const f=(cachedData.loans||[]).filter(l=>
+    (l.loan_no||'').toLowerCase().includes(q) ||
+    (clientNameById(l.client_id)||'').toLowerCase().includes(q)
+  );
+  $('#loansBody').innerHTML=renderLoanRows(f);
+}
 function filterLoanStatus(v){const f=v?(cachedData.loans||[]).filter(l=>l.status===v):(cachedData.loans||[]);$('#loansBody').innerHTML=renderLoanRows(f)}
 
 async function viewLoan(id){
@@ -1588,8 +1794,10 @@ async function viewLoan(id){
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('created_at',{ascending:false});
   if(!loan)return toast('Loan not found','error');
+  await loadClientsCache();
+  const _cname=clientNameById(loan.client_id);
   openModal(`
-    <h2>Loan ${loan.loan_no}</h2>
+    <h2>Loan ${loan.loan_no} <span style="font-size:14px;color:var(--text-secondary);font-weight:500">— ${_cname}</span></h2>
     <div style="display:flex;gap:8px;margin-bottom:16px">${statusBadge(loan.status)} ${loan.overdue_days>0?`<span class="badge badge-red">${loan.overdue_days} days overdue</span>`:''}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:13px;margin-bottom:16px">
       <div><strong>Principal:</strong> ${fmtMoney(loan.principal_amount)}</div>
@@ -1653,6 +1861,11 @@ async function renderRepayments(page=1){
     const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.repayments=reps||[];
 
+    // Ensure clients & loans caches are populated so we can show client names
+    await loadClientsCache();
+    if(!cachedData.loans || cachedData.loans.length===0){
+      try{ const{data:_loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id); cachedData.loans=_loans||[]; }catch(e){}
+    }
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
     const filteredReps = filterByDate(cachedData.repayments, 'payment_date', f);
     const p = paginate(filteredReps, page);
@@ -1678,8 +1891,13 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button></td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Loan</th><th>Amount</th><th>Method</th><th>Reference</th><th>Date</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loan_id?.slice(0,8)||'-'}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Loan</th><th>Amount</th><th>Method</th><th>Reference</th><th>Date</th><th>Actions</th></tr></thead><tbody>
+      ${p.items.map(r=>{
+        const _loan=(cachedData.loans||[]).find(x=>x.id===r.loan_id);
+        const _cname = _loan ? clientNameById(_loan.client_id) : '-';
+        const _lno = _loan ? _loan.loan_no : (r.loan_id?.slice(0,8)||'-');
+        return `<tr><td><strong>${r.receipt_no}</strong></td><td><strong>${_cname}</strong></td><td>${_lno}</td><td>${fmtMoney(r.amount)}</td><td>${r.payment_method||'-'}</td><td>${r.payment_reference||'-'}</td><td>${fmtDate(r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`;
+      }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -1712,10 +1930,17 @@ async function dismissMpesaPayment(queueId){
 }
 
 async function openPaymentModal(loanId){
+  await loadClientsCache();
   let loanInfo='';
   if(loanId){
     const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
-    if(loan)loanInfo=`<div class="card" style="margin-bottom:16px;font-size:13px"><strong>${loan.loan_no}</strong> | Balance: ${fmtMoney(loan.outstanding_balance)} | Arrears: ${fmtMoney(loan.arrears_amount)}</div>`;
+    if(loan){
+      const cname=clientNameById(loan.client_id);
+      loanInfo=`<div class="card" style="margin-bottom:16px;font-size:13px;background:rgba(16,185,129,0.07);border-color:var(--accent-green)">
+        <div style="font-size:15px;margin-bottom:4px"><strong>Client:</strong> ${cname}</div>
+        <div><strong>Loan:</strong> ${loan.loan_no} | Balance: ${fmtMoney(loan.outstanding_balance)} | Arrears: ${fmtMoney(loan.arrears_amount)}</div>
+      </div>`;
+    }
   }
   openModal(`
     <h2>Record Payment</h2>
@@ -1848,20 +2073,199 @@ async function saveFollowUp(loanId,clientId){
 // ═══ REPORTS ═══
 async function renderReports(){
   const main=$('#mainContent');
+  const reports = [
+    {title:'Portfolio Report',desc:'Total active loans, outstanding, breakdown by product',fn:'genPortfolioReport',preview:'previewPortfolio'},
+    {title:'Portfolio Summary',desc:'Active clients without arrears vs total clients',fn:'genPortfolioSummaryReport',preview:'previewPortfolioSummary'},
+    {title:'Repayment Performance',desc:'Collections by period, on-time vs late rates',fn:'genRepaymentReport',preview:'previewRepayment'},
+    {title:'Aging / Overdue Report',desc:'All overdue loans with aging buckets and PAR metrics',fn:'genAgingReport',preview:'previewAging'},
+    {title:'Loan Officer Performance',desc:'Loans issued, portfolio size, collections per officer',fn:'genOfficerReport',preview:'previewOfficer'},
+    {title:'Disbursement Report',desc:'Loans disbursed in period grouped by product',fn:'genDisbursementReport',preview:'previewDisbursement'},
+    {title:'Income Report',desc:'Interest, fees, and penalties collected',fn:'genIncomeReport',preview:'previewIncome'},
+    {title:'Collection Rate (Daily)',desc:'Today\'s collected vs amount due, per loan',fn:'genCollectionRateDailyReport',preview:'previewCollectionRateDaily'},
+    {title:'Collection Rate (Monthly)',desc:'This month\'s collected vs amount due',fn:'genCollectionRateMonthlyReport',preview:'previewCollectionRateMonthly'},
+    {title:'M-Pesa Payments',desc:'All M-Pesa repayments received',fn:'genMpesaReport',preview:'previewMpesa'}
+  ];
   main.innerHTML=`
     <div class="page-header"><h1>Reports & Analytics</h1></div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
-      ${[
-        {title:'Portfolio Report',desc:'Total active loans, outstanding, breakdown by product',fn:'genPortfolioReport'},
-        {title:'Portfolio Summary',desc:'Active clients without arrears vs total clients',fn:'genPortfolioSummaryReport'},
-        {title:'Repayment Performance',desc:'Collections by period, on-time vs late rates',fn:'genRepaymentReport'},
-        {title:'Aging / Overdue Report',desc:'All overdue loans with aging buckets and PAR metrics',fn:'genAgingReport'},
-        {title:'Loan Officer Performance',desc:'Loans issued, portfolio size, collections per officer',fn:'genOfficerReport'},
-        {title:'Disbursement Report',desc:'Loans disbursed in period grouped by product',fn:'genDisbursementReport'},
-        {title:'Income Report',desc:'Interest, fees, and penalties collected',fn:'genIncomeReport'}
-      ].map(r=>`<div class="card" style="cursor:pointer" onclick="${r.fn}()"><strong>${r.title}</strong><p style="font-size:13px;color:var(--text-secondary);margin-top:4px">${r.desc}</p></div>`).join('')}
+    <p style="color:var(--text-secondary);margin-bottom:12px;font-size:13px">Click <strong>View</strong> to preview, or <strong>Download</strong> to export directly.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">
+      ${reports.map(r=>`<div class="card"><strong>${r.title}</strong><p style="font-size:13px;color:var(--text-secondary);margin:4px 0 12px">${r.desc}</p>
+        <div style="display:flex;gap:8px"><button class="btn btn-outline btn-sm" onclick="${r.preview}()">View</button><button class="btn btn-primary btn-sm" onclick="${r.fn}()">Download</button></div>
+      </div>`).join('')}
     </div>
   `;
+}
+
+// ── Generic preview modal helper ──
+function showReportPreview(title, columns, rows, downloadFn){
+  const head = '<tr>'+columns.map(c=>`<th>${c}</th>`).join('')+'</tr>';
+  const body = rows.length
+    ? rows.map(r=>'<tr>'+columns.map(c=>`<td>${r[c]??''}</td>`).join('')+'</tr>').join('')
+    : `<tr><td colspan="${columns.length}" style="text-align:center;color:var(--text-secondary);padding:16px">No data</td></tr>`;
+  openModal(`
+    <h2>${title}</h2>
+    <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px">${rows.length} row(s) — preview below.</p>
+    <div class="table-wrap" style="max-height:60vh;overflow:auto"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Close</button>
+      ${downloadFn?`<button class="btn btn-primary" onclick="${downloadFn}()">Download</button>`:''}
+    </div>
+  `, true);
+}
+
+// ── Preview functions ──
+async function previewPortfolio(){
+  const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id);
+  await loadClientsCache();
+  const rows=(loans||[]).map(l=>({'Loan #':l.loan_no,'Client':clientNameById(l.client_id),'Principal':fmtMoney(l.principal_amount),'Outstanding':fmtMoney(l.outstanding_balance),'Status':l.status}));
+  showReportPreview('Portfolio Report',['Loan #','Client','Principal','Outstanding','Status'],rows,'genPortfolioReport');
+}
+async function previewPortfolioSummary(){
+  const{data:clients}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id);
+  const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
+  const total=(clients||[]).length;
+  const arrearsClients=new Set((loans||[]).filter(l=>Number(l.arrears_amount)>0).map(l=>l.client_id));
+  const activeIds=new Set((loans||[]).map(l=>l.client_id));
+  let healthy=0; activeIds.forEach(id=>{ if(!arrearsClients.has(id)) healthy++; });
+  const pct = total>0 ? ((healthy/total)*100).toFixed(2) : '0';
+  showReportPreview('Portfolio Summary',['Metric','Value'],[
+    {Metric:'Total Clients',Value:total},
+    {Metric:'Active Clients Without Arrears',Value:healthy},
+    {Metric:'Portfolio Quality (%)',Value:pct+'%'}
+  ],'genPortfolioSummaryReport');
+}
+async function previewRepayment(){
+  const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false});
+  const rows=(reps||[]).map(r=>({Receipt:r.receipt_no,Amount:fmtMoney(r.amount),Method:r.payment_method,Date:r.payment_date}));
+  showReportPreview('Repayment Performance',['Receipt','Amount','Method','Date'],rows,'genRepaymentReport');
+}
+async function previewAging(){
+  const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active').gt('overdue_days',0);
+  await loadClientsCache();
+  const rows=(loans||[]).map(l=>({'Loan #':l.loan_no,'Client':clientNameById(l.client_id),'Principal':fmtMoney(l.principal_amount),'Balance':fmtMoney(l.outstanding_balance),'Overdue (days)':l.overdue_days,'Arrears':fmtMoney(l.arrears_amount)}));
+  showReportPreview('Aging / Overdue Report',['Loan #','Client','Principal','Balance','Overdue (days)','Arrears'],rows,'genAgingReport');
+}
+async function previewOfficer(){
+  const{data:staff}=await sb('loan_staff').select('*').eq('business_id', currentUser.business_id);
+  const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id);
+  const rows=(staff||[]).map(s=>{
+    const ol=(loans||[]).filter(l=>l.loan_officer_id===s.id);
+    const port=ol.reduce((sum,l)=>sum+Number(l.outstanding_balance||0),0);
+    return {'Officer':s.name,'Total Loans':ol.length,'Portfolio':fmtMoney(port)};
+  });
+  showReportPreview('Loan Officer Performance',['Officer','Total Loans','Portfolio'],rows,'genOfficerReport');
+}
+async function previewDisbursement(){
+  const{data:loans}=await sb('loans').select('*').eq('business_id', currentUser.business_id);
+  await loadClientsCache();
+  const rows=(loans||[]).filter(l=>l.disbursement_date).map(l=>({'Loan #':l.loan_no,'Client':clientNameById(l.client_id),'Amount':fmtMoney(l.disbursed_amount),'Method':l.disbursement_method||'-','Date':l.disbursement_date}));
+  showReportPreview('Disbursement Report',['Loan #','Client','Amount','Method','Date'],rows,'genDisbursementReport');
+}
+async function previewIncome(){
+  const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id);
+  const rows=(reps||[]).map(r=>({Receipt:r.receipt_no,Date:r.payment_date,'Interest':fmtMoney(r.interest_portion),'Penalty':fmtMoney(r.penalty_portion),'Total':fmtMoney(r.amount)}));
+  showReportPreview('Income Report',['Receipt','Date','Interest','Penalty','Total'],rows,'genIncomeReport');
+}
+async function previewMpesa(){
+  const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).eq('payment_method','mpesa').order('payment_date',{ascending:false});
+  await loadClientsCache();
+  if(!cachedData.loans||!cachedData.loans.length){ try{const{data:_l}=await sb('loans').select('*').eq('business_id', currentUser.business_id); cachedData.loans=_l||[];}catch(e){} }
+  const rows=(reps||[]).map(r=>{
+    const loan=(cachedData.loans||[]).find(x=>x.id===r.loan_id);
+    return {Receipt:r.receipt_no,'Client':loan?clientNameById(loan.client_id):'-','Loan #':loan?loan.loan_no:'-','Amount':fmtMoney(r.amount),'Reference':r.payment_reference||'-','Date':r.payment_date};
+  });
+  showReportPreview('M-Pesa Payments',['Receipt','Client','Loan #','Amount','Reference','Date'],rows,'genMpesaReport');
+}
+
+async function _loadCollectionRateData(scope){
+  const{data:scheds}=await sb('loan_schedules').select('*').eq('business_id', currentUser.business_id);
+  const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id);
+  let dueRows, paidRows, label;
+  if(scope==='daily'){
+    const t=today();
+    dueRows=(scheds||[]).filter(s=>s.due_date===t);
+    paidRows=(reps||[]).filter(r=>r.payment_date===t);
+    label='Today ('+t+')';
+  } else {
+    const ms=new Date(); ms.setDate(1); ms.setHours(0,0,0,0);
+    const me=new Date(ms); me.setMonth(me.getMonth()+1);
+    const msStr=ms.toISOString().slice(0,10);
+    dueRows=(scheds||[]).filter(s=>s.due_date && s.due_date>=msStr && new Date(s.due_date)<me);
+    paidRows=(reps||[]).filter(r=>r.payment_date && r.payment_date>=msStr && new Date(r.payment_date)<me);
+    label='Month of '+msStr.slice(0,7);
+  }
+  const due=dueRows.reduce((s,x)=>s+Number(x.total_due||0),0);
+  const paid=paidRows.reduce((s,x)=>s+Number(x.amount||0),0);
+  const rate = due>0 ? (paid/due*100) : (paid>0?100:0);
+  return {label, due, paid, rate, dueRows, paidRows};
+}
+
+async function previewCollectionRateDaily(){
+  const d = await _loadCollectionRateData('daily');
+  showReportPreview('Collection Rate — Daily',['Metric','Value'],[
+    {Metric:'Period',Value:d.label},
+    {Metric:'Total Due',Value:fmtMoney(d.due)},
+    {Metric:'Total Collected',Value:fmtMoney(d.paid)},
+    {Metric:'Collection Rate',Value:d.rate.toFixed(2)+'%'},
+    {Metric:'Schedules Due',Value:d.dueRows.length},
+    {Metric:'Payments Received',Value:d.paidRows.length}
+  ],'genCollectionRateDailyReport');
+}
+async function previewCollectionRateMonthly(){
+  const d = await _loadCollectionRateData('monthly');
+  showReportPreview('Collection Rate — Monthly',['Metric','Value'],[
+    {Metric:'Period',Value:d.label},
+    {Metric:'Total Due',Value:fmtMoney(d.due)},
+    {Metric:'Total Collected',Value:fmtMoney(d.paid)},
+    {Metric:'Collection Rate',Value:d.rate.toFixed(2)+'%'},
+    {Metric:'Schedules Due',Value:d.dueRows.length},
+    {Metric:'Payments Received',Value:d.paidRows.length}
+  ],'genCollectionRateMonthlyReport');
+}
+
+// ── Download functions for new reports ──
+async function genCollectionRateDailyReport(){
+  try{
+    const d = await _loadCollectionRateData('daily');
+    const ws=XLSX.utils.json_to_sheet([
+      {Metric:'Period',Value:d.label},
+      {Metric:'Total Due',Value:d.due},
+      {Metric:'Total Collected',Value:d.paid},
+      {Metric:'Collection Rate (%)',Value:d.rate.toFixed(2)}
+    ]);
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Daily Collection');
+    XLSX.writeFile(wb,'Bripta_Collection_Rate_Daily.xlsx');
+    toast('Daily collection-rate report exported','success');
+  }catch(e){toast(e.message,'error')}
+}
+async function genCollectionRateMonthlyReport(){
+  try{
+    const d = await _loadCollectionRateData('monthly');
+    const ws=XLSX.utils.json_to_sheet([
+      {Metric:'Period',Value:d.label},
+      {Metric:'Total Due',Value:d.due},
+      {Metric:'Total Collected',Value:d.paid},
+      {Metric:'Collection Rate (%)',Value:d.rate.toFixed(2)}
+    ]);
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Monthly Collection');
+    XLSX.writeFile(wb,'Bripta_Collection_Rate_Monthly.xlsx');
+    toast('Monthly collection-rate report exported','success');
+  }catch(e){toast(e.message,'error')}
+}
+async function genMpesaReport(){
+  try{
+    const{data:reps}=await sb('loan_repayments').select('*').eq('business_id', currentUser.business_id).eq('payment_method','mpesa');
+    await loadClientsCache();
+    if(!cachedData.loans||!cachedData.loans.length){ try{const{data:_l}=await sb('loans').select('*').eq('business_id', currentUser.business_id); cachedData.loans=_l||[];}catch(e){} }
+    const rows=(reps||[]).map(r=>{
+      const loan=(cachedData.loans||[]).find(x=>x.id===r.loan_id);
+      return {Receipt:r.receipt_no,Client:loan?clientNameById(loan.client_id):'-','Loan #':loan?loan.loan_no:'-',Amount:r.amount,Reference:r.payment_reference||'-',Date:r.payment_date};
+    });
+    const ws=XLSX.utils.json_to_sheet(rows);
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'M-Pesa');
+    XLSX.writeFile(wb,'Bripta_Mpesa_Payments.xlsx');
+    toast('M-Pesa report exported','success');
+  }catch(e){toast(e.message,'error')}
 }
 
 async function genPortfolioSummaryReport(){
@@ -2235,7 +2639,7 @@ async function renderSettings(){
       <div class="card" style="max-width:700px;margin-bottom:16px">
         <h3 style="font-size:16px;margin-bottom:16px">Defaults</h3>
         <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="setGrace" value="${settings.default_grace_period||7}"></div><div class="form-group"><label>Late Penalty %</label><input class="input" type="number" id="setPenalty" value="${settings.default_late_penalty_pct||5}"></div></div>
-        <div class="form-group"><label>Processing Fee %</label><input class="input" type="number" id="setFee" value="${settings.default_processing_fee_pct||3}"></div>
+        <div class="form-group"><label>Processing Fee (flat, KES)</label><input class="input" type="number" id="setFee" value="500" readonly style="opacity:0.7"><small style="color:var(--text-secondary);font-size:11px">Processing fee is fixed at KES 500 per loan and cannot be changed here.</small></div>
         <div class="form-group"><label>Default Disbursement Method</label><select class="select" id="setDisbMethod"><option value="cash" ${(settings.disbursement_method||'cash')==='cash'?'selected':''}>Cash (Manual)</option><option value="bank_transfer" ${settings.disbursement_method==='bank_transfer'?'selected':''}>Bank Transfer</option></select></div>
         <div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:12px;margin-top:8px">
           <strong style="font-size:13px;color:var(--accent-red)">Rollover Penalty Policy</strong>
