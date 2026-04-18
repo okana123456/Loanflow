@@ -431,7 +431,7 @@ function toast(msg,type='info'){
 function showLoading(el){el.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>'}
 
 function statusBadge(status){
-  const map={draft:'gray',submitted:'blue',under_review:'yellow',approved:'green',rejected:'red',disbursed:'purple',cancelled:'gray',active:'green',completed:'blue',defaulted:'red',written_off:'gray',pending:'yellow',partial:'orange',paid:'green',overdue:'red'};
+  const map={draft:'gray',submitted:'blue',under_review:'yellow',approved:'green',rejected:'red',disbursed:'purple',cancelled:'gray',active:'green',completed:'blue',cleared:'blue',fully_paid:'blue',defaulted:'red',written_off:'gray',pending:'yellow',partial:'orange',paid:'green',overdue:'red'};
   return `<span class="badge badge-${map[status]||'gray'}">${(status||'').replace(/_/g,' ')}</span>`;
 }
 
@@ -2463,10 +2463,23 @@ async function handleExcelImport(ev){
     const wb=XLSX.read(buf,{type:'array',cellDates:true});
     if(!wb.SheetNames.includes('IMPORT_TEMPLATE'))throw new Error('Sheet "IMPORT_TEMPLATE" not found in workbook');
     const ws=wb.Sheets['IMPORT_TEMPLATE'];
-    rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:true});
+    // Find the header row by scanning for one whose first non-empty cell === 'client_name'
+    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true,blankrows:false});
+    let headerIdx=-1;
+    for(let i=0;i<Math.min(aoa.length,10);i++){
+      const row=aoa[i]||[];
+      if(row.some(c=>String(c||'').trim().toLowerCase()==='client_name')){ headerIdx=i; break; }
+    }
+    if(headerIdx<0)throw new Error('Could not find header row containing "client_name" in IMPORT_TEMPLATE');
+    const headers=aoa[headerIdx].map(h=>String(h||'').trim());
+    rows=aoa.slice(headerIdx+1).filter(r=>r.some(c=>c!==''&&c!==null&&c!==undefined)).map(r=>{
+      const obj={}; headers.forEach((h,j)=>{ if(h) obj[h]=r[j]!==undefined?r[j]:''; }); return obj;
+    });
+    console.log('[Excel Import] Parsed',rows.length,'data rows from IMPORT_TEMPLATE (header at row',headerIdx+1,')');
   }catch(e){
     if(progBox)progBox.style.display='none';
     if(statusEl)statusEl.textContent='';
+    console.error('[Excel Import] Read failed',e);
     return toast('Failed to read file: '+e.message,'error');
   }
 
@@ -2578,20 +2591,31 @@ async function handleExcelImport(ev){
 
     // Loans for this client
     const loansArr=Array.from(c.loans.values());
+    let loanSeq=0;
     for(const ln of loansArr){
+      loanSeq++;
       let loanId=null;
       try{
-        const{data:existLoan}=await sb('loans').select('id').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('loan_no',ln.loan_number).limit(1);
         // Compute totals from payments
         const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
         const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
         const lastPay=sortedPays[sortedPays.length-1];
         const principal=ln.loan_amount_kes||ln.amount_disbursed_kes||0;
-        const status=(ln.status==='cleared'||ln.status==='closed'||ln.status==='completed')?'completed':'active';
+        // Map Excel status values to system status
+        const rawStatus=(ln.status||'').toLowerCase();
+        const status=(rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')?'completed':'active';
         const outstanding= status==='completed' ? 0 : (lastPay && lastPay.balance_after_kes!==undefined ? lastPay.balance_after_kes : Math.max(principal-totalPaid,0));
 
+        // Match existing loan by client_id + disbursement_date + principal_amount (loan_no format differs for imports)
+        let existQuery=sb('loans').select('id').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('principal_amount',principal);
+        if(ln.disbursement_date) existQuery=existQuery.eq('disbursement_date',ln.disbursement_date);
+        const{data:existLoan}=await existQuery.limit(1);
+
+        // Generate loan_no in the system's expected format
+        const loanNo=`${appSettings?.loan_no_prefix||'LN'}-IMP-${String(i+1).padStart(3,'0')}-${String(loanSeq).padStart(2,'0')}`;
+
         const loanRec={
-          loan_no:ln.loan_number,
+          loan_no:loanNo,
           client_id:clientId,
           principal_amount:principal,
           disbursed_amount:ln.amount_disbursed_kes||principal,
@@ -2612,8 +2636,7 @@ async function handleExcelImport(ev){
           overdue_days:0,
           disbursement_method:'cash',
           loan_officer_id:currentUser?.id,
-          business_id:currentUser.business_id,
-          created_at:ln.disbursement_date?new Date(ln.disbursement_date+'T00:00:00').toISOString():undefined
+          business_id:currentUser.business_id
         };
         // Drop undefined fields so DB defaults apply
         Object.keys(loanRec).forEach(k=>loanRec[k]===undefined&&delete loanRec[k]);
@@ -2621,9 +2644,9 @@ async function handleExcelImport(ev){
         if(existLoan&&existLoan.length){
           loanId=existLoan[0].id;
           stats.loansExisting++;
-          // Update with latest aggregated values
-          const upd={...loanRec}; delete upd.created_at;
-          try{ await sb('loans').update(upd).eq('id',loanId);}catch(_){}
+          // Update with latest aggregated values (preserve existing loan_no)
+          const upd={...loanRec}; delete upd.loan_no;
+          try{ await sb('loans').update(upd).eq('id',loanId);}catch(updErr){ console.error('Loan update failed',loanId,updErr); }
         }else{
           const{data:lnIns,error:lnErr}=await sb('loans').insert(loanRec).select('id').single();
           if(lnErr)throw lnErr;
@@ -2631,8 +2654,9 @@ async function handleExcelImport(ev){
           stats.loansAdded++;
         }
       }catch(e){
-        stats.errors++; stats.errorMessages.push(`Loan ${ln.loan_number} (${c.client_name}): ${e.message||e}`);
-        console.error('Loan insert failed',ln.loan_number,e);
+        stats.errors++;
+        stats.errorMessages.push(`Loan ${ln.loan_number} (${c.client_name}): ${e.message||e}`);
+        console.error('[Excel Import] Loan insert failed for',c.client_name,'loan',ln.loan_number,e);
         continue;
       }
 
@@ -2656,15 +2680,15 @@ async function handleExcelImport(ev){
             mpesa_confirmed:false,
             collected_by:currentUser?.id,
             business_id:currentUser.business_id,
-            notes:p.payment_note||'Imported from Excel',
-            created_at:new Date(p.payment_date+'T00:00:00').toISOString()
+            notes:p.payment_note||'Imported from Excel'
           };
           const{error:pErr}=await sb('loan_repayments').insert(payRec);
           if(pErr)throw pErr;
           stats.paymentsAdded++;
         }catch(e){
-          stats.errors++; stats.errorMessages.push(`Payment ${p.payment_date} on loan ${ln.loan_number}: ${e.message||e}`);
-          console.error('Payment insert failed',p,e);
+          stats.errors++;
+          stats.errorMessages.push(`Payment ${p.payment_date} on loan ${ln.loan_number}: ${e.message||e}`);
+          console.error('[Excel Import] Payment insert failed for loan',ln.loan_number,'payment',p,e);
         }
       }
     }
