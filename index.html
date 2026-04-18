@@ -29,7 +29,7 @@ body.light {
     letter-spacing: -0.2px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh;overflow-x:hidden}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh;overflow-x:hidden;overscroll-behavior-y:none}
 a{color:var(--accent-blue);text-decoration:none}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg-dark)}
@@ -55,7 +55,7 @@ a{color:var(--accent-blue);text-decoration:none}
 .sidebar-footer .user-info{margin-bottom:8px}
 .sidebar-footer button{background:none;border:1px solid var(--border);color:var(--text-secondary);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;width:100%}
 .sidebar-footer button:hover{border-color:var(--accent-red);color:var(--accent-red)}
-.main-content{margin-left:260px;padding:24px;min-height:100vh;overflow-y:auto}
+.main-content{margin-left:260px;padding:24px;min-height:100vh;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
 .page-header h1{font-size:24px;font-weight:800}
 /* COMPONENTS */
@@ -307,19 +307,6 @@ function setupMobileProtections() {
     if (protectionsAdded) return;
     protectionsAdded = true;
     
-    // Block pull-to-refresh safely
-    window.addEventListener('touchmove', function(e) {
-        if (window.scrollY === 0) {
-            const isPullingDown = e.touches && e.touches.length > 0 && e.touches[0].clientY > 50; 
-            if (isPullingDown) {
-                const target = e.target;
-                if (!target.closest('.modal') && !target.closest('table') && !target.closest('tbody')) {
-                    e.preventDefault();
-                }
-            }
-        }
-    }, { passive: false });
-
     // Block F5 / Ctrl+R / Cmd+R
     window.addEventListener('keydown', function(e) {
         if (currentUser !== null) {
