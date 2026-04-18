@@ -12,6 +12,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
 --bg-dark:#0a0e1a;--bg-card:#111827;--sidebar:#0d1320;--border:#1e293b;
@@ -2318,6 +2319,20 @@ async function renderSettings(){
           <span style="font-size:13px">Auto-confirm incoming M-Pesa payments (if off, cashier must manually confirm)</span>
         </div>
       </div>
+      <div class="card" style="max-width:700px;margin-bottom:16px;border-color:var(--accent-purple)">
+        <h3 style="font-size:16px;margin-bottom:8px;color:var(--accent-purple)">Data Import</h3>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Import historical clients, loans and payments from an Excel file. The file must contain a sheet named <strong>IMPORT_TEMPLATE</strong> with the standard column headers.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary" onclick="document.getElementById('importExcelInput').click()">Import Data</button>
+          <input type="file" id="importExcelInput" accept=".xlsx" style="display:none" onchange="handleExcelImport(event)">
+          <span id="importStatus" style="font-size:13px;color:var(--text-secondary)"></span>
+        </div>
+        <div id="importProgressBox" style="display:none;margin-top:12px;padding:12px;background:rgba(139,92,246,0.07);border:1px solid rgba(139,92,246,0.2);border-radius:8px">
+          <div id="importProgressText" style="font-size:13px;margin-bottom:8px">Preparing import...</div>
+          <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden"><div id="importProgressBar" style="background:var(--accent-purple);height:100%;width:0%;transition:width .2s"></div></div>
+        </div>
+        <div id="importSummaryBox" style="display:none;margin-top:12px;padding:12px;background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:8px;font-size:13px"></div>
+      </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
     `;
   }catch(e){toast(e.message,'error')}
@@ -2389,6 +2404,294 @@ async function applyRolloverPenalties(){
       }
     }
   }catch(e){console.error('Rollover penalty error:',e)}
+}
+
+// ═══ EXCEL IMPORT (IMPORT_TEMPLATE) ═══
+function _excelDateToISO(v){
+  if(v===null||v===undefined||v==='')return null;
+  if(v instanceof Date && !isNaN(v))return v.toISOString().slice(0,10);
+  if(typeof v==='number'){
+    // Excel serial date
+    const utcDays=Math.floor(v-25569);
+    const utcMs=utcDays*86400*1000;
+    const d=new Date(utcMs);
+    if(!isNaN(d))return d.toISOString().slice(0,10);
+  }
+  if(typeof v==='string'){
+    const s=v.trim();
+    if(!s)return null;
+    // Try YYYY-MM-DD
+    let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m)return `${m[1]}-${String(+m[2]).padStart(2,'0')}-${String(+m[3]).padStart(2,'0')}`;
+    // Try DD/MM/YYYY or D/M/YYYY
+    m=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    if(m){
+      let yr=+m[3]; if(yr<100)yr+=2000;
+      return `${yr}-${String(+m[2]).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}`;
+    }
+    const d=new Date(s);
+    if(!isNaN(d))return d.toISOString().slice(0,10);
+  }
+  return null;
+}
+function _num(v){ if(v===null||v===undefined||v==='')return 0; const n=Number(String(v).replace(/[, ]/g,'')); return isNaN(n)?0:n; }
+function _str(v){ return v===null||v===undefined?'':String(v).trim(); }
+function _normPhone(p){ return _str(p).replace(/\s+/g,'').replace(/^\+/,''); }
+
+async function handleExcelImport(ev){
+  const file=ev.target.files&&ev.target.files[0];
+  ev.target.value='';
+  if(!file)return;
+  if(!hasRole('admin'))return toast('Admin access required','warning');
+  if(!currentUser?.business_id)return toast('No business context','error');
+  if(typeof XLSX==='undefined')return toast('Excel library not loaded yet, please retry in a moment','error');
+
+  const statusEl=document.getElementById('importStatus');
+  const progBox=document.getElementById('importProgressBox');
+  const progText=document.getElementById('importProgressText');
+  const progBar=document.getElementById('importProgressBar');
+  const sumBox=document.getElementById('importSummaryBox');
+  if(sumBox){sumBox.style.display='none';sumBox.innerHTML='';}
+  if(statusEl)statusEl.textContent='Reading file...';
+  if(progBox)progBox.style.display='block';
+  if(progText)progText.textContent='Reading workbook...';
+  if(progBar)progBar.style.width='5%';
+
+  let rows;
+  try{
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:'array',cellDates:true});
+    if(!wb.SheetNames.includes('IMPORT_TEMPLATE'))throw new Error('Sheet "IMPORT_TEMPLATE" not found in workbook');
+    const ws=wb.Sheets['IMPORT_TEMPLATE'];
+    rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:true});
+  }catch(e){
+    if(progBox)progBox.style.display='none';
+    if(statusEl)statusEl.textContent='';
+    return toast('Failed to read file: '+e.message,'error');
+  }
+
+  if(!rows||!rows.length){
+    if(progBox)progBox.style.display='none';
+    return toast('IMPORT_TEMPLATE is empty','warning');
+  }
+
+  // Group by client_name -> loan_number -> payments
+  const clientsMap=new Map();
+  for(const r of rows){
+    const name=_str(r.client_name);
+    if(!name)continue;
+    if(!clientsMap.has(name)){
+      clientsMap.set(name,{
+        client_name:name,
+        contact_phone:_normPhone(r.contact_phone),
+        guarantor_name:_str(r.guarantor_name),
+        income_kes:_num(r.income_kes),
+        loans:new Map()
+      });
+    }
+    const c=clientsMap.get(name);
+    if(!c.contact_phone && r.contact_phone) c.contact_phone=_normPhone(r.contact_phone);
+    if(!c.guarantor_name && r.guarantor_name) c.guarantor_name=_str(r.guarantor_name);
+    if(!c.income_kes && r.income_kes) c.income_kes=_num(r.income_kes);
+
+    const loanNo=_str(r.loan_number);
+    if(!loanNo)continue;
+    if(!c.loans.has(loanNo)){
+      c.loans.set(loanNo,{
+        loan_number:loanNo,
+        disbursement_date:_excelDateToISO(r.disbursement_date),
+        maturity_date:_excelDateToISO(r.maturity_date),
+        savings_kes:_num(r.savings_kes),
+        amount_disbursed_kes:_num(r.amount_disbursed_kes),
+        loan_amount_kes:_num(r.loan_amount_kes),
+        loan_product:_str(r.loan_product),
+        status:(_str(r.status)||'active').toLowerCase(),
+        payments:[]
+      });
+    }
+    const ln=c.loans.get(loanNo);
+    // Latest non-empty values win for loan-level fields
+    if(r.disbursement_date) ln.disbursement_date=_excelDateToISO(r.disbursement_date)||ln.disbursement_date;
+    if(r.maturity_date) ln.maturity_date=_excelDateToISO(r.maturity_date)||ln.maturity_date;
+    if(r.status) ln.status=_str(r.status).toLowerCase();
+    if(r.loan_product) ln.loan_product=_str(r.loan_product);
+    if(r.amount_disbursed_kes) ln.amount_disbursed_kes=_num(r.amount_disbursed_kes);
+    if(r.loan_amount_kes) ln.loan_amount_kes=_num(r.loan_amount_kes);
+    if(r.savings_kes) ln.savings_kes=_num(r.savings_kes);
+
+    const payDate=_excelDateToISO(r.payment_date);
+    const payAmt=_num(r.payment_amount_kes);
+    if(payDate && payAmt>0){
+      ln.payments.push({
+        payment_date:payDate,
+        payment_amount_kes:payAmt,
+        balance_after_kes:_num(r.balance_after_kes),
+        payment_note:_str(r.payment_note)
+      });
+    }
+  }
+
+  const clientsArr=Array.from(clientsMap.values());
+  const totalClients=clientsArr.length;
+  const stats={clientsAdded:0,clientsExisting:0,loansAdded:0,loansExisting:0,paymentsAdded:0,paymentsSkipped:0,errors:0,errorMessages:[]};
+
+  for(let i=0;i<clientsArr.length;i++){
+    const c=clientsArr[i];
+    const pct=Math.round(((i)/totalClients)*100);
+    if(progText)progText.textContent=`Importing client ${i+1} of ${totalClients}: ${c.client_name}`;
+    if(progBar)progBar.style.width=pct+'%';
+    if(statusEl)statusEl.textContent=`Importing ${i+1}/${totalClients}...`;
+
+    let clientId=null;
+    try{
+      // Match existing by contact_phone within this business
+      if(c.contact_phone){
+        const{data:exist}=await sb('loan_clients').select('id').eq('business_id',currentUser.business_id).eq('phone',c.contact_phone).limit(1);
+        if(exist&&exist.length){ clientId=exist[0].id; stats.clientsExisting++; }
+      }
+      if(!clientId){
+        const clientRec={
+          full_name:c.client_name,
+          phone:c.contact_phone||null,
+          monthly_income:c.income_kes||0,
+          next_of_kin_name:c.guarantor_name||null,
+          notes:'Imported from Excel',
+          business_id:currentUser.business_id,
+          created_by:currentUser?.id
+        };
+        const{data:ins,error:insErr}=await sb('loan_clients').insert(clientRec).select('id').single();
+        if(insErr)throw insErr;
+        clientId=ins.id;
+        stats.clientsAdded++;
+      }else{
+        // Update guarantor/income if previously empty
+        const upd={};
+        if(c.guarantor_name) upd.next_of_kin_name=c.guarantor_name;
+        if(c.income_kes) upd.monthly_income=c.income_kes;
+        if(Object.keys(upd).length){ try{ await sb('loan_clients').update(upd).eq('id',clientId);}catch(_){} }
+      }
+    }catch(e){
+      stats.errors++; stats.errorMessages.push(`Client "${c.client_name}": ${e.message||e}`);
+      console.error('Client insert failed',c.client_name,e);
+      continue;
+    }
+
+    // Loans for this client
+    const loansArr=Array.from(c.loans.values());
+    for(const ln of loansArr){
+      let loanId=null;
+      try{
+        const{data:existLoan}=await sb('loans').select('id').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('loan_no',ln.loan_number).limit(1);
+        // Compute totals from payments
+        const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
+        const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
+        const lastPay=sortedPays[sortedPays.length-1];
+        const principal=ln.loan_amount_kes||ln.amount_disbursed_kes||0;
+        const status=(ln.status==='cleared'||ln.status==='closed'||ln.status==='completed')?'completed':'active';
+        const outstanding= status==='completed' ? 0 : (lastPay && lastPay.balance_after_kes!==undefined ? lastPay.balance_after_kes : Math.max(principal-totalPaid,0));
+
+        const loanRec={
+          loan_no:ln.loan_number,
+          client_id:clientId,
+          principal_amount:principal,
+          disbursed_amount:ln.amount_disbursed_kes||principal,
+          total_payable:principal,
+          total_paid:totalPaid,
+          outstanding_balance:outstanding,
+          disbursement_date:ln.disbursement_date,
+          maturity_date:ln.maturity_date,
+          first_repayment_date:ln.disbursement_date,
+          status:status,
+          interest_rate:0,
+          interest_type:'flat',
+          term_weeks:0,
+          processing_fee:0,
+          total_interest:0,
+          weekly_installment:0,
+          arrears_amount:0,
+          overdue_days:0,
+          disbursement_method:'cash',
+          loan_officer_id:currentUser?.id,
+          business_id:currentUser.business_id,
+          created_at:ln.disbursement_date?new Date(ln.disbursement_date+'T00:00:00').toISOString():undefined
+        };
+        // Drop undefined fields so DB defaults apply
+        Object.keys(loanRec).forEach(k=>loanRec[k]===undefined&&delete loanRec[k]);
+
+        if(existLoan&&existLoan.length){
+          loanId=existLoan[0].id;
+          stats.loansExisting++;
+          // Update with latest aggregated values
+          const upd={...loanRec}; delete upd.created_at;
+          try{ await sb('loans').update(upd).eq('id',loanId);}catch(_){}
+        }else{
+          const{data:lnIns,error:lnErr}=await sb('loans').insert(loanRec).select('id').single();
+          if(lnErr)throw lnErr;
+          loanId=lnIns.id;
+          stats.loansAdded++;
+        }
+      }catch(e){
+        stats.errors++; stats.errorMessages.push(`Loan ${ln.loan_number} (${c.client_name}): ${e.message||e}`);
+        console.error('Loan insert failed',ln.loan_number,e);
+        continue;
+      }
+
+      // Payments
+      for(const p of ln.payments){
+        try{
+          // Duplicate check: loan_id + payment_date + amount
+          const{data:existPay}=await sb('loan_repayments').select('id').eq('loan_id',loanId).eq('payment_date',p.payment_date).eq('amount',p.payment_amount_kes).limit(1);
+          if(existPay&&existPay.length){ stats.paymentsSkipped++; continue; }
+          const rcptNo=(appSettings?.receipt_no_prefix||'RCP')+'-IMP-'+Date.now().toString().slice(-6)+'-'+Math.floor(Math.random()*1000);
+          const payRec={
+            loan_id:loanId,
+            receipt_no:rcptNo,
+            amount:p.payment_amount_kes,
+            payment_method:'cash',
+            payment_reference:'IMPORT',
+            payment_date:p.payment_date,
+            principal_portion:p.payment_amount_kes,
+            interest_portion:0,
+            penalty_portion:0,
+            mpesa_confirmed:false,
+            collected_by:currentUser?.id,
+            business_id:currentUser.business_id,
+            notes:p.payment_note||'Imported from Excel',
+            created_at:new Date(p.payment_date+'T00:00:00').toISOString()
+          };
+          const{error:pErr}=await sb('loan_repayments').insert(payRec);
+          if(pErr)throw pErr;
+          stats.paymentsAdded++;
+        }catch(e){
+          stats.errors++; stats.errorMessages.push(`Payment ${p.payment_date} on loan ${ln.loan_number}: ${e.message||e}`);
+          console.error('Payment insert failed',p,e);
+        }
+      }
+    }
+  }
+
+  if(progBar)progBar.style.width='100%';
+  if(progText)progText.textContent='Import complete';
+  if(statusEl)statusEl.textContent='Done';
+
+  if(sumBox){
+    sumBox.style.display='block';
+    sumBox.innerHTML=`
+      <strong style="color:var(--accent-green)">Import Summary</strong>
+      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
+        <div>Clients added: <strong>${stats.clientsAdded}</strong></div>
+        <div>Existing clients matched: <strong>${stats.clientsExisting}</strong></div>
+        <div>Loans created: <strong>${stats.loansAdded}</strong></div>
+        <div>Loans updated: <strong>${stats.loansExisting}</strong></div>
+        <div>Payments recorded: <strong>${stats.paymentsAdded}</strong></div>
+        <div>Duplicate payments skipped: <strong>${stats.paymentsSkipped}</strong></div>
+        <div>Errors: <strong style="color:${stats.errors?'var(--accent-red)':'inherit'}">${stats.errors}</strong></div>
+      </div>
+      ${stats.errors?`<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent-red)">Show error details</summary><pre style="white-space:pre-wrap;font-size:11px;margin-top:6px;max-height:200px;overflow:auto">${stats.errorMessages.slice(0,50).map(m=>m.replace(/</g,'&lt;')).join('\n')}</pre></details>`:''}
+    `;
+  }
+  toast(`Import complete: ${stats.clientsAdded} new clients, ${stats.loansAdded} loans, ${stats.paymentsAdded} payments`,'success');
+  try{ await audit('data_imported','loan_clients',null,null,{...stats,errorMessages:undefined}); }catch(_){}
 }
 
 // ═══ KEYBOARD SHORTCUTS ═══
