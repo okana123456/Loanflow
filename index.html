@@ -6,7 +6,7 @@
 <title>Bripta — Smart Lending. Clear Repayments.</title>
 <meta name="description" content="Bripta - Complete loan management system for lending companies. Smart Lending. Clear Repayments.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -22,6 +22,11 @@
 .light{
 --bg-dark:#f1f5f9;--bg-card:#ffffff;--sidebar:#f8fafc;--border:#e2e8f0;
 --text-primary:#0f172a;--text-secondary:#64748b;
+}
+/* Light Mode Font Override */
+body.light {
+    font-family: 'Outfit', sans-serif;
+    letter-spacing: -0.2px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh;overflow-x:hidden}
@@ -153,7 +158,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 }
 </style>
 </head>
-<body>
+<body class="dark">
 
 <div id="toastContainer" class="toast-container"></div>
 
@@ -286,6 +291,15 @@ let currentSection = 'dashboard';
 let cachedData = {};
 let charts = {};
 let appSettings = null; 
+
+// ═══ KEEP ALIVE PING ═══
+// Pings Supabase to reset the 7-day pause timer
+async function keepSupabaseAlive() {
+    try {
+        await sb('loan_settings').select('id').limit(1);
+        console.log("Supabase keep-alive ping successful.");
+    } catch(e) {}
+}
 
 // ═══ MOBILE UX PROTECTIONS ═══
 let protectionsAdded = false;
@@ -972,7 +986,9 @@ function navigateTo(section){
   else main.innerHTML=`<div class="empty-state"><p>Section "${section}" coming soon</p></div>`;
 }
 
-function toggleTheme(){document.body.classList.toggle('light')}
+function toggleTheme(){
+    document.body.classList.toggle('light');
+}
 
 // ═══ LOAN CALCULATIONS (WEEKLY) ═══
 function calcFlat(principal,weeklyRate,weeks){
@@ -2345,6 +2361,7 @@ document.addEventListener('keydown',e=>{
 // ═══ INIT ═══
 (async()=>{
   setupMobileProtections();
+  keepSupabaseAlive();
   const loggedIn=await checkAuthSession();
   if(loggedIn){
     await applyRolloverPenalties();
