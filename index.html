@@ -157,7 +157,6 @@ tr:hover{background:rgba(59,130,246,.03)}
 
 <div id="toastContainer" class="toast-container"></div>
 
-<!-- LOGIN SCREEN -->
 <div id="loginScreen">
 <div class="login-box">
 <h1>Bripta</h1>
@@ -169,7 +168,6 @@ tr:hover{background:rgba(59,130,246,.03)}
     <button class="auth-tab" id="tabSignUp" onclick="switchAuthTab('signup')">Sign Up</button>
   </div>
 
-  <!-- SIGN IN PANEL -->
   <div id="panelSignIn">
     <button class="btn btn-google" style="width:100%;padding:12px;margin-bottom:12px" onclick="signInWithGoogle()">
       <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
@@ -190,7 +188,6 @@ tr:hover{background:rgba(59,130,246,.03)}
     </p>
   </div>
 
-  <!-- SIGN UP PANEL -->
   <div id="panelSignUp" style="display:none">
     <button class="btn btn-google" style="width:100%;padding:12px;margin-bottom:12px" onclick="signInWithGoogle()">
       <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
@@ -219,7 +216,6 @@ tr:hover{background:rgba(59,130,246,.03)}
     </p>
   </div>
 
-  <!-- FORGOT PASSWORD PANEL -->
   <div id="panelForgot" style="display:none">
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Enter your email address and we'll send you a link to reset your password.</p>
     <div class="form-group">
@@ -232,7 +228,6 @@ tr:hover{background:rgba(59,130,246,.03)}
     </p>
   </div>
 
-  <!-- EMAIL CONFIRMATION NOTICE -->
   <div id="panelEmailSent" style="display:none;text-align:center;padding:20px 0">
     <div style="font-size:40px;margin-bottom:12px">📧</div>
     <h3 style="margin-bottom:8px">Check your email</h3>
@@ -244,10 +239,8 @@ tr:hover{background:rgba(59,130,246,.03)}
 </div>
 </div>
 
-<!-- HAMBURGER -->
 <button class="hamburger" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
 
-<!-- APP SHELL -->
 <div id="appShell">
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">
@@ -293,6 +286,43 @@ let currentSection = 'dashboard';
 let cachedData = {};
 let charts = {};
 let appSettings = null; 
+
+// ═══ MOBILE UX PROTECTIONS ═══
+let protectionsAdded = false;
+function setupMobileProtections() {
+    if (protectionsAdded) return;
+    protectionsAdded = true;
+    
+    // Block pull-to-refresh safely
+    window.addEventListener('touchmove', function(e) {
+        if (window.scrollY === 0) {
+            const isPullingDown = e.touches && e.touches.length > 0 && e.touches[0].clientY > 50; 
+            if (isPullingDown) {
+                const target = e.target;
+                if (!target.closest('.modal') && !target.closest('table') && !target.closest('tbody')) {
+                    e.preventDefault();
+                }
+            }
+        }
+    }, { passive: false });
+
+    // Block F5 / Ctrl+R / Cmd+R
+    window.addEventListener('keydown', function(e) {
+        if (currentUser !== null) {
+            if (e.key === 'F5' || (e.ctrlKey && (e.key === 'r' || e.key === 'R')) || (e.metaKey && (e.key === 'r' || e.key === 'R'))) {
+                e.preventDefault();
+            }
+        }
+    });
+
+    // Warn before tab close
+    window.addEventListener('beforeunload', function(e) {
+        if (currentUser !== null) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+}
 
 // ═══ UTILS ═══
 const $ = (sel) => document.querySelector(sel);
@@ -513,19 +543,26 @@ async function handleEmailLogin(){
       }
   } catch(e) {}
 
-  let isDone = false;
-  const watchdog = setTimeout(() => {
-      if(!isDone && btn) { 
-          btn.disabled = false; 
-          btn.textContent = 'Sign In'; 
-          toast('Connection timeout or browser hang. Please try again.', 'error');
+  // 1. Check Offline Cache First
+  try {
+      const cachedAuthStr = localStorage.getItem('bripta_offline_auth');
+      if (cachedAuthStr) {
+          const cachedAuth = JSON.parse(cachedAuthStr);
+          if (cachedAuth[email] && cachedAuth[email].passwordHash === btoa(pwd)) {
+              await resolveUserRole(null, cachedAuth[email].staffObj, pwd); 
+              if(btn){btn.disabled=false;btn.textContent='Sign In';}
+              return;
+          }
       }
-  }, 8000);
+  } catch(e) {}
 
   try{
-    const{data,error}=await supabaseClient.auth.signInWithPassword({email,password:pwd});
-    isDone = true;
-    clearTimeout(watchdog);
+    // 2. Supabase Login with Promise.race Timeout (8s)
+    const authPromise = supabaseClient.auth.signInWithPassword({email,password:pwd});
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000));
+    
+    const { data, error } = await Promise.race([authPromise, timeoutPromise]);
+    
     if(error){
       if(error.message.toLowerCase().includes('email not confirmed')){
         toast('Please confirm your email first. Check your inbox for a confirmation link.','warning');
@@ -536,8 +573,14 @@ async function handleEmailLogin(){
       }
       return;
     }
-    await resolveUserRole(data.user);
-  }catch(e){toast(e.message,'error')}
+    await resolveUserRole(data.user, null, pwd);
+  }catch(e){
+    if (e.message === 'timeout') {
+        toast("Network timeout: Could not reach authentication servers. Offline cache unavailable for this user.", "error");
+    } else {
+        toast(e.message,'error');
+    }
+  }
   finally{if(btn){btn.disabled=false;btn.textContent='Sign In';}}
 }
 
@@ -580,7 +623,7 @@ async function handleEmailSignUp(){
 
     if(data.session){
       toast('Account created! Welcome to Bripta.','success');
-      await resolveUserRole(data.session.user);
+      await resolveUserRole(data.session.user, null, pwd);
     } else {
       const panels=['panelSignIn','panelSignUp','panelForgot'];
       panels.forEach(p=>{const el=$('#'+p);if(el)el.style.display='none'});
@@ -598,7 +641,7 @@ async function handleForgotPassword(){
   const btn=document.querySelector('#panelForgot .btn-primary');
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   try{
-    // FIX: Check if email actually exists in our system before attempting reset
+    // Check if email actually exists in our system before attempting reset
     const { data: staffCheck } = await sb('loan_staff').select('id').ilike('email', email).limit(1);
     if (!staffCheck || staffCheck.length === 0) {
         throw new Error("This email is not registered in the system.");
@@ -616,7 +659,6 @@ async function handleForgotPassword(){
   finally{if(btn){btn.disabled=false;btn.textContent='Send Reset Link';}}
 }
 
-// FIX: Added confirmation password field to the reset modal
 async function submitNewPassword(){
   const newPwd=$('#newResetPassword').value;
   const confirmPwd=$('#confirmResetPassword').value;
@@ -635,39 +677,41 @@ async function submitNewPassword(){
   }catch(e){toast(e.message,'error');}
 }
 
-async function resolveUserRole(authUser){
-  if(!authUser)return toast('Authentication failed','error');
+async function resolveUserRole(authUser, staffCache = null, pwd = null){
+  if(!authUser && !staffCache)return toast('Authentication failed','error');
   try{
-    let staff = null;
+    let staff = staffCache;
     
-    // 1. Try to find by exact auth_user_id first
-    let { data: staffData } = await sb('loan_staff').select('*').eq('auth_user_id', authUser.id).limit(1);
-    if (staffData && staffData.length > 0) {
-        staff = staffData[0];
-    }
+    if(!staff && authUser){
+        // 1. Try to find by exact auth_user_id first
+        let { data: staffData } = await sb('loan_staff').select('*').eq('auth_user_id', authUser.id).limit(1);
+        if (staffData && staffData.length > 0) {
+            staff = staffData[0];
+        }
 
-    // 2. If not found by ID, try to link by email (case-insensitive)
-    if(!staff && authUser.email){
-      const { data: byEmailData } = await sb('loan_staff').select('*').ilike('email', authUser.email).limit(1);
-      if(byEmailData && byEmailData.length > 0){
-        staff = byEmailData[0];
-        // Link their new auth ID to the pre-created staff record
-        await sb('loan_staff').update({auth_user_id: authUser.id, last_login: new Date().toISOString()}).eq('id', staff.id);
-      }
-    }
+        // 2. If not found by ID, try to link by email (case-insensitive)
+        if(!staff && authUser.email){
+          const { data: byEmailData } = await sb('loan_staff').select('*').ilike('email', authUser.email).limit(1);
+          if(byEmailData && byEmailData.length > 0){
+            staff = byEmailData[0];
+            // Link their new auth ID to the pre-created staff record
+            await sb('loan_staff').update({auth_user_id: authUser.id, last_login: new Date().toISOString()}).eq('id', staff.id);
+          }
+        }
 
-    // 3. If STILL not found anywhere, treat as a brand new company signing up
-    if(!staff){
-      const name = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Admin';
-      const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
-      const { data: newStaffData, error: insertErr } = await sb('loan_staff').insert({
-        business_id: newBizId,
-        name, email: authUser.email, auth_user_id: authUser.id,
-        role: 'admin', is_active: true, last_login: new Date().toISOString()
-      }).select();
-      if(insertErr) throw insertErr;
-      staff = newStaffData[0];
-      toast(`Welcome, ${name}! Admin account created.`, 'success');
+        // 3. If STILL not found anywhere, treat as a brand new company signing up
+        if(!staff){
+          const name = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Admin';
+          const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
+          const { data: newStaffData, error: insertErr } = await sb('loan_staff').insert({
+            business_id: newBizId,
+            name, email: authUser.email, auth_user_id: authUser.id,
+            role: 'admin', is_active: true, last_login: new Date().toISOString()
+          }).select();
+          if(insertErr) throw insertErr;
+          staff = newStaffData[0];
+          toast(`Welcome, ${name}! Admin account created.`, 'success');
+        }
     }
 
     if(!staff){
@@ -681,10 +725,27 @@ async function resolveUserRole(authUser){
     }
 
     currentUser=staff;
-    await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id);
-    
-    // Attempt to load settings but don't block if they don't exist yet
-    await loadSettings();
+    localStorage.setItem('bripta_current_user', JSON.stringify(staff));
+
+    // Cache offline auth if pwd provided
+    if (pwd && staff.email) {
+        try {
+            const currentCache = JSON.parse(localStorage.getItem('bripta_offline_auth') || '{}');
+            currentCache[staff.email] = {
+                staffObj: staff,
+                passwordHash: btoa(pwd)
+            };
+            localStorage.setItem('bripta_offline_auth', JSON.stringify(currentCache));
+        } catch(e){}
+    }
+
+    if (!staffCache) { 
+        sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id).then(()=>{});
+        // Attempt to load settings silently
+        loadSettings();
+    } else {
+        loadSettings();
+    }
     
     window.history.replaceState(null, '', window.location.pathname);
     
@@ -696,9 +757,21 @@ async function resolveUserRole(authUser){
 }
 
 async function checkAuthSession(){
+  const cachedUserStr = localStorage.getItem('bripta_current_user');
+  if (cachedUserStr) {
+      try {
+          currentUser = JSON.parse(cachedUserStr);
+          showApp();
+          // Run background tasks silently
+          loadSettings();
+          applyRolloverPenalties();
+          return true;
+      } catch(e) {}
+  }
+
   const{data:{session}}=await supabaseClient.auth.getSession();
   if(session?.user){
-    // FIX: If we are in the middle of a password recovery, DO NOT resolve roles and log them in
+    // DO NOT resolve roles and log them in if doing password recovery
     if (window.location.hash.includes('type=recovery')) {
         return false;
     }
@@ -710,12 +783,14 @@ async function checkAuthSession(){
 
 function handleLogout(){
   audit('logout','loan_staff',currentUser?.id,null,null);
+  localStorage.removeItem('bripta_current_user');
   supabaseClient.auth.signOut();
   currentUser=null;
   $('#appShell').style.display='none';$('#loginScreen').style.display='flex';
 }
 
 function showApp(){
+  setupMobileProtections();
   $('#loginScreen').style.display='none';
   $('#appShell').style.display='flex';
   const displayRole = (currentUser.role||'viewer').split(',').map(r => r.replace(/_/g, ' ').toUpperCase()).join(', ');
@@ -818,11 +893,30 @@ async function executeSwitchUser(email) {
     if(!pwd) return toast('Enter password', 'warning');
     const btn = document.querySelector('.modal-actions .btn-primary');
     if(btn) { btn.disabled=true; btn.textContent='Switching...'; }
+
+    // 1. Check Offline Cache First
+    try {
+        const cachedAuthStr = localStorage.getItem('bripta_offline_auth');
+        if (cachedAuthStr) {
+            const cachedAuth = JSON.parse(cachedAuthStr);
+            if (cachedAuth[email] && cachedAuth[email].passwordHash === btoa(pwd)) {
+                currentUser = cachedAuth[email].staffObj;
+                localStorage.setItem('bripta_current_user', JSON.stringify(currentUser));
+                closeModal();
+                showApp();
+                toast(`Switched to ${email} (Offline Mode)`, 'success');
+                if(btn) { btn.disabled=false; btn.textContent='Sign In'; }
+                return;
+            }
+        }
+    } catch(e) {}
+
+    // 2. Fallback to standard Supabase re-auth
     try {
         const { data, error } = await supabaseClient.auth.signInWithPassword({email, password: pwd});
         if(error) throw error;
         closeModal();
-        await resolveUserRole(data.user);
+        await resolveUserRole(data.user, null, pwd);
         toast(`Switched to ${email}`, 'success');
     } catch(e) {
         toast(e.message, 'error');
@@ -832,7 +926,6 @@ async function executeSwitchUser(email) {
 
 supabaseClient.auth.onAuthStateChange(async(event,session)=>{
   if (event === 'PASSWORD_RECOVERY') {
-    // FIX: Added confirmation input, and forced logout of active session so they must log in with new password
     openModal(`
       <h2>Reset Your Password</h2>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
@@ -853,7 +946,6 @@ supabaseClient.auth.onAuthStateChange(async(event,session)=>{
     window.history.replaceState(null, '', window.location.pathname);
   }
   else if(event==='SIGNED_IN'&&session?.user&&!currentUser){
-    // Don't auto-login if they just clicked a password reset link
     if (!window.location.hash.includes('type=recovery')) {
         await loadSettings();
         await resolveUserRole(session.user);
@@ -1312,7 +1404,6 @@ async function submitApplication(){
     const amt=Number($('#appAmount').value);
     const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,guarantor_name:$('#appGName').value,guarantor_phone:$('#appGPhone').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
     
-    // FIX: Fallback to general tiered products if business-specific ones don't exist yet
     const tier=getAutoTier(amt);
     let {data:matchProduct}=await sb('loan_products').select('id').eq('business_id', currentUser.business_id).eq('name',tier).eq('is_active',true).limit(1).single();
     
@@ -1414,7 +1505,6 @@ async function confirmDisburse(appId,clientId,termWeeks){
   const btn = document.getElementById('btnConfirmDisburse');
   if(btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try{
-    // Double-check to prevent concurrent clicks creating duplicate loans
     const {data: appCheck} = await sb('loan_applications').select('status').eq('id', appId).single();
     if(appCheck?.status === 'disbursed') {
         toast('This application has already been disbursed!', 'warning');
@@ -1443,7 +1533,6 @@ async function confirmDisburse(appId,clientId,termWeeks){
       return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
     
-    // FIX: Allow batch insert failure handle cleanly
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
     if(sErr) {
         console.error("Schedule insert failed:", sErr);
@@ -1484,7 +1573,7 @@ function renderLoanRows(loans){
       <td><strong>${l.loan_no||'-'}</strong></td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
       <td>${fmtMoney(l.weekly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
       <td>${statusBadge(l.status)}</td>
-      <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> <button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button></td>
+      <td><button class="btn btn-outline btn-sm" onclick="viewLoan('${l.id}')">View</button> ${Number(l.outstanding_balance) <= 0 ? '<span class="badge badge-green">Paid in Full</span>' : `<button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button>`}</td>
     </tr>`}).join('');
 }
 
@@ -1568,7 +1657,6 @@ async function renderRepayments(page=1){
     const periodTotal = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
 
     const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
-    // Filter mpesaQueue by business
     const myQueue = (mpesaQueue||[]).filter(q => q.business_short_code === currentUser.business_id || !q.business_short_code);
 
     main.innerHTML=`
@@ -1762,6 +1850,7 @@ async function renderReports(){
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
       ${[
         {title:'Portfolio Report',desc:'Total active loans, outstanding, breakdown by product',fn:'genPortfolioReport'},
+        {title:'Portfolio Summary',desc:'Active clients without arrears vs total clients',fn:'genPortfolioSummaryReport'},
         {title:'Repayment Performance',desc:'Collections by period, on-time vs late rates',fn:'genRepaymentReport'},
         {title:'Aging / Overdue Report',desc:'All overdue loans with aging buckets and PAR metrics',fn:'genAgingReport'},
         {title:'Loan Officer Performance',desc:'Loans issued, portfolio size, collections per officer',fn:'genOfficerReport'},
@@ -1770,6 +1859,36 @@ async function renderReports(){
       ].map(r=>`<div class="card" style="cursor:pointer" onclick="${r.fn}()"><strong>${r.title}</strong><p style="font-size:13px;color:var(--text-secondary);margin-top:4px">${r.desc}</p></div>`).join('')}
     </div>
   `;
+}
+
+async function genPortfolioSummaryReport(){
+  try{
+    const {data: clients} = await sb('loan_clients').select('*').eq('business_id', currentUser.business_id);
+    const {data: loans} = await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status', 'active');
+    
+    const totalClients = (clients || []).length;
+    if(totalClients === 0) return toast('No clients found', 'info');
+    
+    const clientsWithArrears = new Set((loans || []).filter(l => Number(l.arrears_amount) > 0).map(l => l.client_id));
+    const activeClients = new Set((loans || []).map(l => l.client_id));
+    
+    let activeWithoutArrearsCount = 0;
+    activeClients.forEach(cId => {
+      if (!clientsWithArrears.has(cId)) activeWithoutArrearsCount++;
+    });
+
+    const pct = ((activeWithoutArrearsCount / totalClients) * 100).toFixed(2);
+    
+    const {jsPDF}=window.jspdf;const doc=new jsPDF();
+    doc.setFontSize(16);doc.text('Bripta — Portfolio Summary Report',14,20);
+    doc.setFontSize(10);doc.text(`Generated: ${fmtDate(today())}`,14,28);
+    doc.autoTable({startY:34,head:[['Metric','Value']],body:[
+      ['Total Clients', totalClients.toString()],
+      ['Active Clients Without Arrears', activeWithoutArrearsCount.toString()],
+      ['Portfolio Quality (%)', pct + '%']
+    ]});
+    doc.save('Bripta_Portfolio_Summary.pdf');toast('Report generated','success');
+  }catch(e){toast(e.message,'error')}
 }
 
 async function genPortfolioReport(){
@@ -1975,12 +2094,10 @@ async function saveStaff(id){
   try{
     let authUserId = null;
     
-    // If creating a NEW staff member, register them with Supabase Auth first
     if (!id) {
         const pwd = $('#stPwd').value;
         if (!pwd || pwd.length < 6) throw new Error('Password must be at least 6 characters');
         
-        // Use the secondary client so the Admin doesn't get logged out!
         const { data: authData, error: authErr } = await adminAuthClient.auth.signUp({
             email: email,
             password: pwd,
@@ -1988,7 +2105,6 @@ async function saveStaff(id){
         });
         
         if (authErr) {
-            // Handle case where email exists in Auth but not in our staff table
             if (authErr.message.includes('already registered')) {
                 toast('Note: This email is already registered in the system. The password you just typed was ignored; they must use their existing password.', 'warning');
             } else {
@@ -2228,6 +2344,7 @@ document.addEventListener('keydown',e=>{
 
 // ═══ INIT ═══
 (async()=>{
+  setupMobileProtections();
   const loggedIn=await checkAuthSession();
   if(loggedIn){
     await applyRolloverPenalties();
