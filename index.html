@@ -1203,19 +1203,42 @@ async function renderClients(page=1){
     const{data:clients,error}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     if(error)throw error;
     cachedData.clients=clients||[];
-    const p=paginate(cachedData.clients,page);
     main.innerHTML=`
       <div class="page-header"><h1>Clients</h1><div><button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
       <div class="search-bar" style="background:var(--card);padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;display:flex;gap:10px;align-items:center;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
         <span style="font-size:18px">🔎</span>
         <input class="input" id="clientSearchInput" placeholder="Search clients by Name, Phone, or ID Number..." oninput="filterClients(this.value)" style="flex:1;font-size:14px;padding:10px 12px">
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('clientSearchInput').value='';filterClients('')">Clear</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('clientSearchInput').value='';filterClients('');showAllClients(false)">Clear</button>
+        <button class="btn btn-primary btn-sm" id="btnViewAllClients" onclick="showAllClients(true)">View All Clients (${cachedData.clients.length})</button>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Occupation</th><th>Status</th><th>Actions</th></tr></thead>
-      <tbody id="clientsBody">${renderClientRows(p.items)}</tbody></table></div>
-      ${paginationHtml(p,'renderClients')}
+      <div id="clientsTableWrap" style="display:none">
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Occupation</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="clientsBody"></tbody></table></div>
+        <div id="clientsPagination"></div>
+      </div>
+      <div id="clientsEmptyHint" style="text-align:center;padding:40px 20px;color:var(--text-secondary);background:var(--card);border:1px dashed var(--border);border-radius:10px">
+        <div style="font-size:32px;margin-bottom:8px">👥</div>
+        <div style="font-size:14px">Type in the search bar above or click <strong>"View All Clients"</strong> to load the list.</div>
+        <div style="font-size:12px;margin-top:4px">${cachedData.clients.length} client${cachedData.clients.length===1?'':'s'} registered.</div>
+      </div>
     `;
   }catch(e){toast(e.message,'error')}
+}
+
+function showAllClients(show){
+  const wrap=document.getElementById('clientsTableWrap');
+  const hint=document.getElementById('clientsEmptyHint');
+  if(!wrap||!hint)return;
+  if(show){
+    wrap.style.display='block';
+    hint.style.display='none';
+    const p=paginate(cachedData.clients||[],clientPage);
+    document.getElementById('clientsBody').innerHTML=renderClientRows(p.items);
+    document.getElementById('clientsPagination').innerHTML=paginationHtml(p,'renderClients');
+  } else {
+    wrap.style.display='none';
+    hint.style.display='block';
+  }
 }
 
 function renderClientRows(clients){
@@ -1228,7 +1251,23 @@ function renderClientRows(clients){
     </tr>`}).join('');
 }
 
-function filterClients(q){q=q.toLowerCase();const f=(cachedData.clients||[]).filter(c=>(c.full_name||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.id_number||'').includes(q));$('#clientsBody').innerHTML=renderClientRows(f)}
+function filterClients(q){
+  q=(q||'').toLowerCase();
+  const wrap=document.getElementById('clientsTableWrap');
+  const hint=document.getElementById('clientsEmptyHint');
+  if(!q){
+    if(wrap) wrap.style.display='none';
+    if(hint) hint.style.display='block';
+    return;
+  }
+  const f=(cachedData.clients||[]).filter(c=>(c.full_name||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.id_number||'').includes(q));
+  if(wrap) wrap.style.display='block';
+  if(hint) hint.style.display='none';
+  const body=document.getElementById('clientsBody');
+  const pag=document.getElementById('clientsPagination');
+  if(body) body.innerHTML=renderClientRows(f)||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No matching clients</td></tr>';
+  if(pag) pag.innerHTML='';
+}
 
 function openAddClientModal(){
   openModal(`
@@ -1760,15 +1799,42 @@ async function renderLoans(page=1){
   try{
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.loans=loans||[];
-    const p=paginate(loans||[],page);
     main.innerHTML=`
       <div class="page-header"><h1>Active Loans</h1></div>
-      <div class="search-bar"><input class="input" placeholder="Search by loan no or client name..." oninput="filterLoans(this.value)"><select class="select" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select></div>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client Name</th><th>Phone</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
-      <tbody id="loansBody">${renderLoanRows(p.items)}</tbody></table></div>
-      ${paginationHtml(p,'renderLoans')}
+      <div class="search-bar">
+        <input class="input" id="loanSearchInput" placeholder="Search by loan no, client name, phone or ID..." oninput="filterLoans(this.value)">
+        <select class="select" id="loanStatusSelect" onchange="filterLoanStatus(this.value)"><option value="">All Status</option><option value="active">Active</option><option value="completed">Completed</option><option value="defaulted">Defaulted</option><option value="written_off">Written Off</option></select>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('loanSearchInput').value='';document.getElementById('loanStatusSelect').value='';showAllLoans(false)">Clear</button>
+        <button class="btn btn-primary btn-sm" id="btnViewAllLoans" onclick="showAllLoans(true)">View All Loans (${cachedData.loans.length})</button>
+      </div>
+      <div id="loansTableWrap" style="display:none">
+        <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client Name</th><th>Phone</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="loansBody"></tbody></table></div>
+        <div id="loansPagination"></div>
+      </div>
+      <div id="loansEmptyHint" style="text-align:center;padding:40px 20px;color:var(--text-secondary);background:var(--card);border:1px dashed var(--border);border-radius:10px">
+        <div style="font-size:32px;margin-bottom:8px">💰</div>
+        <div style="font-size:14px">Type in the search bar above or click <strong>"View All Loans"</strong> to load the list.</div>
+        <div style="font-size:12px;margin-top:4px">${cachedData.loans.length} loan${cachedData.loans.length===1?'':'s'} on file.</div>
+      </div>
     `;
   }catch(e){toast(e.message,'error')}
+}
+
+function showAllLoans(show){
+  const wrap=document.getElementById('loansTableWrap');
+  const hint=document.getElementById('loansEmptyHint');
+  if(!wrap||!hint)return;
+  if(show){
+    wrap.style.display='block';
+    hint.style.display='none';
+    const p=paginate(cachedData.loans||[],loanPage);
+    document.getElementById('loansBody').innerHTML=renderLoanRows(p.items);
+    document.getElementById('loansPagination').innerHTML=paginationHtml(p,'renderLoans');
+  } else {
+    wrap.style.display='none';
+    hint.style.display='block';
+  }
 }
 
 function renderLoanRows(loans){
@@ -1785,8 +1851,37 @@ function renderLoanRows(loans){
     </tr>`}).join('');
 }
 
-function filterLoans(q){q=(q||'').toLowerCase();const f=(cachedData.loans||[]).filter(l=>(l.loan_no||'').toLowerCase().includes(q)||(l.loan_clients?.full_name||'').toLowerCase().includes(q)||(l.loan_clients?.phone||'').toLowerCase().includes(q)||(l.loan_clients?.id_number||'').toLowerCase().includes(q));$('#loansBody').innerHTML=renderLoanRows(f)}
-function filterLoanStatus(v){const f=v?(cachedData.loans||[]).filter(l=>l.status===v):(cachedData.loans||[]);$('#loansBody').innerHTML=renderLoanRows(f)}
+function filterLoans(q){
+  q=(q||'').toLowerCase();
+  const wrap=document.getElementById('loansTableWrap');
+  const hint=document.getElementById('loansEmptyHint');
+  const status=(document.getElementById('loanStatusSelect')?.value)||'';
+  if(!q && !status){
+    if(wrap) wrap.style.display='none';
+    if(hint) hint.style.display='block';
+    return;
+  }
+  let f=(cachedData.loans||[]);
+  if(status) f=f.filter(l=>l.status===status);
+  if(q) f=f.filter(l=>(l.loan_no||'').toLowerCase().includes(q)||(l.loan_clients?.full_name||'').toLowerCase().includes(q)||(l.loan_clients?.phone||'').toLowerCase().includes(q)||(l.loan_clients?.id_number||'').toLowerCase().includes(q));
+  if(wrap) wrap.style.display='block';
+  if(hint) hint.style.display='none';
+  const body=document.getElementById('loansBody');
+  const pag=document.getElementById('loansPagination');
+  if(body) body.innerHTML=renderLoanRows(f)||'<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">No matching loans</td></tr>';
+  if(pag) pag.innerHTML='';
+}
+function filterLoanStatus(v){
+  const q=(document.getElementById('loanSearchInput')?.value)||'';
+  const wrap=document.getElementById('loansTableWrap');
+  const hint=document.getElementById('loansEmptyHint');
+  if(!v && !q){
+    if(wrap) wrap.style.display='none';
+    if(hint) hint.style.display='block';
+    return;
+  }
+  filterLoans(q);
+}
 
 async function viewLoan(id){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',id).single();
@@ -1948,7 +2043,7 @@ async function openPaymentModal(loanId){
   openModal(`
     <h2>Record Payment</h2>
     ${loanInfo}
-    ${!loanId?`<div class="form-group"><label>Search Loan (by loan no or client name)</label><input class="input" id="payLoanSearch" placeholder="LN- or client name..." oninput="searchLoanForPay(this.value)"><div id="payLoanResults" style="margin-top:4px"></div></div>`:''}
+    ${!loanId?`<div class="form-group" style="position:relative"><label>Search Loan (by loan no, client name, phone or ID)</label><input class="input" id="payLoanSearch" placeholder="Type loan no, name, phone or ID number..." oninput="searchLoanForPay(this.value)" autocomplete="off"><div id="payLoanResults" style="margin-top:4px;max-height:280px;overflow-y:auto;border-radius:8px"></div></div>`:''}
     <input type="hidden" id="payLoanId" value="${loanId||''}">
     <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
@@ -1958,18 +2053,60 @@ async function openPaymentModal(loanId){
 }
 
 async function searchLoanForPay(q){
-  if(q.length<2)return;
-  const{data}=await sb('loans').select('id,loan_no,outstanding_balance,client_id,loan_clients(full_name)').eq('business_id', currentUser.business_id).ilike('loan_no',`%${q}%`).limit(8);
-  const allResults = data||[];
-  $('#payLoanResults').innerHTML=allResults.map(l=>{
-    const nm=l.loan_clients?.full_name||'';
-    return `<div style="padding:6px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center" onclick="selectLoanForPay('${l.id}','${l.loan_no}','${nm.replace(/'/g,"\\'")}',${l.outstanding_balance})"><span><strong>${l.loan_no}</strong> — ${nm}</span><span style="color:var(--text-secondary)">${fmtMoney(l.outstanding_balance)}</span></div>`;
-  }).join('')||'<div style="padding:8px;color:var(--text-secondary);font-size:12px">No loans found</div>';
+  const box=document.getElementById('payLoanResults');
+  if(!box)return;
+  q=(q||'').trim();
+  if(q.length<2){ box.innerHTML=''; return; }
+  box.innerHTML='<div style="padding:8px;color:var(--text-secondary);font-size:12px">Searching...</div>';
+  try{
+    // Search clients first (name / phone / id_number)
+    const{data:matchedClients}=await sb('loan_clients')
+      .select('id,full_name,phone,id_number')
+      .eq('business_id', currentUser.business_id)
+      .or(`full_name.ilike.%${q}%,phone.ilike.%${q}%,id_number.ilike.%${q}%`)
+      .limit(20);
+    const clientIds=(matchedClients||[]).map(c=>c.id);
+
+    // Search loans by loan_no OR by matched client_ids
+    let loansQuery=sb('loans')
+      .select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
+      .eq('business_id', currentUser.business_id)
+      .eq('status','active');
+    if(clientIds.length){
+      loansQuery=loansQuery.or(`loan_no.ilike.%${q}%,client_id.in.(${clientIds.join(',')})`);
+    } else {
+      loansQuery=loansQuery.ilike('loan_no',`%${q}%`);
+    }
+    const{data}=await loansQuery.limit(15);
+    const allResults=(data||[]).filter(l=>Number(l.outstanding_balance)>0);
+
+    if(!allResults.length){
+      box.innerHTML='<div style="padding:10px;color:var(--text-secondary);font-size:13px;background:var(--card);border:1px solid var(--border);border-radius:8px">No active loans found for that search</div>';
+      return;
+    }
+    box.innerHTML=allResults.map(l=>{
+      const nm=(l.loan_clients?.full_name||'').replace(/'/g,"\\'");
+      const ph=l.loan_clients?.phone||'';
+      const idn=l.loan_clients?.id_number||'';
+      return `<div style="padding:10px 12px;cursor:pointer;font-size:13px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--card);display:flex;justify-content:space-between;align-items:center;gap:10px;transition:background .15s" onmouseover="this.style.background='rgba(59,130,246,0.08)'" onmouseout="this.style.background='var(--card)'" onclick="selectLoanForPay('${l.id}','${l.loan_no}','${nm}',${l.outstanding_balance})">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;color:var(--text-primary)">👤 ${l.loan_clients?.full_name||'Unknown'}</div>
+          <div style="color:var(--text-secondary);font-size:12px;margin-top:2px">${l.loan_no} ${ph?'• '+ph:''} ${idn?'• ID '+idn:''}</div>
+        </div>
+        <div style="text-align:right;white-space:nowrap">
+          <div style="font-weight:700;color:var(--accent-yellow)">${fmtMoney(l.outstanding_balance)}</div>
+          <div style="font-size:11px;color:var(--text-secondary)">Balance</div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    box.innerHTML=`<div style="padding:10px;color:var(--accent-red);font-size:12px">Search error: ${e.message}</div>`;
+  }
 }
 function selectLoanForPay(id,loanNo,name,balance){
   document.getElementById('payLoanId').value=id;
   document.getElementById('payLoanSearch').value=loanNo;
-  document.getElementById('payLoanResults').innerHTML=`<div style="padding:6px 10px;background:rgba(59,130,246,0.1);border-radius:6px;font-size:13px">✅ <strong>${loanNo}</strong> — ${name} — Balance: ${fmtMoney(balance)}</div>`;
+  document.getElementById('payLoanResults').innerHTML=`<div style="padding:10px 12px;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);border-radius:8px;font-size:13px">✅ <strong>${loanNo}</strong> — ${name} — Balance: <strong>${fmtMoney(balance)}</strong></div>`;
 }
 
 async function savePayment(){
@@ -2810,18 +2947,70 @@ async function saveSettings(){
 }
 
 async function undoLastImport() {
-  if(!await confirm_('WARNING: This will permanently delete ALL clients, loans, and payments that were imported from Excel. Are you absolutely sure?')) return;
+  if(!await confirm_('WARNING: This will permanently delete ALL imported loans, their schedules, their payments (even if edited), imported applications, and any clients that were created by the importer. Existing clients will be kept but stripped of imported loans. Are you absolutely sure?')) return;
   const btn = document.getElementById('btnUndoImport');
   if(btn) { btn.disabled = true; btn.textContent = 'Wiping Data...'; }
   try {
-    await sb('loan_repayments').delete().eq('business_id', currentUser.business_id).eq('payment_reference', 'IMPORT');
-    await sb('loans').delete().eq('business_id', currentUser.business_id).like('loan_no', '%-IMP-%');
-    await sb('loan_applications').delete().eq('business_id', currentUser.business_id).like('application_no', '%-IMP-%');
-    await sb('loan_clients').delete().eq('business_id', currentUser.business_id).eq('notes', 'Imported from Excel');
-    toast('All imported data has been successfully wiped.', 'success');
+    const bizId = currentUser.business_id;
+
+    // 1) Find every loan that was created by the importer
+    const { data: impLoans, error: loansErr } = await sb('loans')
+      .select('id')
+      .eq('business_id', bizId)
+      .like('loan_no', '%-IMP-%');
+    if(loansErr) throw loansErr;
+    const loanIds = (impLoans||[]).map(l=>l.id);
+
+    let repsDeleted = 0, schedsDeleted = 0;
+
+    if(loanIds.length){
+      // Supabase .in() can struggle with very long arrays; chunk to be safe.
+      const CHUNK = 200;
+      for(let i=0;i<loanIds.length;i+=CHUNK){
+        const slice = loanIds.slice(i, i+CHUNK);
+        // 2) Cascade: delete ALL repayments tied to these loan IDs
+        const { error: rErr, count: rCount } = await sb('loan_repayments')
+          .delete({ count: 'exact' })
+          .in('loan_id', slice);
+        if(rErr) throw rErr;
+        repsDeleted += (rCount||0);
+
+        // 3) Cascade: delete ALL schedules tied to these loan IDs
+        const { error: sErr, count: sCount } = await sb('loan_schedules')
+          .delete({ count: 'exact' })
+          .in('loan_id', slice);
+        if(sErr) throw sErr;
+        schedsDeleted += (sCount||0);
+      }
+
+      // 4) Now delete the imported loans themselves
+      const { error: lDelErr } = await sb('loans')
+        .delete()
+        .eq('business_id', bizId)
+        .like('loan_no', '%-IMP-%');
+      if(lDelErr) throw lDelErr;
+    }
+
+    // 5) Delete imported applications
+    const { error: aErr } = await sb('loan_applications')
+      .delete()
+      .eq('business_id', bizId)
+      .like('application_no', '%-IMP-%');
+    if(aErr) throw aErr;
+
+    // 6) Finally remove only clients that the importer created.
+    //    Existing clients (notes !== 'Imported from Excel') are left alone.
+    const { error: cErr } = await sb('loan_clients')
+      .delete()
+      .eq('business_id', bizId)
+      .eq('notes', 'Imported from Excel');
+    if(cErr) throw cErr;
+
+    toast(`Wiped ${loanIds.length} imported loans, ${repsDeleted} payments, ${schedsDeleted} schedules.`, 'success');
     renderSettings();
   } catch(e) {
-    toast(e.message, 'error');
+    console.error('[undoLastImport] failed', e);
+    toast(e.message||'Failed to wipe imported data', 'error');
   } finally {
     if(btn) { btn.disabled = false; btn.textContent = '⚠️ Wipe All Imported Data'; }
   }
@@ -3078,11 +3267,22 @@ async function handleExcelImport(ev){
         const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
         const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
         const lastPay=sortedPays[sortedPays.length-1];
-        const principal=ln.loan_amount_kes||ln.amount_disbursed_kes||0;
+
+        // === REVENUE / INTEREST MATH ===
+        // True principal = amount actually handed to the client.
+        // Total payable    = full loan_amount_kes the client must repay.
+        // Interest         = the spread between the two.
+        const disbursed   = Number(ln.amount_disbursed_kes||0);
+        const totalPayable= Number(ln.loan_amount_kes||0) || disbursed;
+        const principal   = disbursed || totalPayable; // fallback if disbursed not provided
+        const totalInterest = Math.max(0, totalPayable - principal);
+        const interestRatio = totalPayable>0 ? (totalInterest/totalPayable) : 0;
+        const principalRatio= totalPayable>0 ? (principal   /totalPayable) : 1;
+
         // Map Excel status values to system status
         const rawStatus=(ln.status||'').toLowerCase();
         const status=(rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')?'completed':'active';
-        const outstanding= status==='completed' ? 0 : (lastPay && lastPay.balance_after_kes!==undefined ? lastPay.balance_after_kes : Math.max(principal-totalPaid,0));
+        const outstanding= status==='completed' ? 0 : (lastPay && lastPay.balance_after_kes!==undefined ? lastPay.balance_after_kes : Math.max(totalPayable-totalPaid,0));
 
         // Match existing loan by client_id + disbursement_date + principal_amount (loan_no format differs for imports)
         let existQuery=sb('loans').select('id').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('principal_amount',principal);
@@ -3096,8 +3296,8 @@ async function handleExcelImport(ev){
           loan_no:loanNo,
           client_id:clientId,
           principal_amount:principal,
-          disbursed_amount:ln.amount_disbursed_kes||principal,
-          total_payable:principal,
+          disbursed_amount:disbursed||principal,
+          total_payable:totalPayable,
           total_paid:totalPaid,
           outstanding_balance:outstanding,
           disbursement_date:ln.disbursement_date,
@@ -3108,7 +3308,7 @@ async function handleExcelImport(ev){
           interest_type:'flat',
           term_weeks:0,
           processing_fee:0,
-          total_interest:0,
+          total_interest:totalInterest,
           weekly_installment:0,
           arrears_amount:0,
           overdue_days:0,
@@ -3152,8 +3352,8 @@ async function handleExcelImport(ev){
             payment_method:'cash',
             payment_reference:'IMPORT',
             payment_date:p.payment_date,
-            principal_portion:p.payment_amount_kes,
-            interest_portion:0,
+            principal_portion: Number((p.payment_amount_kes * principalRatio).toFixed(2)),
+            interest_portion:  Number((p.payment_amount_kes * interestRatio ).toFixed(2)),
             penalty_portion:0,
             mpesa_confirmed:false,
             collected_by:currentUser?.id,
