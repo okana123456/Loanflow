@@ -2670,6 +2670,45 @@ async function renderOfficerPerformance(){
   }catch(e){main.innerHTML=`<div class="empty-state"><p>Error: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
+// ═══ INTASEND WEBHOOK HELPERS ═══
+function copyIntasendWebhookUrl(){
+  const inp=document.getElementById('setIntasendWebhookUrl');
+  if(!inp) return;
+  inp.select(); inp.setSelectionRange(0, 99999);
+  try { navigator.clipboard.writeText(inp.value); toast('Webhook URL copied','success'); }
+  catch(e){ document.execCommand('copy'); toast('Webhook URL copied','success'); }
+}
+
+async function viewUnmatchedPayments(){
+  try{
+    const{data,error}=await sb('unmatched_payments')
+      .select('*')
+      .eq('business_id', currentUser.business_id)
+      .order('created_at',{ascending:false})
+      .limit(100);
+    if(error) throw error;
+    const rows=(data||[]).map(p=>`
+      <tr>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
+        <td>${p.account_number||'-'}</td>
+        <td>${fmtMoney(p.amount)}</td>
+        <td>${p.payer_phone||'-'}</td>
+        <td>${p.mpesa_reference||p.invoice_id||'-'}</td>
+        <td>${p.resolved?'<span class="badge badge-green">Resolved</span>':'<span class="badge badge-yellow">Pending</span>'}</td>
+      </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:20px">No unmatched payments 🎉</td></tr>';
+    const html=`
+      <div style="padding:8px">
+        <h3 style="margin-bottom:12px">Unmatched Intasend Payments</h3>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Payments where the account number didn't match any client's National ID. Update the client's ID in Clients, then manually record the payment.</p>
+        <div style="overflow:auto;max-height:60vh">
+          <table class="table" style="width:100%"><thead><tr><th>Received</th><th>Account No</th><th>Amount</th><th>Payer Phone</th><th>Reference</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+        </div>
+      </div>`;
+    if(typeof openModal==='function') openModal('Unmatched Payments', html);
+    else { const w=window.open('','_blank'); w.document.write('<title>Unmatched</title>'+html); }
+  }catch(e){ toast(e.message,'error'); }
+}
+
 
 
 // ═══ ACCOUNTING ═══
@@ -3023,6 +3062,50 @@ async function renderSettings(){
           ℹ️ Get your keys at <strong>payments.intasend.com → Settings → API Keys &amp; Webhooks</strong>. Use <strong>Sandbox</strong> keys for testing and <strong>Live</strong> keys to charge real customers.
         </div>
       </div>
+
+      <!-- ═══ INTASEND PAYBILL & WEBHOOK ═══ -->
+      <div class="card" style="max-width:700px;margin-bottom:16px;border-color:#10b981">
+        <h3 style="font-size:16px;margin-bottom:6px;color:#10b981">📡 Intasend Paybill & Real-Time Webhook</h3>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px">
+          When a client pays via your Intasend paybill and enters their <strong>National ID number</strong> as the account, Intasend will notify this URL in real time and we'll auto-record the repayment against the matching client's active loan.
+        </p>
+
+        <div class="form-group">
+          <label>Your Intasend Paybill Number</label>
+          <input class="input" id="setIntasendPaybill" value="${settings.intasend_paybill||''}" placeholder="e.g. 542542">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">This is the paybill assigned to you by Intasend. Tell your clients to use their <strong>ID number</strong> as the account number.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Webhook Secret / Challenge</label>
+          <input class="input" id="setIntasendWebhookSecret" value="${settings.intasend_webhook_secret||''}" placeholder="A random string you set in Intasend dashboard">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Set the same value in <strong>Intasend → Settings → Webhooks → Challenge</strong>. Anyone calling the webhook must send this value or it will be rejected.</div>
+        </div>
+
+        <div class="form-group">
+          <label>Webhook URL (paste this in Intasend dashboard)</label>
+          <div style="display:flex;gap:6px">
+            <input class="input" id="setIntasendWebhookUrl" value="${SUPABASE_URL+'/functions/v1/intasend-webhook'}" readonly style="opacity:0.85">
+            <button type="button" class="btn btn-outline btn-sm" onclick="copyIntasendWebhookUrl()">Copy</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Add this URL in <strong>Intasend → Settings → Webhooks → Endpoint URL</strong> and enable <em>Payment events</em>.</div>
+        </div>
+
+        <div style="background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.5">
+          <strong style="color:#10b981">How it works for the client:</strong><br>
+          1. Open M-Pesa → Lipa na M-Pesa → Pay Bill<br>
+          2. Business no: <strong>${settings.intasend_paybill||'<your paybill>'}</strong><br>
+          3. Account no: <strong>their National ID number</strong><br>
+          4. Enter amount and PIN<br>
+          ✅ Payment is auto-matched to their active loan in seconds.
+        </div>
+
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+          <button type="button" class="btn btn-outline btn-sm" onclick="viewUnmatchedPayments()">View unmatched payments</button>
+          <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">Payments where the account number didn't match any client.</span>
+        </div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
     `;
   }catch(e){toast(e.message,'error')}
@@ -3030,7 +3113,7 @@ async function renderSettings(){
 
 async function saveSettings(){
   try{
-    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,intasend_enabled:document.getElementById('setIntasendEnabled')?document.getElementById('setIntasendEnabled').checked:false,intasend_live:document.getElementById('setIntasendLive')?document.getElementById('setIntasendLive').checked:false,intasend_publishable_key:document.getElementById('setIntasendPub')?document.getElementById('setIntasendPub').value:'',intasend_secret_key:document.getElementById('setIntasendSecret')?document.getElementById('setIntasendSecret').value:'',business_id:currentUser?.business_id||'bripta'};
+    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,intasend_enabled:document.getElementById('setIntasendEnabled')?document.getElementById('setIntasendEnabled').checked:false,intasend_live:document.getElementById('setIntasendLive')?document.getElementById('setIntasendLive').checked:false,intasend_publishable_key:document.getElementById('setIntasendPub')?document.getElementById('setIntasendPub').value:'',intasend_secret_key:document.getElementById('setIntasendSecret')?document.getElementById('setIntasendSecret').value:'',intasend_paybill:document.getElementById('setIntasendPaybill')?document.getElementById('setIntasendPaybill').value.trim():'',intasend_webhook_secret:document.getElementById('setIntasendWebhookSecret')?document.getElementById('setIntasendWebhookSecret').value.trim():'',business_id:currentUser?.business_id||'bripta'};
     const{data:existing}=await sb('loan_settings').select('id').eq('business_id',rec.business_id).single();
     if(existing){await sb('loan_settings').update(rec).eq('id',existing.id)}else{await sb('loan_settings').insert(rec)}
     appSettings={...appSettings,...rec};
