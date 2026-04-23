@@ -1083,32 +1083,24 @@ async function renderDashboard(){
     const allApps=appsR.data||[];
     const allClients=clientsR.data||[];
     cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps,clients:allClients};
-
     const f = appFilters.dashboard;
+    
+    // Dynamically filter EVERYTHING based on the date picker
     const filteredDisbursed = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredApps = filterByDate(allApps, 'created_at', f);
-
-    // Client counts
+    const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
+    const filteredScheds = filterByDate(allScheds.filter(s=>s.due_date), 'due_date', f);
+    // Client counts (Overall vs Period)
     const totalClients = allClients.length;
     const activeClientIds = new Set(allLoans.filter(l=>l.status==='active').map(l=>l.client_id));
     const activeClients = activeClientIds.size;
-    const inactiveClients = totalClients - activeClients;
-
-    // This month new clients
-    const nowM = new Date().toISOString().slice(0,7);
-    const newClientsThisMonth = allClients.filter(c=>c.created_at&&c.created_at.startsWith(nowM)).length;
-
-    // Loan counts this month
-    const loanCountMonth = allLoans.filter(l=>l.disbursement_date&&l.disbursement_date.startsWith(nowM)).length;
-
-    // Collection rates
-    const today_str = new Date().toISOString().slice(0,10);
-    const dailyCollection = allReps.filter(r=>r.payment_date===today_str).reduce((s,r)=>s+Number(r.amount||0),0);
-    const monthlyCollection = allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(nowM)).reduce((s,r)=>s+Number(r.amount||0),0);
-    const monthlyDue = allScheds.filter(s=>s.due_date&&s.due_date.startsWith(nowM)).reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    const collectionRate = monthlyDue>0?Math.min(100,(monthlyCollection/monthlyDue*100)):0;
-
+    const newClientsPeriod = filteredClients.length;
+    // Collection rates for the selected period
+    const dailyCollection = allReps.filter(r=>r.payment_date===today()).reduce((s,r)=>s+Number(r.amount||0),0);
+    const periodCollection = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
+    const periodDue = filteredScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
+    const collectionRate = periodDue>0?Math.min(100,(periodCollection/periodDue*100)):0;
     // Global Snapshots
     const active=allLoans.filter(l=>l.status==='active');
     const portfolio=active.reduce((s,l)=>s+Number(l.principal_amount||0),0);
@@ -1117,28 +1109,17 @@ async function renderDashboard(){
     const par30=active.filter(l=>l.overdue_days>30);
     const par30val=par30.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const par30pct=portfolio>0?(par30val/portfolio*100):0;
-
     // Filtered Metrics
     const disbPeriod = filteredDisbursed.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
-    const repPeriod = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const appsPeriod = filteredApps.length;
-
-    const collRateColor = collectionRate>=80?'var(--accent-green)':collectionRate>=50?'var(--accent-yellow)':'var(--accent-red)';
-
-    // Arrears Collected: payments (in current month) on loans currently overdue
-    const overdueLoanIds = new Set(active.filter(l=>l.overdue_days>0).map(l=>l.id));
-    const arrearsReps = allReps.filter(r=>r.payment_date && r.payment_date.startsWith(nowM) && overdueLoanIds.has(r.loan_id));
+    const loanCountPeriod = filteredDisbursed.length;
+    // Arrears Collected in selected period
+    const overdueLoanIds = new Set(overdue.map(l=>l.id));
+    const arrearsReps = filteredReps.filter(r=>overdueLoanIds.has(r.loan_id));
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
-    const arrearsCount = arrearsReps.length;
-
-    // Collection card extra metrics
-    const paidTodayReps = allReps.filter(r=>r.payment_date===today_str);
-    const paidTodayCount = paidTodayReps.length;
-    const totalDueCount = allScheds.filter(s=>s.due_date&&s.due_date.startsWith(nowM)).length;
-    const unpaidDueAmt  = Math.max(0, monthlyDue - monthlyCollection);
-    const paidLoanIdsThisMonth = new Set(allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(nowM)).map(r=>r.loan_id));
-    const unpaidDueCount = active.filter(l=>!paidLoanIdsThisMonth.has(l.id)).length;
-
+    const paidPeriodCount = filteredReps.length;
+    const totalDueCount = filteredScheds.length;
+    const unpaidDueAmt  = Math.max(0, periodDue - periodCollection);
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1147,28 +1128,25 @@ async function renderDashboard(){
         </div>
         ${getDateFilterHtml('dashboard')}
       </div>
-
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Clients</h3>
+      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Clients (Selected Period)</h3>
       <div class="kpi-grid" style="margin-bottom:16px">
-        <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Total Clients</div><div class="kpi-value" style="color:var(--accent-blue)">${totalClients}</div><div class="kpi-sub">All registered clients</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-green)"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">With active loans</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-yellow)"><div class="kpi-label">Inactive Clients</div><div class="kpi-value" style="color:var(--accent-yellow)">${inactiveClients}</div><div class="kpi-sub">No active loan</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients (This Month)</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsThisMonth}</div><div class="kpi-sub">${nowM}</div></div>
+        <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Total Clients</div><div class="kpi-value" style="color:var(--accent-blue)">${totalClients}</div><div class="kpi-sub">All registered clients globally</div></div>
+        <div class="kpi-card" style="border-top:3px solid var(--accent-green)"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">With active loans globally</div></div>
+        <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsPeriod}</div><div class="kpi-sub">Registered in selected period</div></div>
       </div>
-
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection</h3>
+      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection (Selected Period)</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
         <div class="card" style="border-left:5px solid #10b981;padding:0;overflow:hidden">
           <div style="padding:4px 16px 8px;background:rgba(16,185,129,0.08)">
-            <span style="font-size:12px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px">Collection</span>
+            <span style="font-size:12px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px">Period Collection Goal</span>
           </div>
           <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
-            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(monthlyDue)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Total due &ndash; ${totalDueCount}</div>
+            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(periodDue)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Total due in period &ndash; ${totalDueCount}</div>
           </div>
           <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
             <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(unpaidDueAmt)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Unpaid Due &ndash; ${unpaidDueCount}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Unpaid Target</div>
             <div style="margin-top:10px;height:34px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
               <div style="height:100%;width:${Math.min(100,Math.max(0,collectionRate)).toFixed(1)}%;background:#ef4444;border-radius:6px;display:flex;align-items:center;padding-left:10px;min-width:${collectionRate>5?'0':'0'}px;transition:width .4s ease">
                 ${collectionRate>3?`<span style="color:#fff;font-weight:700;font-size:13px;white-space:nowrap">${collectionRate.toFixed(2)}%</span>`:''}
@@ -1178,66 +1156,41 @@ async function renderDashboard(){
           </div>
           <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
             <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(dailyCollection)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Paid Today &ndash; ${paidTodayCount}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Paid Today (Calendar)</div>
           </div>
           <div style="padding:14px 16px">
             <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(arrearsCollected)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Arrears Collected &ndash; ${arrearsCount}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Arrears Collected in period</div>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:12px">
-          <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Monthly Collection</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(monthlyCollection)}</div><div class="kpi-sub">${nowM}</div></div>
-          <div class="kpi-card" style="border-top:3px solid var(--accent-orange)"><div class="kpi-label">Loans Issued (Month)</div><div class="kpi-value" style="color:var(--accent-orange)">${loanCountMonth}</div><div class="kpi-sub">Disbursed in ${nowM}</div></div>
-          <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients (Month)</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsThisMonth}</div><div class="kpi-sub">${nowM}</div></div>
+          <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Period Collection</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(periodCollection)}</div><div class="kpi-sub">${paidPeriodCount} payments</div></div>
+          <div class="kpi-card" style="border-top:3px solid var(--accent-orange)"><div class="kpi-label">Loans Issued</div><div class="kpi-value" style="color:var(--accent-orange)">${loanCountPeriod}</div><div class="kpi-sub">Disbursed in period</div></div>
+          <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">Disbursed Amount</div><div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbPeriod)}</div><div class="kpi-sub">In selected period</div></div>
         </div>
       </div>
-
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Period Performance</h3>
-      <div class="kpi-grid" style="margin-bottom:16px">
-        <div class="kpi-card"><div class="kpi-label">Disbursed</div><div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbPeriod)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Repayments Collected</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(repPeriod)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">New Applications</div><div class="kpi-value" style="color:var(--accent-blue)">${appsPeriod}</div></div>
-      </div>
-
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Portfolio Snapshot</h3>
+      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Global Portfolio Snapshot</h3>
       <div class="kpi-grid" style="margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
         <div class="kpi-card"><div class="kpi-label">Active Outstanding</div><div class="kpi-value">${fmtMoney(outstanding)}</div></div>
         <div class="kpi-card"><div class="kpi-label">Overdue Loans</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div></div>
         <div class="kpi-card"><div class="kpi-label">PAR 30</div><div class="kpi-value" style="color:${par30pct>10?'var(--accent-red)':'var(--accent-yellow)'}">${par30pct.toFixed(1)}%</div></div>
       </div>
-
+      
       <div class="charts-grid">
         <div class="chart-card"><h3>Loan Status Breakdown</h3><canvas id="chartStatus"></canvas></div>
         <div class="chart-card"><h3>Monthly Disbursements vs Repayments</h3><canvas id="chartMonthly"></canvas></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">Overdue Loans (Top 10)</h3>
-          <div class="table-wrap"><table><thead><tr><th>Loan</th><th>Client</th><th>Phone</th><th>Overdue</th><th>Amount</th></tr></thead><tbody>
-          ${overdue.sort((a,b)=>b.overdue_days-a.overdue_days).slice(0,10).map(l=>`<tr><td>${l.loan_no||'-'}</td><td>${l.loan_clients?.full_name||l.client_id?.slice(0,8)||'-'}</td><td>${l.loan_clients?.phone||'-'}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>${fmtMoney(l.arrears_amount)}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
-          </tbody></table></div>
-        </div>
-        <div class="card"><h3 style="margin-bottom:12px;font-size:14px;font-weight:700">Pending Applications</h3>
-          <div class="table-wrap"><table><thead><tr><th>App #</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>
-          ${allApps.filter(a=>['submitted','under_review'].includes(a.status)).slice(0,10).map(a=>`<tr><td>${a.application_no||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No pending applications</td></tr>'}
-          </tbody></table></div>
-        </div>
-      </div>
     `;
-
     const statusCounts={active:active.length,completed:allLoans.filter(l=>l.status==='completed').length,defaulted:allLoans.filter(l=>l.status==='defaulted').length,written_off:allLoans.filter(l=>l.status==='written_off').length};
     Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});
-
     const ctx1=document.getElementById('chartStatus');
     if(ctx1)charts.status=new Chart(ctx1,{type:'doughnut',data:{labels:Object.keys(statusCounts),datasets:[{data:Object.values(statusCounts),backgroundColor:['#10b981','#3b82f6','#ef4444','#94a3b8']}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}}}});
-
     const months=[];for(let i=11;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months.push(d.toISOString().slice(0,7))}
     const disbByMonth=months.map(m=>allLoans.filter(l=>l.disbursement_date&&l.disbursement_date.startsWith(m)).reduce((s,l)=>s+Number(l.disbursed_amount||0),0));
     const repByMonth=months.map(m=>allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(m)).reduce((s,r)=>s+Number(r.amount||0),0));
-
     const ctx2=document.getElementById('chartMonthly');
     if(ctx2)charts.monthly=new Chart(ctx2,{type:'bar',data:{labels:months.map(m=>m.slice(5)),datasets:[{label:'Disbursed',data:disbByMonth,backgroundColor:'#8b5cf6'},{label:'Repaid',data:repByMonth,backgroundColor:'#10b981'}]},options:{responsive:true,scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}},plugins:{legend:{labels:{color:'#94a3b8'}}}}});
-
   }catch(e){main.innerHTML=`<div class="empty-state"><p>Error loading dashboard: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
@@ -2835,6 +2788,10 @@ async function renderSettings(){
           <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden"><div id="importProgressBar" style="background:var(--accent-purple);height:100%;width:0%;transition:width .2s"></div></div>
         </div>
         <div id="importSummaryBox" style="display:none;margin-top:12px;padding:12px;background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:8px;font-size:13px"></div>
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border)">
+          <button class="btn btn-danger btn-sm" id="btnUndoImport" onclick="undoLastImport()">⚠️ Wipe All Imported Data</button>
+          <p style="font-size:11px; color:var(--text-secondary); margin-top:6px">Clicking this will instantly delete any clients, loans, or payments that were generated via the Excel importer.</p>
+        </div>
       </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
     `;
@@ -2850,6 +2807,24 @@ async function saveSettings(){
     await audit('settings_changed','loan_settings',null,null,rec);
     toast('Settings saved','success');
   }catch(e){toast(e.message,'error')}
+}
+
+async function undoLastImport() {
+  if(!await confirm_('WARNING: This will permanently delete ALL clients, loans, and payments that were imported from Excel. Are you absolutely sure?')) return;
+  const btn = document.getElementById('btnUndoImport');
+  if(btn) { btn.disabled = true; btn.textContent = 'Wiping Data...'; }
+  try {
+    await sb('loan_repayments').delete().eq('business_id', currentUser.business_id).eq('payment_reference', 'IMPORT');
+    await sb('loans').delete().eq('business_id', currentUser.business_id).like('loan_no', '%-IMP-%');
+    await sb('loan_applications').delete().eq('business_id', currentUser.business_id).like('application_no', '%-IMP-%');
+    await sb('loan_clients').delete().eq('business_id', currentUser.business_id).eq('notes', 'Imported from Excel');
+    toast('All imported data has been successfully wiped.', 'success');
+    renderSettings();
+  } catch(e) {
+    toast(e.message, 'error');
+  } finally {
+    if(btn) { btn.disabled = false; btn.textContent = '⚠️ Wipe All Imported Data'; }
+  }
 }
 
 // ═══ AUDIT LOG ═══
