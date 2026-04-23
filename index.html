@@ -15,14 +15,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
---bg-dark:#0a0e1a;--bg-card:#111827;--sidebar:#0d1320;--border:#1e293b;
---accent-blue:#3b82f6;--accent-green:#10b981;--accent-yellow:#f59e0b;
---accent-red:#ef4444;--accent-purple:#8b5cf6;--accent-orange:#f97316;
---text-primary:#f8fafc;--text-secondary:#94a3b8;--radius:10px;
+--bg-dark:#0f172a;--bg-card:#1e293b;--sidebar:#0f172a;--border:#334155;
+--accent-blue:#2563eb;--accent-green:#059669;--accent-yellow:#d97706;
+--accent-red:#dc2626;--accent-purple:#7c3aed;--accent-orange:#ea580c;
+--text-primary:#f8fafc;--text-secondary:#94a3b8;--radius:8px;
 }
 .light{
---bg-dark:#f1f5f9;--bg-card:#ffffff;--sidebar:#f8fafc;--border:#e2e8f0;
+--bg-dark:#f8fafc;--bg-card:#ffffff;--sidebar:#ffffff;--border:#e2e8f0;
 --text-primary:#0f172a;--text-secondary:#64748b;
+--accent-blue:#2563eb;--accent-green:#059669;--accent-yellow:#d97706;
+--accent-red:#dc2626;--accent-purple:#7c3aed;--accent-orange:#ea580c;
 }
 /* Light Mode Font Override */
 body.light {
@@ -30,7 +32,7 @@ body.light {
     letter-spacing: -0.2px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh;overflow-x:hidden;overscroll-behavior-y:none}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh;overflow-x:hidden;overscroll-behavior-y:none;font-size:12px;-webkit-font-smoothing:antialiased;letter-spacing:-.1px}
 a{color:var(--accent-blue);text-decoration:none}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg-dark)}
@@ -42,34 +44,34 @@ a{color:var(--accent-blue);text-decoration:none}
 .login-box .tagline{color:var(--text-secondary);margin-bottom:32px;font-size:14px}
 /* LAYOUT */
 #appShell{display:none;height:100vh}
-.sidebar{position:fixed;left:0;top:0;bottom:0;width:220px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:100;transition:transform .3s}
-.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border)}
-.sidebar-header h2{font-size:20px;font-weight:800}
-.sidebar-header span{font-size:11px;color:var(--text-secondary)}
-.sidebar-nav{flex:1;overflow-y:auto;padding:12px 0}
-.nav-item{display:flex;align-items:center;gap:12px;padding:10px 20px;color:var(--text-secondary);cursor:pointer;font-size:14px;font-weight:600;transition:all .15s;border-left:3px solid transparent}
-.nav-item:hover{color:var(--text-primary);background:rgba(59,130,246,.06)}
-.nav-item.active{color:var(--accent-blue);background:rgba(59,130,246,.1);border-left-color:var(--accent-blue)}
-.nav-item .icon{width:20px;text-align:center;font-size:13px;font-weight:700}
-.nav-section-label{padding:16px 20px 6px;font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px}
-.sidebar-footer{padding:16px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--text-secondary)}
-.sidebar-footer .user-info{margin-bottom:8px}
-.sidebar-footer button{background:none;border:1px solid var(--border);color:var(--text-secondary);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;width:100%}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:180px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:100;transition:transform .3s}
+.sidebar-header{padding:12px 14px 10px;border-bottom:1px solid var(--border)}
+.sidebar-header h2{font-size:15px;font-weight:800;letter-spacing:-.3px}
+.sidebar-header span{font-size:10px;color:var(--text-secondary)}
+.sidebar-nav{flex:1;overflow-y:auto;padding:6px 0}
+.nav-item{display:flex;align-items:center;gap:8px;padding:6px 14px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;border-left:2px solid transparent}
+.nav-item:hover{color:var(--text-primary);background:rgba(37,99,235,.06)}
+.nav-item.active{color:var(--accent-blue);background:rgba(37,99,235,.1);border-left-color:var(--accent-blue)}
+.nav-item .icon{width:14px;text-align:center;font-size:11px;font-weight:700}
+.nav-section-label{padding:10px 14px 4px;font-size:9px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.8px}
+.sidebar-footer{padding:8px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--text-secondary)}
+.sidebar-footer .user-info{margin-bottom:6px}
+.sidebar-footer button{background:none;border:1px solid var(--border);color:var(--text-secondary);padding:4px 8px;border-radius:5px;cursor:pointer;font-size:10px;width:100%}
 .sidebar-footer button:hover{border-color:var(--accent-red);color:var(--accent-red)}
-.main-content{margin-left:220px;padding:16px 20px;min-height:100vh;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}
-.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
-.page-header h1{font-size:24px;font-weight:800}
+.main-content{margin-left:180px;padding:10px 14px;min-height:100vh;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px}
+.page-header h1{font-size:16px;font-weight:800;letter-spacing:-.3px}
 /* COMPONENTS */
-.btn{padding:8px 16px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:none;transition:all .15s;font-family:inherit;display:inline-flex;align-items:center;gap:6px}
+.btn{padding:5px 10px;border-radius:6px;font-weight:600;font-size:11px;cursor:pointer;border:none;transition:all .15s;font-family:inherit;display:inline-flex;align-items:center;gap:4px;line-height:1.2}
 .btn-primary{background:var(--accent-blue);color:#fff}
-.btn-primary:hover{background:#2563eb}
+.btn-primary:hover{background:#1d4ed8}
 .btn-success{background:var(--accent-green);color:#fff}
 .btn-danger{background:var(--accent-red);color:#fff}
-.btn-warning{background:var(--accent-yellow);color:#000}
+.btn-warning{background:var(--accent-yellow);color:#fff}
 .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text-primary)}
 .btn-outline:hover{border-color:var(--accent-blue)}
-.btn-sm{padding:5px 10px;font-size:12px}
-.btn-icon{padding:6px 8px;font-size:16px}
+.btn-sm{padding:3px 7px;font-size:10px}
+.btn-icon{padding:4px 6px;font-size:12px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-google{background:#fff;color:#333;border:1px solid #ddd;font-weight:600;display:flex;align-items:center;gap:8px;justify-content:center}
 .btn-google:hover{background:#f5f5f5}
@@ -78,101 +80,109 @@ a{color:var(--accent-blue);text-decoration:none}
 .auth-tabs{display:flex;gap:0;margin-bottom:20px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .auth-tab{flex:1;padding:10px;text-align:center;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text-secondary);border:none}
 .auth-tab.active{background:var(--accent-blue);color:#fff}
-.input,.select,.textarea{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);font-family:inherit;font-size:14px;transition:border .15s}
+.input,.select,.textarea{width:100%;padding:6px 8px;border-radius:5px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);font-family:inherit;font-size:12px;transition:border .15s}
 .input:focus,.select:focus,.textarea:focus{outline:none;border-color:var(--accent-blue)}
-.textarea{min-height:80px;resize:vertical}
-.form-group{margin-bottom:16px}
-.form-group label{display:block;margin-bottom:6px;font-size:13px;font-weight:600;color:var(--text-secondary)}
-.form-group .error{color:var(--accent-red);font-size:12px;margin-top:4px}
-.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
-.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-bottom:24px}
-.kpi-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;transition:transform .15s,box-shadow .15s}
-.kpi-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
-.kpi-card .kpi-label{font-size:12px;color:var(--text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.kpi-card .kpi-value{font-size:28px;font-weight:800;margin:8px 0 4px}
-.kpi-card .kpi-sub{font-size:12px;color:var(--text-secondary)}
-.badge{display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
-.badge-green{background:rgba(16,185,129,.15);color:#10b981}
-.badge-red{background:rgba(239,68,68,.15);color:#ef4444}
-.badge-yellow{background:rgba(245,158,11,.15);color:#f59e0b}
-.badge-blue{background:rgba(59,130,246,.15);color:#3b82f6}
-.badge-purple{background:rgba(139,92,246,.15);color:#8b5cf6}
-.badge-orange{background:rgba(249,115,22,.15);color:#f97316}
+.textarea{min-height:60px;resize:vertical}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;margin-bottom:4px;font-size:11px;font-weight:600;color:var(--text-secondary)}
+.form-group .error{color:var(--accent-red);font-size:10px;margin-top:3px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:14px}
+.kpi-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;transition:transform .15s,box-shadow .15s}
+.kpi-card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.25)}
+.kpi-card .kpi-label{font-size:10px;color:var(--text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.kpi-card .kpi-value{font-size:17px;font-weight:800;margin:4px 0 2px;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.kpi-card .kpi-sub{font-size:10px;color:var(--text-secondary)}
+.badge{display:inline-flex;padding:2px 7px;border-radius:12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.badge-green{background:rgba(5,150,105,.15);color:var(--accent-green)}
+.badge-red{background:rgba(220,38,38,.15);color:var(--accent-red)}
+.badge-yellow{background:rgba(217,119,6,.15);color:var(--accent-yellow)}
+.badge-blue{background:rgba(37,99,235,.15);color:var(--accent-blue)}
+.badge-purple{background:rgba(124,58,237,.15);color:var(--accent-purple)}
+.badge-orange{background:rgba(234,88,12,.15);color:var(--accent-orange)}
 .badge-gray{background:rgba(148,163,184,.15);color:#94a3b8}
 table{width:100%;border-collapse:collapse}
-th{text-align:left;padding:10px 12px;font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
-td{padding:10px 12px;font-size:13px;border-bottom:1px solid var(--border)}
-tr:hover{background:rgba(59,130,246,.03)}
+th{text-align:left;padding:6px 8px;font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:6px 8px;font-size:11px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
+tr:hover{background:rgba(37,99,235,.04)}
 .table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-card)}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:20px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:12px}
 .modal-overlay.open{display:flex}
-.modal{background:var(--bg-card);border:1px solid var(--border);border-radius:16px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;padding:24px}
-.modal-lg{max-width:900px}
-.modal h2{font-size:20px;font-weight:700;margin-bottom:20px}
-.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
-.toast-container{position:fixed;top:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
-.toast{padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;color:#fff;animation:slideIn .3s;max-width:360px;display:flex;align-items:center;gap:8px}
-.toast-success{background:#059669}.toast-error{background:#dc2626}.toast-warning{background:#d97706}.toast-info{background:#2563eb}
+.modal{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;width:100%;max-width:520px;max-height:92vh;overflow-y:auto;padding:14px}
+.modal-lg{max-width:780px}
+.modal h2{font-size:14px;font-weight:700;margin-bottom:12px}
+.modal-actions{display:flex;gap:6px;justify-content:flex-end;margin-top:12px}
+.toast-container{position:fixed;top:12px;right:12px;z-index:9999;display:flex;flex-direction:column;gap:6px}
+.toast{padding:8px 14px;border-radius:6px;font-size:11px;font-weight:600;color:#fff;animation:slideIn .3s;max-width:320px;display:flex;align-items:center;gap:6px}
+.toast-success{background:var(--accent-green)}.toast-error{background:var(--accent-red)}.toast-warning{background:var(--accent-yellow)}.toast-info{background:var(--accent-blue)}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-.pagination{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:16px}
-.pagination button{padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:13px}
+.pagination{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:10px}
+.pagination button{padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:11px}
 .pagination button.active{background:var(--accent-blue);color:#fff;border-color:var(--accent-blue)}
 .pagination button:disabled{opacity:.4;cursor:not-allowed}
-.search-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.search-bar .input{max-width:300px}
-.search-bar .select{max-width:180px}
-.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
-.chart-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
-.chart-card h3{font-size:14px;font-weight:700;margin-bottom:12px;color:var(--text-secondary)}
-.chart-card canvas{width:100%!important;max-height:260px}
-.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px}
-.tab{padding:10px 20px;font-size:13px;font-weight:600;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
+.search-bar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.search-bar .input{max-width:240px}
+.search-bar .select{max-width:150px}
+.charts-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.chart-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px}
+.chart-card h3{font-size:11px;font-weight:700;margin-bottom:8px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px}
+.chart-card canvas{width:100%!important;max-height:220px}
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:12px}
+.tab{padding:6px 12px;font-size:11px;font-weight:600;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
 .tab.active{color:var(--accent-blue);border-bottom-color:var(--accent-blue)}
-.spinner{display:inline-block;width:20px;height:20px;border:3px solid var(--border);border-top-color:var(--accent-blue);border-radius:50%;animation:spin .6s linear infinite}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent-blue);border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.loading-overlay{display:flex;align-items:center;justify-content:center;padding:60px}
-.empty-state{text-align:center;padding:60px 20px;color:var(--text-secondary)}
-.empty-state p{font-size:14px}
-.steps{display:flex;gap:0;margin-bottom:24px}
-.step{flex:1;text-align:center;padding:12px;font-size:13px;font-weight:600;color:var(--text-secondary);border-bottom:3px solid var(--border);cursor:pointer}
+.loading-overlay{display:flex;align-items:center;justify-content:center;padding:36px}
+.empty-state{text-align:center;padding:36px 14px;color:var(--text-secondary)}
+.empty-state p{font-size:12px}
+.steps{display:flex;gap:0;margin-bottom:14px}
+.step{flex:1;text-align:center;padding:7px;font-size:11px;font-weight:600;color:var(--text-secondary);border-bottom:2px solid var(--border);cursor:pointer}
 .step.active{color:var(--accent-blue);border-bottom-color:var(--accent-blue)}
 .step.done{color:var(--accent-green);border-bottom-color:var(--accent-green)}
-.toggle{position:relative;width:44px;height:24px;cursor:pointer}
+.toggle{position:relative;width:32px;height:18px;cursor:pointer}
 .toggle input{display:none}
-.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:12px;transition:.2s}
-.toggle-slider::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:10px;transition:.2s}
+.toggle-slider::before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}
 .toggle input:checked+.toggle-slider{background:var(--accent-blue)}
-.toggle input:checked+.toggle-slider::before{transform:translateX(20px)}
-.hamburger{display:none;position:fixed;top:16px;left:16px;z-index:200;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer;font-size:20px;color:var(--text-primary)}
-@media(max-width:768px){
-.sidebar{transform:translateX(-100%)}
+.toggle input:checked+.toggle-slider::before{transform:translateX(14px)}
+.hamburger{display:none;position:fixed;top:10px;left:10px;z-index:200;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:5px 8px;cursor:pointer;font-size:14px;color:var(--text-primary)}
+/* Dashboard collection sub-grids — responsive */
+.dash-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
+.dash-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:6px}
+.dash-section-label{font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.dash-h3{font-size:11px;color:var(--text-secondary);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:5px;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+.dash-rate-bar{height:7px;background:rgba(148,163,184,.18);border-radius:4px;overflow:hidden}
+.dash-rate-fill{height:100%;border-radius:4px;transition:width .4s ease}
+@media(max-width:1024px){
+.dash-grid-3{grid-template-columns:repeat(2,1fr)}
+.kpi-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+}
+@media(max-width:640px){
+.sidebar{transform:translateX(-100%);width:200px}
 .sidebar.open{transform:translateX(0)}
-.sidebar-header{padding:10px 12px 8px}
-.sidebar-header h2{font-size:13px}
-.sidebar-header span{font-size:9px}
-.sidebar-nav{padding:4px 0}
-.nav-item{padding:6px 12px;font-size:11px;gap:6px}
-.nav-item .icon{width:14px;font-size:10px}
-.sidebar-footer{padding:8px 12px;font-size:10px}
-.sidebar-footer button{padding:4px 8px;font-size:10px}
-.main-content{margin-left:0;padding:8px;padding-top:52px}
+.main-content{margin-left:0;padding:8px;padding-top:48px}
 .hamburger{display:block}
 .form-row{grid-template-columns:1fr}
-.kpi-grid{grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.kpi-card{padding:10px;border-radius:8px}
-.kpi-card .kpi-label{font-size:9px;letter-spacing:0}
-.kpi-card .kpi-value{font-size:16px;margin:4px 0 2px}
+.kpi-grid{grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:10px}
+.dash-grid-3,.dash-grid-2{grid-template-columns:1fr;gap:6px}
+.kpi-card{padding:8px 10px}
+.kpi-card .kpi-label{font-size:9px}
+.kpi-card .kpi-value{font-size:15px;margin:3px 0 1px}
 .kpi-card .kpi-sub{font-size:9px}
-.charts-grid{grid-template-columns:1fr}
-.modal{margin:10px;max-height:95vh;border-radius:12px}
+.charts-grid{grid-template-columns:1fr;gap:8px}
+.modal{margin:8px;max-height:96vh;border-radius:8px}
 .search-bar .input,.search-bar .select{max-width:100%;flex:1}
-.login-box{padding:32px 20px;width:92%;margin:0 auto}
-.page-header h1{font-size:16px}
-.card{padding:12px}
-.chart-card{padding:12px}
-.chart-card h3{font-size:12px}
+.login-box{padding:22px 16px;width:94%;margin:0 auto}
+.page-header h1{font-size:14px}
+.card{padding:10px}
+.chart-card{padding:10px}
+.chart-card h3{font-size:10px}
 }
+@media(max-width:380px){
+.kpi-grid{grid-template-columns:1fr}
+}
+
 </style>
 </head>
 <body class="dark">
@@ -1116,25 +1126,34 @@ async function renderDashboard(){
     const newClientsPeriod = filteredClients.length;
 
     // ── DAILY COLLECTION (schedules due TODAY vs payments received TODAY) ──
-    // Only count what was actually DUE today, and only what was paid today
+    // Total Due Today: sum of total_due where due_date is exactly today
     const dailyDueScheds = allScheds.filter(s=>s.due_date===todayStr);
     const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    // Payments received today that belong to loans with a schedule due today
+    // Collected Today: payments dated today on loans with a schedule due today
     const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
-    const dailyPaidAmt   = allReps
+    const dailyPaidAmtRaw = allReps
       .filter(r=>r.payment_date===todayStr && dailyDueLoanIds.has(r.loan_id))
       .reduce((s,r)=>s+Number(r.amount||0),0);
-    const dailyRate      = dailyDueAmt>0 ? Math.min(100,(dailyPaidAmt/dailyDueAmt)*100) : 0;
+    // Cap collected at the due amount so a single payment cannot exceed the day's target
+    const dailyPaidAmt   = Math.min(dailyPaidAmtRaw, dailyDueAmt);
+    const dailyRate      = dailyDueAmt>0 ? (dailyPaidAmt/dailyDueAmt)*100 : 0;
     const dailyUnpaid    = Math.max(0, dailyDueAmt - dailyPaidAmt);
 
-    // ── PERIOD COLLECTION (selected filter window) ──
-    const periodCollection = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
-    const periodDue        = filteredScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    // Monthly cumulative rate: each day's due and collection accumulates
-    // We compute: among schedules due up to today within the period, how much collected?
-    const periodDueLoanIds = new Set(filteredScheds.map(s=>s.loan_id));
-    const periodCollectionRate = periodDue>0 ? Math.min(100,(periodCollection/periodDue)*100) : 0;
+    // ── PERIOD COLLECTION (cumulative — only schedules whose due_date has ARRIVED) ──
+    // Period Due: only schedules within the filter window AND whose due_date <= today.
+    // This is what makes the rate "react" each day as new dues arrive.
+    const filteredScheds_arrived = filteredScheds.filter(s=>s.due_date<=todayStr);
+    const periodDue        = filteredScheds_arrived.reduce((s,sc)=>s+Number(sc.total_due||0),0);
+    // Period Collected: payments inside the filter window that belong to those arrived-due schedules' loans
+    const periodArrivedLoanIds = new Set(filteredScheds_arrived.map(s=>s.loan_id));
+    const periodCollectionRaw = filteredReps
+      .filter(r=>periodArrivedLoanIds.has(r.loan_id))
+      .reduce((s,r)=>s+Number(r.amount||0),0);
+    // Cap so collections cannot exceed cumulative due (rate stays <= 100%)
+    const periodCollection = Math.min(periodCollectionRaw, periodDue);
+    const periodCollectionRate = periodDue>0 ? (periodCollection/periodDue)*100 : 0;
     const unpaidDueAmt = Math.max(0, periodDue - periodCollection);
+    const totalDueCount = filteredScheds_arrived.length;
 
     // Global Snapshots
     const active=allLoans.filter(l=>l.status==='active');
@@ -1154,7 +1173,6 @@ async function renderDashboard(){
     const arrearsReps = filteredReps.filter(r=>overdueLoanIds.has(r.loan_id));
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const paidPeriodCount = filteredReps.length;
-    const totalDueCount = filteredScheds.length;
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1163,101 +1181,101 @@ async function renderDashboard(){
         </div>
         ${getDateFilterHtml('dashboard')}
       </div>
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Clients (Selected Period)</h3>
-      <div class="kpi-grid" style="margin-bottom:16px">
-        <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Total Clients</div><div class="kpi-value" style="color:var(--accent-blue)">${totalClients}</div><div class="kpi-sub">All registered clients globally</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-green)"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">With active loans globally</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsPeriod}</div><div class="kpi-sub">Registered in selected period</div></div>
+      <h3 class="dash-h3">Clients (Selected Period)</h3>
+      <div class="kpi-grid">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-blue)"><div class="kpi-label">Total Clients</div><div class="kpi-value" style="color:var(--accent-blue)">${totalClients}</div><div class="kpi-sub">All registered globally</div></div>
+        <div class="kpi-card" style="border-top:2px solid var(--accent-green)"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">With active loans</div></div>
+        <div class="kpi-card" style="border-top:2px solid var(--accent-purple)"><div class="kpi-label">New Clients</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsPeriod}</div><div class="kpi-sub">In selected period</div></div>
       </div>
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection</h3>
+      <h3 class="dash-h3">Collection</h3>
 
       <!-- ── DAILY COLLECTION ── -->
-      <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📅 Daily Collection — ${todayStr}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:6px">
-        <div class="kpi-card" style="border-top:3px solid #10b981;padding:12px">
+      <div class="dash-section-label">📅 Daily Collection — ${todayStr}</div>
+      <div class="dash-grid-3">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-green)">
           <div class="kpi-label">Due Today</div>
-          <div class="kpi-value" style="font-size:18px;color:#10b981">${fmtMoney(dailyDueAmt)}</div>
+          <div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(dailyDueAmt)}</div>
           <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''}</div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid #3b82f6;padding:12px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
           <div class="kpi-label">Collected Today</div>
-          <div class="kpi-value" style="font-size:18px;color:#3b82f6">${fmtMoney(dailyPaidAmt)}</div>
+          <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(dailyPaidAmt)}</div>
           <div class="kpi-sub">vs today's due</div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid ${dailyUnpaid>0?'#ef4444':'#10b981'};padding:12px">
+        <div class="kpi-card" style="border-top:2px solid ${dailyUnpaid>0?'var(--accent-red)':'var(--accent-green)'}">
           <div class="kpi-label">Still Unpaid</div>
-          <div class="kpi-value" style="font-size:18px;color:${dailyUnpaid>0?'#ef4444':'#10b981'}">${fmtMoney(dailyUnpaid)}</div>
-          <div class="kpi-sub">${dailyDueAmt===0?'No due today':'of today\'s target'}</div>
+          <div class="kpi-value" style="color:${dailyUnpaid>0?'var(--accent-red)':'var(--accent-green)'}">${fmtMoney(dailyUnpaid)}</div>
+          <div class="kpi-sub">${dailyDueAmt===0?'No due today':"of today's target"}</div>
         </div>
       </div>
       <!-- Daily rate bar -->
-      <div style="margin-bottom:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:11px;color:var(--text-secondary)">Daily Collection Rate</span>
-          <span style="font-size:13px;font-weight:700;color:${dailyRate>=100?'#10b981':dailyRate>=60?'#f59e0b':'#ef4444'}">${dailyRate.toFixed(1)}%</span>
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+          <span style="font-size:10px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;font-weight:600">Daily Collection Rate</span>
+          <span style="font-size:12px;font-weight:800;color:${dailyRate>=100?'var(--accent-green)':dailyRate>=60?'var(--accent-yellow)':'var(--accent-red)'};font-variant-numeric:tabular-nums">${dailyRate.toFixed(1)}%</span>
         </div>
-        <div style="height:10px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
-          <div style="height:100%;width:${Math.min(100,dailyRate).toFixed(1)}%;background:${dailyRate>=100?'#10b981':dailyRate>=60?'#f59e0b':'#ef4444'};border-radius:6px;transition:width .4s ease"></div>
+        <div class="dash-rate-bar">
+          <div class="dash-rate-fill" style="width:${Math.min(100,dailyRate).toFixed(1)}%;background:${dailyRate>=100?'var(--accent-green)':dailyRate>=60?'var(--accent-yellow)':'var(--accent-red)'}"></div>
         </div>
-        ${dailyDueAmt===0?'<div style="font-size:10px;color:var(--text-secondary);margin-top:3px">No installments scheduled for today — rate shows 0%</div>':''}
+        ${dailyDueAmt===0?'<div style="font-size:9px;color:var(--text-secondary);margin-top:3px">No installments scheduled for today — rate shows 0%</div>':''}
       </div>
 
-      <!-- ── PERIOD COLLECTION ── -->
-      <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📆 Period Collection (Selected Filter)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px">
-        <div class="kpi-card" style="border-top:3px solid #8b5cf6;padding:12px">
-          <div class="kpi-label">Total Due in Period</div>
-          <div class="kpi-value" style="font-size:18px;color:#8b5cf6">${fmtMoney(periodDue)}</div>
-          <div class="kpi-sub">${totalDueCount} installments</div>
+      <!-- ── PERIOD COLLECTION (cumulative) ── -->
+      <div class="dash-section-label">📆 Period Collection — Cumulative (Selected Filter)</div>
+      <div class="dash-grid-2">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-purple)">
+          <div class="kpi-label">Total Due (To Date)</div>
+          <div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(periodDue)}</div>
+          <div class="kpi-sub">${totalDueCount} installment${totalDueCount!==1?'s':''} arrived</div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid #3b82f6;padding:12px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
           <div class="kpi-label">Period Collected</div>
-          <div class="kpi-value" style="font-size:18px;color:#3b82f6">${fmtMoney(periodCollection)}</div>
-          <div class="kpi-sub">${paidPeriodCount} payments</div>
+          <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(periodCollection)}</div>
+          <div class="kpi-sub">${paidPeriodCount} payment${paidPeriodCount!==1?'s':''}</div>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px">
-        <div class="kpi-card" style="border-top:3px solid #ef4444;padding:12px">
+      <div class="dash-grid-2">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-red)">
           <div class="kpi-label">Unpaid in Period</div>
-          <div class="kpi-value" style="font-size:18px;color:#ef4444">${fmtMoney(unpaidDueAmt)}</div>
+          <div class="kpi-value" style="color:var(--accent-red)">${fmtMoney(unpaidDueAmt)}</div>
           <div class="kpi-sub">outstanding target</div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid #f59e0b;padding:12px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-yellow)">
           <div class="kpi-label">Arrears Collected</div>
-          <div class="kpi-value" style="font-size:18px;color:#f59e0b">${fmtMoney(arrearsCollected)}</div>
+          <div class="kpi-value" style="color:var(--accent-yellow)">${fmtMoney(arrearsCollected)}</div>
           <div class="kpi-sub">overdue loans in period</div>
         </div>
       </div>
       <!-- Period rate bar -->
-      <div style="margin-bottom:6px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-          <span style="font-size:11px;color:var(--text-secondary)">Period Collection Rate <span style="font-size:9px">(cumulative — updates as new due dates arrive)</span></span>
-          <span style="font-size:13px;font-weight:700;color:${periodCollectionRate>=100?'#10b981':periodCollectionRate>=60?'#f59e0b':'#ef4444'}">${periodCollectionRate.toFixed(1)}%</span>
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;flex-wrap:wrap;gap:4px">
+          <span style="font-size:10px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;font-weight:600">Period Collection Rate <span style="font-size:8px;text-transform:none;letter-spacing:0">(cumulative — updates as new dues arrive)</span></span>
+          <span style="font-size:12px;font-weight:800;color:${periodCollectionRate>=100?'var(--accent-green)':periodCollectionRate>=60?'var(--accent-yellow)':'var(--accent-red)'};font-variant-numeric:tabular-nums">${periodCollectionRate.toFixed(1)}%</span>
         </div>
-        <div style="height:10px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
-          <div style="height:100%;width:${Math.min(100,periodCollectionRate).toFixed(1)}%;background:${periodCollectionRate>=100?'#10b981':periodCollectionRate>=60?'#f59e0b':'#ef4444'};border-radius:6px;transition:width .4s ease"></div>
+        <div class="dash-rate-bar">
+          <div class="dash-rate-fill" style="width:${Math.min(100,periodCollectionRate).toFixed(1)}%;background:${periodCollectionRate>=100?'var(--accent-green)':periodCollectionRate>=60?'var(--accent-yellow)':'var(--accent-red)'}"></div>
         </div>
       </div>
-      <div style="margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="kpi-card" style="border-top:3px solid #f97316;padding:12px">
+      <div class="dash-grid-2" style="margin-bottom:12px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-orange)">
           <div class="kpi-label">Loans Issued</div>
-          <div class="kpi-value" style="font-size:18px;color:#f97316">${loanCountPeriod}</div>
+          <div class="kpi-value" style="color:var(--accent-orange)">${loanCountPeriod}</div>
           <div class="kpi-sub">Disbursed in period</div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid #8b5cf6;padding:12px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-purple)">
           <div class="kpi-label">Disbursed Amount</div>
-          <div class="kpi-value" style="font-size:18px;color:#8b5cf6">${fmtMoney(disbPeriod)}</div>
+          <div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbPeriod)}</div>
           <div class="kpi-sub">In selected period</div>
         </div>
       </div>
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Global Portfolio Snapshot</h3>
-      <div class="kpi-grid" style="margin-bottom:16px">
+      <h3 class="dash-h3">Global Portfolio Snapshot</h3>
+      <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
         <div class="kpi-card"><div class="kpi-label">Active Outstanding</div><div class="kpi-value">${fmtMoney(outstanding)}</div></div>
         <div class="kpi-card"><div class="kpi-label">Overdue Loans</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div></div>
         <div class="kpi-card"><div class="kpi-label">PAR 30</div><div class="kpi-value" style="color:${par30pct>10?'var(--accent-red)':'var(--accent-yellow)'}">${par30pct.toFixed(1)}%</div></div>
       </div>
-      
+
       <div class="charts-grid">
         <div class="chart-card"><h3>Loan Status Breakdown</h3><canvas id="chartStatus"></canvas></div>
         <div class="chart-card"><h3>Monthly Disbursements vs Repayments</h3><canvas id="chartMonthly"></canvas></div>
@@ -1266,12 +1284,12 @@ async function renderDashboard(){
     const statusCounts={active:active.length,completed:allLoans.filter(l=>l.status==='completed').length,defaulted:allLoans.filter(l=>l.status==='defaulted').length,written_off:allLoans.filter(l=>l.status==='written_off').length};
     Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});
     const ctx1=document.getElementById('chartStatus');
-    if(ctx1)charts.status=new Chart(ctx1,{type:'doughnut',data:{labels:Object.keys(statusCounts),datasets:[{data:Object.values(statusCounts),backgroundColor:['#10b981','#3b82f6','#ef4444','#94a3b8']}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}}}});
+    if(ctx1)charts.status=new Chart(ctx1,{type:'doughnut',data:{labels:Object.keys(statusCounts),datasets:[{data:Object.values(statusCounts),backgroundColor:['#059669','#2563eb','#dc2626','#94a3b8']}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}}}});
     const months=[];for(let i=11;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months.push(d.toISOString().slice(0,7))}
     const disbByMonth=months.map(m=>allLoans.filter(l=>l.disbursement_date&&l.disbursement_date.startsWith(m)).reduce((s,l)=>s+Number(l.disbursed_amount||0),0));
     const repByMonth=months.map(m=>allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(m)).reduce((s,r)=>s+Number(r.amount||0),0));
     const ctx2=document.getElementById('chartMonthly');
-    if(ctx2)charts.monthly=new Chart(ctx2,{type:'bar',data:{labels:months.map(m=>m.slice(5)),datasets:[{label:'Disbursed',data:disbByMonth,backgroundColor:'#8b5cf6'},{label:'Repaid',data:repByMonth,backgroundColor:'#10b981'}]},options:{responsive:true,scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}},plugins:{legend:{labels:{color:'#94a3b8'}}}}});
+    if(ctx2)charts.monthly=new Chart(ctx2,{type:'bar',data:{labels:months.map(m=>m.slice(5)),datasets:[{label:'Disbursed',data:disbByMonth,backgroundColor:'#7c3aed'},{label:'Repaid',data:repByMonth,backgroundColor:'#059669'}]},options:{responsive:true,scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}},plugins:{legend:{labels:{color:'#94a3b8'}}}}});
   }catch(e){main.innerHTML=`<div class="empty-state"><p>Error loading dashboard: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
