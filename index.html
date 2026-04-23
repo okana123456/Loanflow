@@ -42,7 +42,7 @@ a{color:var(--accent-blue);text-decoration:none}
 .login-box .tagline{color:var(--text-secondary);margin-bottom:32px;font-size:14px}
 /* LAYOUT */
 #appShell{display:none;height:100vh}
-.sidebar{position:fixed;left:0;top:0;bottom:0;width:260px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:100;transition:transform .3s}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:220px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;z-index:100;transition:transform .3s}
 .sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border)}
 .sidebar-header h2{font-size:20px;font-weight:800}
 .sidebar-header span{font-size:11px;color:var(--text-secondary)}
@@ -56,7 +56,7 @@ a{color:var(--accent-blue);text-decoration:none}
 .sidebar-footer .user-info{margin-bottom:8px}
 .sidebar-footer button{background:none;border:1px solid var(--border);color:var(--text-secondary);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;width:100%}
 .sidebar-footer button:hover{border-color:var(--accent-red);color:var(--accent-red)}
-.main-content{margin-left:260px;padding:24px;min-height:100vh;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}
+.main-content{margin-left:220px;padding:16px 20px;min-height:100vh;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
 .page-header h1{font-size:24px;font-weight:800}
 /* COMPONENTS */
@@ -148,7 +148,7 @@ tr:hover{background:rgba(59,130,246,.03)}
 @media(max-width:768px){
 .sidebar{transform:translateX(-100%)}
 .sidebar.open{transform:translateX(0)}
-.main-content{margin-left:0;padding:16px;padding-top:56px}
+.main-content{margin-left:0;padding:12px;padding-top:56px}
 .hamburger{display:block}
 .form-row{grid-template-columns:1fr}
 .kpi-grid{grid-template-columns:1fr 1fr}
@@ -1127,9 +1127,17 @@ async function renderDashboard(){
 
     // Arrears Collected: payments (in current month) on loans currently overdue
     const overdueLoanIds = new Set(active.filter(l=>l.overdue_days>0).map(l=>l.id));
-    const arrearsCollected = allReps
-      .filter(r=>r.payment_date && r.payment_date.startsWith(nowM) && overdueLoanIds.has(r.loan_id))
-      .reduce((s,r)=>s+Number(r.amount||0),0);
+    const arrearsReps = allReps.filter(r=>r.payment_date && r.payment_date.startsWith(nowM) && overdueLoanIds.has(r.loan_id));
+    const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
+    const arrearsCount = arrearsReps.length;
+
+    // Collection card extra metrics
+    const paidTodayReps = allReps.filter(r=>r.payment_date===today_str);
+    const paidTodayCount = paidTodayReps.length;
+    const totalDueCount = allScheds.filter(s=>s.due_date&&s.due_date.startsWith(nowM)).length;
+    const unpaidDueAmt  = Math.max(0, monthlyDue - monthlyCollection);
+    const paidLoanIdsThisMonth = new Set(allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(nowM)).map(r=>r.loan_id));
+    const unpaidDueCount = active.filter(l=>!paidLoanIdsThisMonth.has(l.id)).length;
 
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
@@ -1148,20 +1156,40 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients (This Month)</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsThisMonth}</div><div class="kpi-sub">${nowM}</div></div>
       </div>
 
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collections</h3>
-      <div class="kpi-grid" style="margin-bottom:16px">
-        <div class="kpi-card" style="border-top:3px solid var(--accent-green)"><div class="kpi-label">Daily Collection (Today)</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(dailyCollection)}</div><div class="kpi-sub">${today_str}</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Monthly Collection</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(monthlyCollection)}</div><div class="kpi-sub">${nowM}</div></div>
-        <div class="kpi-card" style="border-top:3px solid ${collRateColor}">
-          <div class="kpi-label">Collection Rate (Month)</div>
-          <div class="kpi-value" style="color:${collRateColor}">${collectionRate.toFixed(1)}%</div>
-          <div style="margin-top:8px;height:8px;background:rgba(148,163,184,0.18);border-radius:999px;overflow:hidden">
-            <div style="height:100%;width:${Math.min(100,Math.max(0,collectionRate)).toFixed(1)}%;background:${collRateColor};transition:width .4s ease"></div>
+      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div class="card" style="border-left:5px solid #10b981;padding:0;overflow:hidden">
+          <div style="padding:4px 16px 8px;background:rgba(16,185,129,0.08)">
+            <span style="font-size:12px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px">Collection</span>
           </div>
-          <div class="kpi-sub" style="margin-top:6px">Collections vs Due</div>
+          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(monthlyDue)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Total due &ndash; ${totalDueCount}</div>
+          </div>
+          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(unpaidDueAmt)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Unpaid Due &ndash; ${unpaidDueCount}</div>
+            <div style="margin-top:10px;height:34px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
+              <div style="height:100%;width:${Math.min(100,Math.max(0,collectionRate)).toFixed(1)}%;background:#ef4444;border-radius:6px;display:flex;align-items:center;padding-left:10px;min-width:${collectionRate>5?'0':'0'}px;transition:width .4s ease">
+                ${collectionRate>3?`<span style="color:#fff;font-weight:700;font-size:13px;white-space:nowrap">${collectionRate.toFixed(2)}%</span>`:''}
+              </div>
+            </div>
+            ${collectionRate<=3?`<div style="font-size:12px;font-weight:700;color:#ef4444;margin-top:4px">${collectionRate.toFixed(2)}%</div>`:''}
+          </div>
+          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(dailyCollection)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Paid Today &ndash; ${paidTodayCount}</div>
+          </div>
+          <div style="padding:14px 16px">
+            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(arrearsCollected)}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Arrears Collected &ndash; ${arrearsCount}</div>
+          </div>
         </div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-orange)"><div class="kpi-label">Loans Issued (This Month)</div><div class="kpi-value" style="color:var(--accent-orange)">${loanCountMonth}</div><div class="kpi-sub">Disbursed in ${nowM}</div></div>
-        <div class="kpi-card" style="border-top:3px solid var(--accent-red)"><div class="kpi-label">Arrears Collected (Month)</div><div class="kpi-value" style="color:var(--accent-red)">${fmtMoney(arrearsCollected)}</div><div class="kpi-sub">Paid on overdue loans</div></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Monthly Collection</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(monthlyCollection)}</div><div class="kpi-sub">${nowM}</div></div>
+          <div class="kpi-card" style="border-top:3px solid var(--accent-orange)"><div class="kpi-label">Loans Issued (Month)</div><div class="kpi-value" style="color:var(--accent-orange)">${loanCountMonth}</div><div class="kpi-sub">Disbursed in ${nowM}</div></div>
+          <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients (Month)</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsThisMonth}</div><div class="kpi-sub">${nowM}</div></div>
+        </div>
       </div>
 
       <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Period Performance</h3>
@@ -2138,7 +2166,7 @@ async function renderReports(){
   main.innerHTML=`
     <div class="page-header"><h1>Reports & Analytics</h1></div>
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:20px">Click <strong>Preview</strong> to view a report before downloading, or <strong>Download</strong> to export directly.</p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px">
       ${reports.map(r=>`
         <div class="card" style="border-left:4px solid ${r.color}">
           <div style="display:flex;align-items:flex-start;gap:10px">
@@ -2210,18 +2238,53 @@ async function loadReportData(id){
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).order('created_at',{ascending:false});
     const active=(loans||[]).filter(l=>l.status==='active');
     const totalOutstanding=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
+    const totalPayable=(loans||[]).reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0);
+    const totalInterest=(loans||[]).reduce((s,l)=>s+Number(l.total_interest||0),0);
     return{title:'Portfolio Report',summary:[
       {label:'Total Loans',value:(loans||[]).length},{label:'Active Loans',value:active.length},
+      {label:'Total Principal',value:fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0))},
+      {label:'Total Interest',value:fmtMoney(totalInterest)},
+      {label:'Total Payable (P+I)',value:fmtMoney(totalPayable)},
       {label:'Total Outstanding',value:fmtMoney(totalOutstanding)}
-    ],rows:(loans||[]).map(l=>({'Loan #':l.loan_no,'Client':l.loan_clients?.full_name||'-','Phone':l.loan_clients?.phone||'-','Principal':fmtMoney(l.principal_amount),'Balance':fmtMoney(l.outstanding_balance),'Weekly':fmtMoney(l.weekly_installment),'Status':l.status,'Disbursed':l.disbursement_date||'-'})),cols:['Loan #','Client','Phone','Principal','Balance','Weekly','Status','Disbursed']};
+    ],rows:(loans||[]).map(l=>({
+      'Loan #':l.loan_no,
+      'Client':l.loan_clients?.full_name||'-',
+      'Phone':l.loan_clients?.phone||'-',
+      'Principal':fmtMoney(l.principal_amount),
+      'Interest':fmtMoney(l.total_interest||0),
+      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
+      'Outstanding':fmtMoney(l.outstanding_balance),
+      'Total Paid':fmtMoney(l.total_paid||0),
+      'Status':l.status,
+      'Disbursed':l.disbursement_date||'-'
+    })),cols:['Loan #','Client','Phone','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Status','Disbursed']};
   }
   if(id==='disbursement'){
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).order('disbursement_date',{ascending:false});
     const total=(loans||[]).reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
+    const totalPrincipal=(loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0);
+    const totalInterest=(loans||[]).reduce((s,l)=>s+Number(l.total_interest||0),0);
+    const totalPayable=(loans||[]).reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0);
     return{title:'Disbursement Report',summary:[
-      {label:'Total Disbursements',value:(loans||[]).length},{label:'Total Amount Disbursed',value:fmtMoney(total)},
+      {label:'Total Disbursements',value:(loans||[]).length},
+      {label:'Total Amount Disbursed',value:fmtMoney(total)},
+      {label:'Total Principal',value:fmtMoney(totalPrincipal)},
+      {label:'Total Interest',value:fmtMoney(totalInterest)},
+      {label:'Total Payable (P+I)',value:fmtMoney(totalPayable)},
       {label:'Total Processing Fees',value:fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.processing_fee||0),0))}
-    ],rows:(loans||[]).map(l=>({'Loan #':l.loan_no,'Client':l.loan_clients?.full_name||'-','Phone':l.loan_clients?.phone||'-','Disbursed Amount':fmtMoney(l.disbursed_amount),'Processing Fee':fmtMoney(l.processing_fee),'Method':l.disbursement_method,'Reference':l.disbursement_reference||'-','Date':l.disbursement_date||'-'})),cols:['Loan #','Client','Phone','Disbursed Amount','Processing Fee','Method','Reference','Date']};
+    ],rows:(loans||[]).map(l=>({
+      'Loan #':l.loan_no,
+      'Client':l.loan_clients?.full_name||'-',
+      'Phone':l.loan_clients?.phone||'-',
+      'Disbursed':fmtMoney(l.disbursed_amount),
+      'Principal':fmtMoney(l.principal_amount),
+      'Interest':fmtMoney(l.total_interest||0),
+      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
+      'Processing Fee':fmtMoney(l.processing_fee),
+      'Method':l.disbursement_method,
+      'Reference':l.disbursement_reference||'-',
+      'Date':l.disbursement_date||'-'
+    })),cols:['Loan #','Client','Phone','Disbursed','Principal','Interest','Total (P+I)','Processing Fee','Method','Reference','Date']};
   }
   if(id==='aging'){
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).eq('status','active');
@@ -2229,8 +2292,21 @@ async function loadReportData(id){
     const bucket=d=>d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':'90d+';
     return{title:'Aging / Overdue Report',summary:[
       {label:'Total Active Loans',value:(loans||[]).length},{label:'Overdue Loans',value:overdue.length},
-      {label:'Total Arrears',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.arrears_amount||0),0))}
-    ],rows:overdue.sort((a,b)=>b.overdue_days-a.overdue_days).map(l=>({'Loan #':l.loan_no,'Client':l.loan_clients?.full_name||'-','Phone':l.loan_clients?.phone||'-','Overdue Days':l.overdue_days,'Bucket':bucket(l.overdue_days),'Arrears':fmtMoney(l.arrears_amount),'Balance':fmtMoney(l.outstanding_balance)})),cols:['Loan #','Client','Phone','Overdue Days','Bucket','Arrears','Balance']};
+      {label:'Total Arrears',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.arrears_amount||0),0))},
+      {label:'Total Outstanding (Overdue)',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))},
+      {label:'Total Payable (P+I) Overdue',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0))}
+    ],rows:overdue.sort((a,b)=>b.overdue_days-a.overdue_days).map(l=>({
+      'Loan #':l.loan_no,
+      'Client':l.loan_clients?.full_name||'-',
+      'Phone':l.loan_clients?.phone||'-',
+      'Principal':fmtMoney(l.principal_amount),
+      'Interest':fmtMoney(l.total_interest||0),
+      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
+      'Outstanding':fmtMoney(l.outstanding_balance),
+      'Arrears':fmtMoney(l.arrears_amount),
+      'Overdue Days':l.overdue_days,
+      'Bucket':bucket(l.overdue_days)
+    })),cols:['Loan #','Client','Phone','Principal','Interest','Total (P+I)','Outstanding','Arrears','Overdue Days','Bucket']};
   }
   if(id==='income'){
     const[{data:reps},{data:clients}]=await Promise.all([
@@ -2256,10 +2332,31 @@ async function loadReportData(id){
       sb('loan_clients').select('*').eq('business_id',biz)
     ]);
     const withArrears=(loans||[]).filter(l=>Number(l.arrears_amount||0)>0);
+    const totalPrincipal=(loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0);
+    const totalInterest=(loans||[]).reduce((s,l)=>s+Number(l.total_interest||0),0);
+    const totalPayable=(loans||[]).reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0);
+    const totalOutstanding=(loans||[]).reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     return{title:'Portfolio Summary Report',summary:[
-      {label:'Total Clients',value:(clients||[]).length},{label:'Active Loans',value:(loans||[]).length},
-      {label:'Loans with Arrears',value:withArrears.length},{label:'Clean Portfolio',value:(loans||[]).length-withArrears.length}
-    ],rows:(loans||[]).map(l=>({'Client':l.loan_clients?.full_name||'-','Loan #':l.loan_no,'Principal':fmtMoney(l.principal_amount),'Outstanding':fmtMoney(l.outstanding_balance),'Arrears':fmtMoney(l.arrears_amount),'Overdue Days':l.overdue_days,'Status':l.arrears_amount>0?'⚠ Has Arrears':'✅ Clean'})),cols:['Client','Loan #','Principal','Outstanding','Arrears','Overdue Days','Status']};
+      {label:'Total Clients',value:(clients||[]).length},
+      {label:'Active Loans',value:(loans||[]).length},
+      {label:'Total Principal',value:fmtMoney(totalPrincipal)},
+      {label:'Total Interest',value:fmtMoney(totalInterest)},
+      {label:'Total Payable (P+I)',value:fmtMoney(totalPayable)},
+      {label:'Total Outstanding Balance',value:fmtMoney(totalOutstanding)},
+      {label:'Loans with Arrears',value:withArrears.length},
+      {label:'Clean Portfolio',value:(loans||[]).length-withArrears.length}
+    ],rows:(loans||[]).map(l=>({
+      'Client':l.loan_clients?.full_name||'-',
+      'Loan #':l.loan_no,
+      'Principal':fmtMoney(l.principal_amount),
+      'Interest':fmtMoney(l.total_interest||0),
+      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
+      'Outstanding':fmtMoney(l.outstanding_balance),
+      'Total Paid':fmtMoney(l.total_paid||0),
+      'Arrears':fmtMoney(l.arrears_amount),
+      'Overdue Days':l.overdue_days,
+      'Status':l.arrears_amount>0?'⚠ Has Arrears':'✅ Clean'
+    })),cols:['Client','Loan #','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Arrears','Overdue Days','Status']};
   }
   return null;
 }
