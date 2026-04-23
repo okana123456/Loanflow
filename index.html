@@ -148,14 +148,30 @@ tr:hover{background:rgba(59,130,246,.03)}
 @media(max-width:768px){
 .sidebar{transform:translateX(-100%)}
 .sidebar.open{transform:translateX(0)}
-.main-content{margin-left:0;padding:12px;padding-top:56px}
+.sidebar-header{padding:10px 12px 8px}
+.sidebar-header h2{font-size:13px}
+.sidebar-header span{font-size:9px}
+.sidebar-nav{padding:4px 0}
+.nav-item{padding:6px 12px;font-size:11px;gap:6px}
+.nav-item .icon{width:14px;font-size:10px}
+.sidebar-footer{padding:8px 12px;font-size:10px}
+.sidebar-footer button{padding:4px 8px;font-size:10px}
+.main-content{margin-left:0;padding:8px;padding-top:52px}
 .hamburger{display:block}
 .form-row{grid-template-columns:1fr}
-.kpi-grid{grid-template-columns:1fr 1fr}
+.kpi-grid{grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.kpi-card{padding:10px;border-radius:8px}
+.kpi-card .kpi-label{font-size:9px;letter-spacing:0}
+.kpi-card .kpi-value{font-size:16px;margin:4px 0 2px}
+.kpi-card .kpi-sub{font-size:9px}
 .charts-grid{grid-template-columns:1fr}
 .modal{margin:10px;max-height:95vh;border-radius:12px}
 .search-bar .input,.search-bar .select{max-width:100%;flex:1}
-.login-box { padding: 32px 20px; width: 92%; margin: 0 auto; }
+.login-box{padding:32px 20px;width:92%;margin:0 auto}
+.page-header h1{font-size:16px}
+.card{padding:12px}
+.chart-card{padding:12px}
+.chart-card h3{font-size:12px}
 }
 </style>
 </head>
@@ -1084,23 +1100,42 @@ async function renderDashboard(){
     const allClients=clientsR.data||[];
     cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps,clients:allClients};
     const f = appFilters.dashboard;
-    
+    const todayStr = today();
+
     // Dynamically filter EVERYTHING based on the date picker
     const filteredDisbursed = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredApps = filterByDate(allApps, 'created_at', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
     const filteredScheds = filterByDate(allScheds.filter(s=>s.due_date), 'due_date', f);
-    // Client counts (Overall vs Period)
+
+    // Client counts
     const totalClients = allClients.length;
     const activeClientIds = new Set(allLoans.filter(l=>l.status==='active').map(l=>l.client_id));
     const activeClients = activeClientIds.size;
     const newClientsPeriod = filteredClients.length;
-    // Collection rates for the selected period
-    const dailyCollection = allReps.filter(r=>r.payment_date===today()).reduce((s,r)=>s+Number(r.amount||0),0);
+
+    // ── DAILY COLLECTION (schedules due TODAY vs payments received TODAY) ──
+    // Only count what was actually DUE today, and only what was paid today
+    const dailyDueScheds = allScheds.filter(s=>s.due_date===todayStr);
+    const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
+    // Payments received today that belong to loans with a schedule due today
+    const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
+    const dailyPaidAmt   = allReps
+      .filter(r=>r.payment_date===todayStr && dailyDueLoanIds.has(r.loan_id))
+      .reduce((s,r)=>s+Number(r.amount||0),0);
+    const dailyRate      = dailyDueAmt>0 ? Math.min(100,(dailyPaidAmt/dailyDueAmt)*100) : 0;
+    const dailyUnpaid    = Math.max(0, dailyDueAmt - dailyPaidAmt);
+
+    // ── PERIOD COLLECTION (selected filter window) ──
     const periodCollection = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
-    const periodDue = filteredScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    const collectionRate = periodDue>0?Math.min(100,(periodCollection/periodDue*100)):0;
+    const periodDue        = filteredScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
+    // Monthly cumulative rate: each day's due and collection accumulates
+    // We compute: among schedules due up to today within the period, how much collected?
+    const periodDueLoanIds = new Set(filteredScheds.map(s=>s.loan_id));
+    const periodCollectionRate = periodDue>0 ? Math.min(100,(periodCollection/periodDue)*100) : 0;
+    const unpaidDueAmt = Math.max(0, periodDue - periodCollection);
+
     // Global Snapshots
     const active=allLoans.filter(l=>l.status==='active');
     const portfolio=active.reduce((s,l)=>s+Number(l.principal_amount||0),0);
@@ -1109,17 +1144,17 @@ async function renderDashboard(){
     const par30=active.filter(l=>l.overdue_days>30);
     const par30val=par30.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const par30pct=portfolio>0?(par30val/portfolio*100):0;
+
     // Filtered Metrics
     const disbPeriod = filteredDisbursed.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
-    const appsPeriod = filteredApps.length;
     const loanCountPeriod = filteredDisbursed.length;
-    // Arrears Collected in selected period
+
+    // Arrears
     const overdueLoanIds = new Set(overdue.map(l=>l.id));
     const arrearsReps = filteredReps.filter(r=>overdueLoanIds.has(r.loan_id));
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const paidPeriodCount = filteredReps.length;
     const totalDueCount = filteredScheds.length;
-    const unpaidDueAmt  = Math.max(0, periodDue - periodCollection);
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1134,39 +1169,85 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:3px solid var(--accent-green)"><div class="kpi-label">Active Clients</div><div class="kpi-value" style="color:var(--accent-green)">${activeClients}</div><div class="kpi-sub">With active loans globally</div></div>
         <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">New Clients</div><div class="kpi-value" style="color:var(--accent-purple)">${newClientsPeriod}</div><div class="kpi-sub">Registered in selected period</div></div>
       </div>
-      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection (Selected Period)</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-        <div class="card" style="border-left:5px solid #10b981;padding:0;overflow:hidden">
-          <div style="padding:4px 16px 8px;background:rgba(16,185,129,0.08)">
-            <span style="font-size:12px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:.5px">Period Collection Goal</span>
-          </div>
-          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
-            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(periodDue)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Total due in period &ndash; ${totalDueCount}</div>
-          </div>
-          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
-            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(unpaidDueAmt)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Unpaid Target</div>
-            <div style="margin-top:10px;height:34px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
-              <div style="height:100%;width:${Math.min(100,Math.max(0,collectionRate)).toFixed(1)}%;background:#ef4444;border-radius:6px;display:flex;align-items:center;padding-left:10px;min-width:${collectionRate>5?'0':'0'}px;transition:width .4s ease">
-                ${collectionRate>3?`<span style="color:#fff;font-weight:700;font-size:13px;white-space:nowrap">${collectionRate.toFixed(2)}%</span>`:''}
-              </div>
-            </div>
-            ${collectionRate<=3?`<div style="font-size:12px;font-weight:700;color:#ef4444;margin-top:4px">${collectionRate.toFixed(2)}%</div>`:''}
-          </div>
-          <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
-            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(dailyCollection)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Paid Today (Calendar)</div>
-          </div>
-          <div style="padding:14px 16px">
-            <div style="font-size:20px;font-weight:800;color:var(--text-primary)">${fmtMoney(arrearsCollected)}</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">Arrears Collected in period</div>
-          </div>
+      <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Collection</h3>
+
+      <!-- ── DAILY COLLECTION ── -->
+      <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📅 Daily Collection — ${todayStr}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:6px">
+        <div class="kpi-card" style="border-top:3px solid #10b981;padding:12px">
+          <div class="kpi-label">Due Today</div>
+          <div class="kpi-value" style="font-size:18px;color:#10b981">${fmtMoney(dailyDueAmt)}</div>
+          <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''}</div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:12px">
-          <div class="kpi-card" style="border-top:3px solid var(--accent-blue)"><div class="kpi-label">Period Collection</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(periodCollection)}</div><div class="kpi-sub">${paidPeriodCount} payments</div></div>
-          <div class="kpi-card" style="border-top:3px solid var(--accent-orange)"><div class="kpi-label">Loans Issued</div><div class="kpi-value" style="color:var(--accent-orange)">${loanCountPeriod}</div><div class="kpi-sub">Disbursed in period</div></div>
-          <div class="kpi-card" style="border-top:3px solid var(--accent-purple)"><div class="kpi-label">Disbursed Amount</div><div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(disbPeriod)}</div><div class="kpi-sub">In selected period</div></div>
+        <div class="kpi-card" style="border-top:3px solid #3b82f6;padding:12px">
+          <div class="kpi-label">Collected Today</div>
+          <div class="kpi-value" style="font-size:18px;color:#3b82f6">${fmtMoney(dailyPaidAmt)}</div>
+          <div class="kpi-sub">vs today's due</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid ${dailyUnpaid>0?'#ef4444':'#10b981'};padding:12px">
+          <div class="kpi-label">Still Unpaid</div>
+          <div class="kpi-value" style="font-size:18px;color:${dailyUnpaid>0?'#ef4444':'#10b981'}">${fmtMoney(dailyUnpaid)}</div>
+          <div class="kpi-sub">${dailyDueAmt===0?'No due today':'of today\'s target'}</div>
+        </div>
+      </div>
+      <!-- Daily rate bar -->
+      <div style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-size:11px;color:var(--text-secondary)">Daily Collection Rate</span>
+          <span style="font-size:13px;font-weight:700;color:${dailyRate>=100?'#10b981':dailyRate>=60?'#f59e0b':'#ef4444'}">${dailyRate.toFixed(1)}%</span>
+        </div>
+        <div style="height:10px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100,dailyRate).toFixed(1)}%;background:${dailyRate>=100?'#10b981':dailyRate>=60?'#f59e0b':'#ef4444'};border-radius:6px;transition:width .4s ease"></div>
+        </div>
+        ${dailyDueAmt===0?'<div style="font-size:10px;color:var(--text-secondary);margin-top:3px">No installments scheduled for today — rate shows 0%</div>':''}
+      </div>
+
+      <!-- ── PERIOD COLLECTION ── -->
+      <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📆 Period Collection (Selected Filter)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px">
+        <div class="kpi-card" style="border-top:3px solid #8b5cf6;padding:12px">
+          <div class="kpi-label">Total Due in Period</div>
+          <div class="kpi-value" style="font-size:18px;color:#8b5cf6">${fmtMoney(periodDue)}</div>
+          <div class="kpi-sub">${totalDueCount} installments</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid #3b82f6;padding:12px">
+          <div class="kpi-label">Period Collected</div>
+          <div class="kpi-value" style="font-size:18px;color:#3b82f6">${fmtMoney(periodCollection)}</div>
+          <div class="kpi-sub">${paidPeriodCount} payments</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px">
+        <div class="kpi-card" style="border-top:3px solid #ef4444;padding:12px">
+          <div class="kpi-label">Unpaid in Period</div>
+          <div class="kpi-value" style="font-size:18px;color:#ef4444">${fmtMoney(unpaidDueAmt)}</div>
+          <div class="kpi-sub">outstanding target</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid #f59e0b;padding:12px">
+          <div class="kpi-label">Arrears Collected</div>
+          <div class="kpi-value" style="font-size:18px;color:#f59e0b">${fmtMoney(arrearsCollected)}</div>
+          <div class="kpi-sub">overdue loans in period</div>
+        </div>
+      </div>
+      <!-- Period rate bar -->
+      <div style="margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-size:11px;color:var(--text-secondary)">Period Collection Rate <span style="font-size:9px">(cumulative — updates as new due dates arrive)</span></span>
+          <span style="font-size:13px;font-weight:700;color:${periodCollectionRate>=100?'#10b981':periodCollectionRate>=60?'#f59e0b':'#ef4444'}">${periodCollectionRate.toFixed(1)}%</span>
+        </div>
+        <div style="height:10px;background:rgba(148,163,184,0.18);border-radius:6px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100,periodCollectionRate).toFixed(1)}%;background:${periodCollectionRate>=100?'#10b981':periodCollectionRate>=60?'#f59e0b':'#ef4444'};border-radius:6px;transition:width .4s ease"></div>
+        </div>
+      </div>
+      <div style="margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="kpi-card" style="border-top:3px solid #f97316;padding:12px">
+          <div class="kpi-label">Loans Issued</div>
+          <div class="kpi-value" style="font-size:18px;color:#f97316">${loanCountPeriod}</div>
+          <div class="kpi-sub">Disbursed in period</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid #8b5cf6;padding:12px">
+          <div class="kpi-label">Disbursed Amount</div>
+          <div class="kpi-value" style="font-size:18px;color:#8b5cf6">${fmtMoney(disbPeriod)}</div>
+          <div class="kpi-sub">In selected period</div>
         </div>
       </div>
       <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Global Portfolio Snapshot</h3>
@@ -2046,7 +2127,7 @@ async function openPaymentModal(loanId){
     ${loanInfo}
     ${!loanId?`<div class="form-group" style="position:relative"><label>Search Loan (by loan no, client name, phone or ID)</label><input class="input" id="payLoanSearch" list="payLoanList" placeholder="Type loan no, name, phone or ID number..." oninput="searchLoanForPay(this.value)" autocomplete="off"><datalist id="payLoanList"></datalist><div id="payLoanResults" style="margin-top:6px;max-height:280px;overflow-y:auto;border-radius:8px"></div></div>`:''}
     <input type="hidden" id="payLoanId" value="${loanId||''}">
-    <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="paystack_paybill">📡 Paystack Paybill (Auto)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payPaystackInfoWrap" style="display:none"><div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);border-radius:8px;padding:10px;font-size:12px;color:var(--text-secondary)">ℹ️ Select <strong>Paystack Paybill (Auto)</strong> only to manually log a payment already received via paybill. Real-time auto-recording happens via the webhook.</div></div>
+    <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="intasend">💳 Intasend (M-Pesa STK Push)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payIntasendPhoneWrap" style="display:none"><label>Client Phone for STK Push *</label><input class="input" id="payIntasendPhone" placeholder="2547XXXXXXXX"><div style="font-size:11px;color:var(--text-secondary);margin-top:4px">An STK push will be sent to this phone via Intasend.</div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="payNotes"></textarea></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSavePayment" onclick="savePayment()">Confirm Payment</button></div>
@@ -2127,13 +2208,49 @@ function selectLoanForPay(id,loanNo,name,balance){
 }
 
 function onPayMethodChange(v){
-  const wrap=document.getElementById('payPaystackInfoWrap');
-  if(wrap) wrap.style.display = (v==='paystack_paybill') ? 'block' : 'none';
+  const wrap=document.getElementById('payIntasendPhoneWrap');
+  if(!wrap) return;
+  wrap.style.display = (v==='intasend') ? 'block' : 'none';
+  // Try to prefill the phone from the selected loan
+  if(v==='intasend'){
+    const inp=document.getElementById('payIntasendPhone');
+    const loanId=document.getElementById('payLoanId')?.value;
+    if(inp && !inp.value && loanId){
+      const cache=window._payLoanCache||[];
+      const hit=cache.find(l=>l.id===loanId);
+      if(hit?.loan_clients?.phone) inp.value = hit.loan_clients.phone;
+    }
+  }
 }
-// Paystack paybill payments are auto-recorded via webhook.
-// This function is a placeholder for manual paystack_paybill log entries.
-async function paystackPaybillNote(){
-  return { note: 'Manual log - auto via webhook' };
+async function triggerIntasendSTK({amount, phone, loanId, loanNo, clientName}){
+  const s = appSettings||{};
+  if(!s.intasend_enabled) throw new Error('Intasend is not enabled in Settings');
+  const pub = s.intasend_publishable_key;
+  const sec = s.intasend_secret_key;
+  if(!pub || !sec) throw new Error('Intasend keys are missing in Settings');
+  const base = s.intasend_live ? 'https://payment.intasend.com' : 'https://sandbox.intasend.com';
+  // Normalize phone to 2547XXXXXXXX
+  let p = (phone||'').replace(/\D/g,'');
+  if(p.startsWith('0')) p = '254'+p.slice(1);
+  if(p.startsWith('7') || p.startsWith('1')) p = '254'+p;
+  if(p.length!==12) throw new Error('Phone must be in format 2547XXXXXXXX');
+  const payload = {
+    public_key: pub,
+    amount: Number(amount),
+    phone_number: p,
+    api_ref: `${loanNo||loanId}-${Date.now()}`,
+    method: 'M-PESA',
+    narrative: `Loan repayment ${loanNo||''} ${clientName||''}`.trim()
+  };
+  const r = await fetch(`${base}/api/v1/payment/mpesa-stk-push/`, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${sec}` },
+    body: JSON.stringify(payload)
+  });
+  const txt = await r.text();
+  let data; try{ data = JSON.parse(txt); }catch(_){ data = {raw: txt}; }
+  if(!r.ok) throw new Error(data?.detail || data?.message || `Intasend ${r.status}: ${txt.slice(0,200)}`);
+  return data;
 }
 
 async function savePayment(){
@@ -2146,9 +2263,14 @@ async function savePayment(){
     const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
     if(!loan)throw new Error('Loan not found');
     const _method = $('#payMethod').value;
-    if(_method==='paystack_paybill'){
-      // Just log manually – real-time auto-recording happens via Paystack webhook
-      const _refInp = $('#payRef'); if(_refInp && !_refInp.value) _refInp.value = 'PAYSTACK-'+Date.now();
+    if(_method==='intasend'){
+      const _phone = $('#payIntasendPhone')?.value;
+      if(!_phone) throw new Error('Enter the client phone for STK push');
+      if(btn){ btn.textContent='Sending STK push...'; }
+      const _resp = await triggerIntasendSTK({amount, phone:_phone, loanId, loanNo:loan.loan_no, clientName:''});
+      const _ref = _resp?.invoice?.invoice_id || _resp?.invoice?.id || _resp?.id || ('INTASEND-'+Date.now());
+      const _refInp = $('#payRef'); if(_refInp && !_refInp.value) _refInp.value = _ref;
+      toast('STK push sent. Ask the client to enter their M-Pesa PIN.', 'success');
     }
 
     const receiptNo = generateUniqueNo('RCP');
@@ -2629,12 +2751,12 @@ async function renderOfficerPerformance(){
   }catch(e){main.innerHTML=`<div class="empty-state"><p>Error: ${e.message}</p></div>`;toast(e.message,'error')}
 }
 
-// ═══ PAYSTACK WEBHOOK HELPERS ═══
-function copyPaystackWebhookUrl(){
-  const inp=document.getElementById('setPaystackWebhookUrl');
+// ═══ INTASEND WEBHOOK HELPERS ═══
+function copyIntasendWebhookUrl(){
+  const inp=document.getElementById('setIntasendWebhookUrl');
   if(!inp) return;
   inp.select(); inp.setSelectionRange(0, 99999);
-  try { navigator.clipboard.writeText(inp?.value||''); toast('Webhook URL copied','success'); }
+  try { navigator.clipboard.writeText(inp.value); toast('Webhook URL copied','success'); }
   catch(e){ document.execCommand('copy'); toast('Webhook URL copied','success'); }
 }
 
@@ -2657,7 +2779,7 @@ async function viewUnmatchedPayments(){
       </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:20px">No unmatched payments 🎉</td></tr>';
     const html=`
       <div style="padding:8px">
-        <h3 style="margin-bottom:12px">Unmatched Paystack Payments</h3>
+        <h3 style="margin-bottom:12px">Unmatched Intasend Payments</h3>
         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Payments where the account number didn't match any client's National ID. Update the client's ID in Clients, then manually record the payment.</p>
         <div style="overflow:auto;max-height:60vh">
           <table class="table" style="width:100%"><thead><tr><th>Received</th><th>Account No</th><th>Amount</th><th>Payer Phone</th><th>Reference</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
@@ -3002,53 +3124,58 @@ async function renderSettings(){
         </div>
       </div>
       
-      <!-- ═══ PAYSTACK SETTINGS ═══ -->
-      <div class="card" style="max-width:700px;margin-bottom:16px;border-color:#0ba4db">
-        <h3 style="font-size:16px;margin-bottom:6px;color:#0ba4db">💳 Paystack Settings (Paybill Auto-Repayments)</h3>
-        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px">
-          Paste your Paystack keys. When a client pays via your Paystack-powered paybill and enters their <strong>National ID number</strong> as account number, the repayment is auto-recorded against their active loan in real time.
-        </p>
+      <div class="card" style="max-width:700px;margin-bottom:16px;border-color:#f97316">
+        <h3 style="font-size:16px;margin-bottom:6px;color:#f97316">💳 Intasend Settings (Online Repayments)</h3>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px">Paste your keys from the Intasend dashboard and click <strong>Save Settings</strong>. Once enabled, cashiers can pick <em>Intasend (M-Pesa STK)</em> when recording a payment and the client will get an STK push on their phone.</p>
         <div class="form-group" style="display:flex;align-items:center;gap:8px">
-          <label class="toggle"><input type="checkbox" id="setPaystackEnabled" ${settings.paystack_enabled?'checked':''}><span class="toggle-slider"></span></label>
-          <span style="font-size:13px"><strong>Enable Paystack</strong> &nbsp;<span style="color:var(--text-secondary);font-size:11px">(turn on once your keys are saved)</span></span>
+          <label class="toggle"><input type="checkbox" id="setIntasendEnabled" ${settings.intasend_enabled?'checked':''}><span class="toggle-slider"></span></label>
+          <span style="font-size:13px"><strong>Enable Intasend</strong> &nbsp;<span style="color:var(--text-secondary);font-size:11px">(turn on once your keys are saved)</span></span>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Public Key</label><input class="input" id="setPaystackPub" value="${settings.paystack_public_key||''}" placeholder="pk_live_..."></div>
-          <div class="form-group"><label>Secret Key</label><input class="input" type="password" id="setPaystackSecret" value="${settings.paystack_secret_key||''}" placeholder="sk_live_..."></div>
+          <div class="form-group"><label>Publishable Key</label><input class="input" id="setIntasendPub" value="${settings.intasend_publishable_key||''}" placeholder="ISPubKey_..."></div>
+          <div class="form-group"><label>Secret Key</label><input class="input" type="password" id="setIntasendSecret" value="${settings.intasend_secret_key||''}" placeholder="ISSecretKey_..."></div>
         </div>
-        <div style="background:rgba(11,164,219,0.07);border:1px solid rgba(11,164,219,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:var(--text-secondary)">
-          ℹ️ Get your keys at <strong>dashboard.paystack.com → Settings → API Keys &amp; Webhooks</strong>. Use <strong>Test</strong> keys for testing and <strong>Live</strong> keys for real payments.
+        <div class="form-group" style="display:flex;align-items:center;gap:8px">
+          <label class="toggle"><input type="checkbox" id="setIntasendLive" ${settings.intasend_live?'checked':''}><span class="toggle-slider"></span></label>
+          <span style="font-size:13px">Use <strong>Live</strong> environment (off = Sandbox / test)</span>
+        </div>
+        <div style="background:rgba(249,115,22,0.07);border:1px solid rgba(249,115,22,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:11px;color:var(--text-secondary)">
+          ℹ️ Get your keys at <strong>payments.intasend.com → Settings → API Keys &amp; Webhooks</strong>. Use <strong>Sandbox</strong> keys for testing and <strong>Live</strong> keys to charge real customers.
         </div>
       </div>
 
-      <!-- ═══ PAYSTACK PAYBILL & WEBHOOK ═══ -->
+      <!-- ═══ INTASEND PAYBILL & WEBHOOK ═══ -->
       <div class="card" style="max-width:700px;margin-bottom:16px;border-color:#10b981">
-        <h3 style="font-size:16px;margin-bottom:6px;color:#10b981">📡 Paystack Paybill & Real-Time Webhook</h3>
+        <h3 style="font-size:16px;margin-bottom:6px;color:#10b981">📡 Intasend Paybill & Real-Time Webhook</h3>
         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px">
-          When a client pays via your paybill and enters their <strong>National ID number</strong> as the account, Paystack will notify the webhook URL and we'll auto-record the repayment against the matching client's active loan.
+          When a client pays via your Intasend paybill and enters their <strong>National ID number</strong> as the account, Intasend will notify this URL in real time and we'll auto-record the repayment against the matching client's active loan.
         </p>
 
         <div class="form-group">
-          <label>Your Paybill / Business Number</label>
-          <input class="input" id="setPaystackPaybill" value="${settings.paystack_paybill||''}" placeholder="e.g. 4082368">
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Your Paystack M-Pesa paybill. Tell clients to use their <strong>ID number</strong> as account number.</div>
+          <label>Your Intasend Paybill Number</label>
+          <input class="input" id="setIntasendPaybill" value="${settings.intasend_paybill||''}" placeholder="e.g. 542542">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">This is the paybill assigned to you by Intasend. Tell your clients to use their <strong>ID number</strong> as the account number.</div>
         </div>
 
         <div class="form-group">
-          <label>Webhook URL (paste this in Paystack dashboard)</label>
-          <div style="display:flex;gap:6px">
-            <input class="input" id="setPaystackWebhookUrl" value="${SUPABASE_URL+'/functions/v1/paystack-webhook'}" readonly style="opacity:0.85">
-            <button type="button" class="btn btn-outline btn-sm" onclick="copyPaystackWebhookUrl()">Copy</button>
-          </div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-            Go to <strong>Paystack Dashboard → Settings → API Keys &amp; Webhooks → Webhook URL</strong> and paste this URL. Paystack will POST every payment event here.
-          </div>
+          <label>Webhook Secret / Challenge</label>
+          <input class="input" id="setIntasendWebhookSecret" value="${settings.intasend_webhook_secret||''}" placeholder="A random string you set in Intasend dashboard">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Set the same value in <strong>Intasend → Settings → Webhooks → Challenge</strong>. Anyone calling the webhook must send this value or it will be rejected.</div>
         </div>
 
-        <div style="background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7">
+        <div class="form-group">
+          <label>Webhook URL (paste this in Intasend dashboard)</label>
+          <div style="display:flex;gap:6px">
+            <input class="input" id="setIntasendWebhookUrl" value="${SUPABASE_URL+'/functions/v1/intasend-webhook'}" readonly style="opacity:0.85">
+            <button type="button" class="btn btn-outline btn-sm" onclick="copyIntasendWebhookUrl()">Copy</button>
+          </div>
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Add this URL in <strong>Intasend → Settings → Webhooks → Endpoint URL</strong> and enable <em>Payment events</em>.</div>
+        </div>
+
+        <div style="background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.5">
           <strong style="color:#10b981">How it works for the client:</strong><br>
           1. Open M-Pesa → Lipa na M-Pesa → Pay Bill<br>
-          2. Business no: <strong>${settings.paystack_paybill||'&lt;your paybill&gt;'}</strong><br>
+          2. Business no: <strong>${settings.intasend_paybill||'<your paybill>'}</strong><br>
           3. Account no: <strong>their National ID number</strong><br>
           4. Enter amount and PIN<br>
           ✅ Payment is auto-matched to their active loan in seconds.
@@ -3067,7 +3194,7 @@ async function renderSettings(){
 
 async function saveSettings(){
   try{
-    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,paystack_enabled:document.getElementById('setPaystackEnabled')?document.getElementById('setPaystackEnabled').checked:false,paystack_public_key:document.getElementById('setPaystackPub')?document.getElementById('setPaystackPub').value.trim():'',paystack_secret_key:document.getElementById('setPaystackSecret')?document.getElementById('setPaystackSecret').value.trim():'',paystack_paybill:document.getElementById('setPaystackPaybill')?document.getElementById('setPaystackPaybill').value.trim():'',business_id:currentUser?.business_id||'bripta'};
+    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,intasend_enabled:document.getElementById('setIntasendEnabled')?document.getElementById('setIntasendEnabled').checked:false,intasend_live:document.getElementById('setIntasendLive')?document.getElementById('setIntasendLive').checked:false,intasend_publishable_key:document.getElementById('setIntasendPub')?document.getElementById('setIntasendPub').value:'',intasend_secret_key:document.getElementById('setIntasendSecret')?document.getElementById('setIntasendSecret').value:'',intasend_paybill:document.getElementById('setIntasendPaybill')?document.getElementById('setIntasendPaybill').value.trim():'',intasend_webhook_secret:document.getElementById('setIntasendWebhookSecret')?document.getElementById('setIntasendWebhookSecret').value.trim():'',business_id:currentUser?.business_id||'bripta'};
     const{data:existing}=await sb('loan_settings').select('id').eq('business_id',rec.business_id).single();
     if(existing){await sb('loan_settings').update(rec).eq('id',existing.id)}else{await sb('loan_settings').insert(rec)}
     appSettings={...appSettings,...rec};
