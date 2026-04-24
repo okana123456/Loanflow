@@ -3488,22 +3488,24 @@ async function handleExcelImport(ev){
     for(const ln of loansArr){
       loanSeq++;
       let loanId=null;
+      // === REVENUE / INTEREST MATH ===
+      // Declared outside try so they are accessible in the payments loop below.
+      const disbursed   = Number(ln.amount_disbursed_kes||0);
+      const totalPayable= Number(ln.loan_amount_kes||0) || disbursed;
+      const principal   = disbursed || totalPayable; // fallback if disbursed not provided
+      const totalInterest = Math.max(0, totalPayable - principal);
+      const interestRatio = totalPayable>0 ? (totalInterest/totalPayable) : 0;
+      const principalRatio= totalPayable>0 ? (principal   /totalPayable) : 1;
       try{
         // Compute totals from payments
         const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
         const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
         const lastPay=sortedPays[sortedPays.length-1];
 
-        // === REVENUE / INTEREST MATH ===
         // True principal = amount actually handed to the client.
         // Total payable    = full loan_amount_kes the client must repay.
         // Interest         = the spread between the two.
-        const disbursed   = Number(ln.amount_disbursed_kes||0);
-        const totalPayable= Number(ln.loan_amount_kes||0) || disbursed;
-        const principal   = disbursed || totalPayable; // fallback if disbursed not provided
-        const totalInterest = Math.max(0, totalPayable - principal);
-        const interestRatio = totalPayable>0 ? (totalInterest/totalPayable) : 0;
-        const principalRatio= totalPayable>0 ? (principal   /totalPayable) : 1;
+        // (disbursed, totalPayable, principal, totalInterest, interestRatio, principalRatio declared above)
 
         // Map Excel status values to system status
         const rawStatus=(ln.status||'').toLowerCase();
