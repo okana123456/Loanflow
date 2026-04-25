@@ -2016,7 +2016,7 @@ async function viewLoan(id){
     </div>
     <div id="loanTabPayments" style="display:none">
       <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>Receipt</th><th>Reference</th><th>Amount</th><th>Method</th><th>Date & Time</th></tr></thead><tbody>
-      ${(payments||[]).map(p=>`<tr><td><strong>${p.receipt_no}</strong></td><td>${p.payment_reference||'-'}</td><td>${fmtMoney(p.amount)}</td><td>${p.payment_method||'-'}</td><td>${fmtDateTime(p.created_at||p.payment_date)}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>'}
+      ${(payments||[]).map(p=>`<tr><td><strong>${p.receipt_no}</strong></td><td>${p.payment_reference||'-'}</td><td>${fmtMoney(p.amount)}</td><td>${p.payment_method||'-'}</td><td>${fmtDateTime(p.payment_date||p.created_at)}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>'}
       </tbody></table></div>
     </div>
     <div class="modal-actions">
@@ -2086,7 +2086,7 @@ async function renderRepayments(page=1){
         ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Reference</th><th>Amount</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loans?.loan_clients?.full_name||'-'}</td><td>${r.loans?.loan_clients?.phone||'-'}</td><td>${r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-'}</td><td><span style="font-family:monospace">${r.payment_reference||'-'}</span></td><td><strong>${fmtMoney(r.amount)}</strong></td><td>${r.payment_method||'-'}</td><td>${fmtDateTime(r.created_at||r.payment_date)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loans?.loan_clients?.full_name||'-'}</td><td>${r.loans?.loan_clients?.phone||'-'}</td><td>${r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-'}</td><td><span style="font-family:monospace">${r.payment_reference||'-'}</span></td><td><strong>${fmtMoney(r.amount)}</strong></td><td>${r.payment_method||'-'}</td><td>${fmtDateTime(r.payment_date||r.created_at)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -2314,7 +2314,7 @@ async function printReceipt(id){
 }
 
 function exportRepaymentsExcel(){
-  const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Client:r.loans?.loan_clients?.full_name||'-',Phone:r.loans?.loan_clients?.phone||'-','Loan #':r.loans?.loan_no||'-',Reference:r.payment_reference||'-',Amount:r.amount,Method:r.payment_method,'Date & Time':fmtDateTime(r.created_at||r.payment_date)}));
+  const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Client:r.loans?.loan_clients?.full_name||'-',Phone:r.loans?.loan_clients?.phone||'-','Loan #':r.loans?.loan_no||'-',Reference:r.payment_reference||'-',Amount:r.amount,Method:r.payment_method,'Date & Time':fmtDateTime(r.payment_date||r.created_at)}));
   const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
   toast('Exported','success');
 }
@@ -2790,14 +2790,19 @@ async function renderAccounting() {
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
 
-    const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
-    const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0); // Flat KES 500 per loan
+    // Principal disbursed — filter by disbursement_date
+    const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
+    // Processing fees — each loan has PROCESSING_FEE_FLAT stored; use it directly
+    const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
+    // Registration fees — one per client, dated by client created_at (import sets this correctly)
     const registrationFees = filteredClients.reduce((s,c)=>s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE),0);
-    
+
+    // Interest and penalties — from actual repayment records, filtered by payment_date
     const principalRecovered = filteredReps.reduce((s,r)=>s+Number(r.principal_portion||0),0);
-    const interestCollected = filteredReps.reduce((s,r)=>s+Number(r.interest_portion||0),0);
+    const interestCollected  = filteredReps.reduce((s,r)=>s+Number(r.interest_portion||0),0);
     const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
-    
+
+    // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
 
     main.innerHTML=`
@@ -3439,7 +3444,7 @@ async function handleExcelImport(ev){
 
   const clientsArr=Array.from(clientsMap.values());
   const totalClients=clientsArr.length;
-  const stats={clientsAdded:0,clientsExisting:0,loansAdded:0,loansExisting:0,paymentsAdded:0,paymentsSkipped:0,errors:0,errorMessages:[]};
+  const stats={clientsAdded:0,clientsExisting:0,applicationsAdded:0,applicationsMatched:0,loansAdded:0,loansExisting:0,schedulesAdded:0,paymentsAdded:0,paymentsSkipped:0,errors:0,errorMessages:[]};
 
   for(let i=0;i<clientsArr.length;i++){
     const c=clientsArr[i];
@@ -3488,40 +3493,94 @@ async function handleExcelImport(ev){
     for(const ln of loansArr){
       loanSeq++;
       let loanId=null;
+      let appId=null;
+
       // === REVENUE / INTEREST MATH ===
-      // Declared outside try so they are accessible in the payments loop below.
+      // Declared outside try so accessible in the payments loop below.
       const disbursed   = Number(ln.amount_disbursed_kes||0);
       const totalPayable= Number(ln.loan_amount_kes||0) || disbursed;
-      const principal   = disbursed || totalPayable; // fallback if disbursed not provided
+      const principal   = disbursed || totalPayable;
       const totalInterest = Math.max(0, totalPayable - principal);
       const interestRatio = totalPayable>0 ? (totalInterest/totalPayable) : 0;
       const principalRatio= totalPayable>0 ? (principal   /totalPayable) : 1;
+
+      // Pre-sort payments once — used throughout the loan block
+      const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
+      const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
+      const lastPay=sortedPays[sortedPays.length-1];
+      const firstPayDate=sortedPays.length>0 ? sortedPays[0].payment_date : ln.disbursement_date;
+
+      // Derive term in weeks from disbursement→maturity dates
+      let termWeeksCalc=0;
+      if(ln.disbursement_date && ln.maturity_date){
+        const d1=new Date(ln.disbursement_date), d2=new Date(ln.maturity_date);
+        termWeeksCalc=Math.max(1,Math.round((d2-d1)/(7*24*3600*1000)));
+      }
+      // Back-calculate weekly flat rate from interest spread
+      const weeklyRate=(principal>0&&termWeeksCalc>0)
+        ? Number(((totalInterest/principal/termWeeksCalc)*100).toFixed(4)) : 0;
+      const weeklyInstallment=termWeeksCalc>0
+        ? Number((totalPayable/termWeeksCalc).toFixed(2)) : 0;
+
       try{
-        // Compute totals from payments
-        const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
-        const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
-        const lastPay=sortedPays[sortedPays.length-1];
-
-        // True principal = amount actually handed to the client.
-        // Total payable    = full loan_amount_kes the client must repay.
-        // Interest         = the spread between the two.
-        // (disbursed, totalPayable, principal, totalInterest, interestRatio, principalRatio declared above)
-
-        // Map Excel status values to system status
+        // Map Excel status → system status
         const rawStatus=(ln.status||'').toLowerCase();
         const status=(rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')?'completed':'active';
-        const outstanding= status==='completed' ? 0 : (lastPay && lastPay.balance_after_kes!==undefined ? lastPay.balance_after_kes : Math.max(totalPayable-totalPaid,0));
+        const outstanding=status==='completed'
+          ? 0
+          : (lastPay&&lastPay.balance_after_kes!==undefined
+              ? lastPay.balance_after_kes
+              : Math.max(totalPayable-totalPaid,0));
 
-        // Match existing loan by client_id + disbursement_date + principal_amount (loan_no format differs for imports)
-        let existQuery=sb('loans').select('id').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('principal_amount',principal);
+        // ── STEP 1: Create / match loan_application ──────────────────────────
+        {
+          const{data:existApp}=await sb('loan_applications').select('id,status')
+            .eq('business_id',currentUser.business_id)
+            .eq('client_id',clientId)
+            .eq('applied_amount',principal)
+            .limit(1);
+
+          if(existApp&&existApp.length){
+            appId=existApp[0].id;
+            stats.applicationsMatched++;
+            if(existApp[0].status!=='disbursed'){
+              try{ await sb('loan_applications').update({status:'disbursed'}).eq('id',appId); }catch(_){}
+            }
+          }else{
+            const appNo=`${appSettings?.loan_no_prefix||'LN'}-IMP-APP-${String(i+1).padStart(3,'0')}-${String(loanSeq).padStart(2,'0')}`;
+            const appRec={
+              application_no:appNo,
+              client_id:clientId,
+              applied_amount:principal,
+              applied_term_weeks:termWeeksCalc||1,
+              purpose:ln.loan_product||'Imported loan',
+              status:'disbursed',
+              loan_officer_id:currentUser?.id,
+              business_id:currentUser.business_id,
+              approved_at:ln.disbursement_date||null,
+              reviewed_at:ln.disbursement_date||null,
+              approved_by:currentUser?.id
+            };
+            Object.keys(appRec).forEach(k=>appRec[k]===undefined&&delete appRec[k]);
+            const{data:appIns,error:appErr}=await sb('loan_applications').insert(appRec).select('id').single();
+            if(!appErr&&appIns){ appId=appIns.id; stats.applicationsAdded++; }
+            else{ console.warn('[Excel Import] Application insert failed',appErr?.message); }
+          }
+        }
+
+        // ── STEP 2: Match / upsert loan ──────────────────────────────────────
+        let existQuery=sb('loans').select('id')
+          .eq('business_id',currentUser.business_id)
+          .eq('client_id',clientId)
+          .eq('principal_amount',principal);
         if(ln.disbursement_date) existQuery=existQuery.eq('disbursement_date',ln.disbursement_date);
         const{data:existLoan}=await existQuery.limit(1);
 
-        // Generate loan_no in the system's expected format
         const loanNo=`${appSettings?.loan_no_prefix||'LN'}-IMP-${String(i+1).padStart(3,'0')}-${String(loanSeq).padStart(2,'0')}`;
 
         const loanRec={
           loan_no:loanNo,
+          ...(appId ? {application_id:appId} : {}),
           client_id:clientId,
           principal_amount:principal,
           disbursed_amount:disbursed||principal,
@@ -3530,35 +3589,69 @@ async function handleExcelImport(ev){
           outstanding_balance:outstanding,
           disbursement_date:ln.disbursement_date,
           maturity_date:ln.maturity_date,
-          first_repayment_date:ln.disbursement_date,
+          first_repayment_date:firstPayDate||ln.disbursement_date,
           status:status,
-          interest_rate:0,
+          interest_rate:weeklyRate,
           interest_type:'flat',
-          term_weeks:0,
-          processing_fee:0,
+          term_weeks:termWeeksCalc||0,
+          processing_fee:PROCESSING_FEE_FLAT,
           total_interest:totalInterest,
-          weekly_installment:0,
+          weekly_installment:weeklyInstallment,
           arrears_amount:0,
           overdue_days:0,
           disbursement_method:'cash',
           loan_officer_id:currentUser?.id,
           business_id:currentUser.business_id
         };
-        // Drop undefined fields so DB defaults apply
         Object.keys(loanRec).forEach(k=>loanRec[k]===undefined&&delete loanRec[k]);
 
         if(existLoan&&existLoan.length){
           loanId=existLoan[0].id;
           stats.loansExisting++;
-          // Update with latest aggregated values (preserve existing loan_no)
-          const upd={...loanRec}; delete upd.loan_no;
-          try{ await sb('loans').update(upd).eq('id',loanId);}catch(updErr){ console.error('Loan update failed',loanId,updErr); }
+          const upd={...loanRec};
+          delete upd.loan_no; // preserve existing loan_no
+          if(appId) upd.application_id=appId;
+          try{ await sb('loans').update(upd).eq('id',loanId); }catch(updErr){ console.error('Loan update failed',loanId,updErr); }
         }else{
           const{data:lnIns,error:lnErr}=await sb('loans').insert(loanRec).select('id').single();
           if(lnErr)throw lnErr;
           loanId=lnIns.id;
           stats.loansAdded++;
         }
+
+        // ── STEP 3: Generate loan_schedule so accounting dates are correct ────
+        if(termWeeksCalc>0 && firstPayDate){
+          const{data:existSched}=await sb('loan_schedules').select('id').eq('loan_id',loanId).limit(1);
+          if(!existSched||!existSched.length){
+            const schedules=[];
+            for(let w=0;w<termWeeksCalc;w++){
+              const due=new Date(firstPayDate);
+              due.setDate(due.getDate()+w*7);
+              const dueDateStr=due.toISOString().slice(0,10);
+              const pPrincipal=Number((weeklyInstallment*principalRatio).toFixed(2));
+              const pInterest =Number((weeklyInstallment*interestRatio ).toFixed(2));
+              schedules.push({
+                loan_id:loanId,
+                business_id:currentUser.business_id,
+                installment_no:w+1,
+                due_date:dueDateStr,
+                principal_due:pPrincipal,
+                interest_due:pInterest,
+                total_due:weeklyInstallment,
+                principal_paid:0,
+                interest_paid:0,
+                total_paid:0,
+                penalty_charged:0,
+                status:'pending'
+              });
+            }
+            if(schedules.length){
+              try{ await sb('loan_schedules').insert(schedules); stats.schedulesAdded+=schedules.length; }
+              catch(sErr){ console.warn('[Excel Import] Schedule insert failed',sErr?.message); }
+            }
+          }
+        }
+
       }catch(e){
         stats.errors++;
         stats.errorMessages.push(`Loan ${ln.loan_number} (${c.client_name}): ${e.message||e}`);
@@ -3611,8 +3704,11 @@ async function handleExcelImport(ev){
       <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
         <div>Clients added: <strong>${stats.clientsAdded}</strong></div>
         <div>Existing clients matched: <strong>${stats.clientsExisting}</strong></div>
+        <div>Applications created: <strong>${stats.applicationsAdded}</strong></div>
+        <div>Applications matched: <strong>${stats.applicationsMatched}</strong></div>
         <div>Loans created: <strong>${stats.loansAdded}</strong></div>
         <div>Loans updated: <strong>${stats.loansExisting}</strong></div>
+        <div>Schedule items generated: <strong>${stats.schedulesAdded}</strong></div>
         <div>Payments recorded: <strong>${stats.paymentsAdded}</strong></div>
         <div>Duplicate payments skipped: <strong>${stats.paymentsSkipped}</strong></div>
         <div>Errors: <strong style="color:${stats.errors?'var(--accent-red)':'inherit'}">${stats.errors}</strong></div>
@@ -3620,7 +3716,7 @@ async function handleExcelImport(ev){
       ${stats.errors?`<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent-red)">Show error details</summary><pre style="white-space:pre-wrap;font-size:11px;margin-top:6px;max-height:200px;overflow:auto">${stats.errorMessages.slice(0,50).map(m=>m.replace(/</g,'&lt;')).join('\n')}</pre></details>`:''}
     `;
   }
-  toast(`Import complete: ${stats.clientsAdded} new clients, ${stats.loansAdded} loans, ${stats.paymentsAdded} payments`,'success');
+  toast(`Import complete: ${stats.clientsAdded} clients, ${stats.applicationsAdded} applications, ${stats.loansAdded} loans, ${stats.paymentsAdded} payments`,'success');
   try{ await audit('data_imported','loan_clients',null,null,{...stats,errorMessages:undefined}); }catch(_){}
 }
 
