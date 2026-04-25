@@ -3362,7 +3362,7 @@ async function handleExcelImport(ev){
     if(!wb.SheetNames.includes('IMPORT_TEMPLATE'))throw new Error('Sheet "IMPORT_TEMPLATE" not found in workbook');
     const ws=wb.Sheets['IMPORT_TEMPLATE'];
     // Find the header row by scanning for one whose first non-empty cell === 'client_name'
-    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true,blankrows:false});
+    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false,blankrows:false});
     let headerIdx=-1;
     for(let i=0;i<Math.min(aoa.length,10);i++){
       const row=aoa[i]||[];
@@ -3374,6 +3374,7 @@ async function handleExcelImport(ev){
       const obj={}; headers.forEach((h,j)=>{ if(h) obj[h]=r[j]!==undefined?r[j]:''; }); return obj;
     });
     console.log('[Excel Import] Parsed',rows.length,'data rows from IMPORT_TEMPLATE (header at row',headerIdx+1,')');
+    if(rows.length>0){ console.log('[Excel Import] Sample row dates — application_date:',rows[0].application_date,'| disbursement_date:',rows[0].disbursement_date,'| payment_date:',rows[0].payment_date); }
   }catch(e){
     if(progBox)progBox.style.display='none';
     if(statusEl)statusEl.textContent='';
