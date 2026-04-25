@@ -1220,6 +1220,49 @@ async function renderDashboard(){
         ${dailyDueAmt===0?'<div style="font-size:9px;color:var(--text-secondary);margin-top:3px">No installments scheduled for today — rate shows 0%</div>':''}
       </div>
 
+      <!-- ── DUE TODAY CLIENT LIST ── -->
+      ${(()=>{
+        const dueTodayLoans=dailyDueScheds.map(s=>{
+          const loan=allLoans.find(l=>l.id===s.loan_id);
+          if(!loan)return null;
+          const paid=allReps.filter(r=>r.loan_id===s.loan_id&&r.payment_date===todayStr).reduce((x,r)=>x+Number(r.amount||0),0);
+          const remaining=Math.max(0,Number(s.total_due||0)-paid);
+          return{name:loan.loan_clients?.full_name||'-',phone:loan.loan_clients?.phone||'-',loan_no:loan.loan_no,installment_no:s.installment_no,total_due:Number(s.total_due||0),paid,remaining,loan_id:loan.id,client_id:loan.client_id};
+        }).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
+        if(!dueTodayLoans.length) return '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;padding:8px;background:var(--bg-card);border-radius:8px;text-align:center">✅ No installments scheduled for today</div>';
+        return \`<div style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span class="dash-section-label" style="margin-bottom:0">👥 Clients Due Today — \${dueTodayLoans.length} client\${dueTodayLoans.length!==1?'s':''}</span>
+            <span style="font-size:11px;color:var(--text-secondary)">\${dueTodayLoans.filter(x=>x.remaining>0).length} unpaid · \${dueTodayLoans.filter(x=>x.remaining===0).length} paid</span>
+          </div>
+          <div class="table-wrap" style="max-height:320px;overflow-y:auto;margin-bottom:0">
+            <table style="font-size:12px">
+              <thead><tr>
+                <th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Paid</th><th>Remaining</th><th>Status</th><th></th>
+              </tr></thead>
+              <tbody>
+                \${dueTodayLoans.map(x=>{
+                  const isPaid=x.remaining===0;
+                  const isPartial=x.paid>0&&x.remaining>0;
+                  const statusBadge=isPaid?'<span class="badge badge-green">Paid</span>':isPartial?'<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>':'<span class="badge badge-red">Unpaid</span>';
+                  return \`<tr style="\${isPaid?'opacity:0.6':''}">
+                    <td><strong>\${x.name}</strong></td>
+                    <td><a href="tel:\${x.phone}" style="color:var(--accent-blue)">\${x.phone}</a></td>
+                    <td>\${x.loan_no}</td>
+                    <td style="text-align:center">#\${x.installment_no}</td>
+                    <td>\${fmtMoney(x.total_due)}</td>
+                    <td style="color:var(--accent-green)">\${x.paid>0?fmtMoney(x.paid):'-'}</td>
+                    <td style="color:\${isPaid?'var(--accent-green)':'var(--accent-red)'};font-weight:700">\${fmtMoney(x.remaining)}</td>
+                    <td>\${statusBadge}</td>
+                    <td>\${hasRole('admin','branch_manager','cashier')&&!isPaid?\`<button class="btn btn-success btn-sm" onclick="openPaymentModal('\${x.loan_id}')">Pay</button>\`:''}</td>
+                  </tr>\`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>\`;
+      })()}
+
       <!-- ── PERIOD COLLECTION (cumulative) ── -->
       <div class="dash-section-label">📆 Period Collection — Cumulative (Selected Filter)</div>
       <div class="dash-grid-2">
