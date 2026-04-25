@@ -3743,6 +3743,7 @@ async function handleExcelImport(ev){
           }
         }catch(cascErr){ console.warn('[Excel Import] Schedule cascade failed for loan',loanId,cascErr); }
       }
+    }
   }
 
   if(progBar)progBar.style.width='100%';
