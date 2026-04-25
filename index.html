@@ -3559,7 +3559,7 @@ async function handleExcelImport(ev){
               status:'disbursed',
               loan_officer_id:currentUser?.id,
               business_id:currentUser.business_id,
-              applied_at:ln.application_date||ln.disbursement_date||null,
+              application_date:ln.application_date||ln.disbursement_date||null,
               approved_at:ln.disbursement_date||null,
               reviewed_at:ln.disbursement_date||null,
               approved_by:currentUser?.id
