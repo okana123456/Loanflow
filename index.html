@@ -2525,76 +2525,50 @@ async function renderOverdue(opts){
 
     window._overdueSnapshot={asOfDate,overdueLoans,missedRows,dueRows};
 
-    main.innerHTML=`
-      <div class="page-header" style="flex-direction:column;align-items:flex-start;gap:10px">
-        <h1>Arrears Report</h1>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%">
+    // ── Build arrears page using safe string concatenation (no nested backticks) ──
+    function makeSection(id, title, count, amtStr, bodyHtml){
+      return '<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;background:var(--bg-card);border-bottom:1px solid var(--border)" onclick="toggleSection(\''+id+'\')">' +
+          '<span style="font-weight:700;font-size:13px">'+title+'</span>' +
+          '<div style="display:flex;align-items:center;gap:8px">' +
+            (count!==null?'<span class="badge badge-red">'+count+'</span>':'') +
+            (amtStr?'<span style="font-size:12px;color:var(--text-secondary)">'+amtStr+'</span>':'') +
+            '<span id="arr-icon-'+id+'" style="font-size:14px;transition:transform .2s">▼</span>' +
+          '</div>' +
+        '</div>' +
+        '<div id="arr-body-'+id+'" style="overflow:hidden;max-height:0;transition:max-height .3s ease">' +
+          '<div style="padding:0 0 4px">' + bodyHtml + '</div>' +
+        '</div>' +
+      '</div>';
+    }
 
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">📅 As of date:</span>
-            <input type="date" class="input" style="width:150px;padding:4px 8px;font-size:12px" value="${asOfDate}"
-              onchange="renderOverdue({asOfDate:this.value,minDays:document.getElementById('arrearsMinDays')?.value||0})">
-          </div>
+    // ── 1. Dues by Date table (same format as dashboard) ──
+    const duesTable = buildDuesTable(dueRows);
+    const duesTotal = dueRows.reduce(function(s,r){return s+Number(r.s.total_due||0);},0);
+    const duesUnpaid = dueRows.filter(function(r){return r.remaining>0;}).length;
+    const duesPaid   = dueRows.filter(function(r){return r.remaining===0;}).length;
+    const duesAmtStr = 'KES '+fmtMoney(duesTotal)+' · '+duesUnpaid+' unpaid · '+duesPaid+' paid';
 
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">Minimum days:</span>
-            <select id="arrearsMinDays" class="select" style="width:auto;padding:4px 8px;font-size:12px"
-              onchange="renderOverdue({asOfDate:document.querySelector('input[type=date]')?.value||'${asOfDate}',minDays:this.value})">
-              <option value="0" ${minDays===0?'selected':''}>All overdue</option>
-              <option value="1" ${minDays===1?'selected':''}>1+ days</option>
-              <option value="7" ${minDays===7?'selected':''}>7+ days</option>
-              <option value="14" ${minDays===14?'selected':''}>14+ days</option>
-              <option value="30" ${minDays===30?'selected':''}>30+ days (PAR 30)</option>
-              <option value="60" ${minDays===60?'selected':''}>60+ days (PAR 60)</option>
-              <option value="90" ${minDays===90?'selected':''}>90+ days (PAR 90)</option>
-            </select>
-          </div>
+    const duesHeader =
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px 10px;border-bottom:1px solid var(--border)">' +
+        '<span style="font-size:12px;color:var(--text-secondary)">Pick date:</span>' +
+        '<input type="date" id="duesDatePicker" class="input" style="width:150px;padding:4px 8px;font-size:12px;font-weight:600" value="'+asOfDate+'" onchange="loadArrearsDues(this.value)">' +
+        '<span id="duesDateSummary" style="font-size:12px;color:var(--text-secondary)">'+duesAmtStr+'</span>' +
+      '</div>' +
+      '<div id="duesClientTable" style="padding:0 0 4px">'+duesTable+'</div>';
 
-          <span class="badge badge-red">${overdueLoans.length} loan${overdueLoans.length!==1?'s':''} &nbsp;·&nbsp; KES ${fmtMoney(totalArrears)} in arrears</span>
-
-          <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="downloadArrearsExcel()">⬇ Download Excel</button>
-        </div>
-      </div>
-
-      <!-- ── DUES BY DATE SECTION ── -->
-      <div class="card" style="margin-bottom:14px;padding:14px">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span style="font-size:13px;font-weight:700">📋 Clients Due On:</span>
-            <input type="date" id="duesDatePicker" class="input" style="width:155px;padding:4px 8px;font-size:12px;font-weight:600" value="${asOfDate}"
-              onchange="loadArrearsDues(this.value)">
-            <span id="duesDateSummary" style="font-size:12px;color:var(--text-secondary)">
-              ${dueRows.length} client${dueRows.length!==1?'s':''} · KES ${fmtMoney(dueRows.reduce((s,r)=>s+r.s.total_due,0))} due
-            </span>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="downloadArrearsExcel()">⬇ Download Excel</button>
-        </div>
-        <div id="duesClientTable" style="max-height:320px;overflow-y:auto">
-          ${buildDuesTable(dueRows)}
-        </div>
-      </div>
-
-      <div class="charts-grid">
-        <div class="chart-card"><h3>Aging Buckets — as of ${asOfDate}</h3><canvas id="chartAging"></canvas></div>
-        <div class="card"><h3 style="font-size:14px;margin-bottom:8px">PAR Metrics</h3>
-          <div style="font-size:13px">
-            <p><strong>PAR 30:</strong> ${portfolio>0?(overdueLoans.filter(l=>l._asof_days>30).reduce((s,l)=>s+Number(l.outstanding_balance||0),0)/portfolio*100).toFixed(1):'0'}%</p>
-            <p><strong>PAR 60:</strong> ${portfolio>0?(overdueLoans.filter(l=>l._asof_days>60).reduce((s,l)=>s+Number(l.outstanding_balance||0),0)/portfolio*100).toFixed(1):'0'}%</p>
-            <p><strong>PAR 90:</strong> ${portfolio>0?(overdueLoans.filter(l=>l._asof_days>90).reduce((s,l)=>s+Number(l.outstanding_balance||0),0)/portfolio*100).toFixed(1):'0'}%</p>
-          </div>
-        </div>
-      </div>
-
-      <h3 style="font-size:14px;margin:12px 0 4px">📋 Missed Installments as of ${asOfDate}</h3>
-      <div class="table-wrap"><table><thead><tr>
-        <th>Loan #</th><th>Client</th><th>Phone</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Days Overdue</th><th>Actions</th>
-      </tr></thead><tbody>
-      ${missedRows.map(({loan,s,remaining,daysOld})=>{
-        const color=daysOld>90?'var(--accent-red)':daysOld>30?'var(--accent-orange)':'var(--accent-yellow)';
-        return '<tr>' +
-          '<td><strong>'+loan.loan_no+'</strong></td>' +
-          '<td>'+(loan.loan_clients?.full_name||'-')+'</td>' +
-          '<td>'+(loan.loan_clients?.phone||'-')+'</td>' +
+    // ── 2. Missed Installments table ──
+    let missedHtml = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>' +
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Days Overdue</th><th>Actions</th>' +
+      '</tr></thead><tbody>';
+    if(missedRows.length){
+      missedRows.forEach(function(item){
+        var loan=item.loan, s=item.s, remaining=item.remaining, daysOld=item.daysOld;
+        var color=daysOld>90?'var(--accent-red)':daysOld>30?'var(--accent-orange)':'var(--accent-yellow)';
+        missedHtml += '<tr>' +
+          '<td><strong>'+(loan.loan_clients?.full_name||'-')+'</strong></td>' +
+          '<td><a href="tel:'+(loan.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(loan.loan_clients?.phone||'-')+'</a></td>' +
+          '<td>'+loan.loan_no+'</td>' +
           '<td style="text-align:center">#'+s.installment_no+'</td>' +
           '<td>'+fmtDate(s.due_date)+'</td>' +
           '<td>'+fmtMoney(s.total_due)+'</td>' +
@@ -2603,49 +2577,128 @@ async function renderOverdue(opts){
           '<td><span class="badge" style="background:'+color+';color:#fff">'+daysOld+'d</span></td>' +
           '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+loan.id+'\',\''+loan.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
-      }).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No missed installments for this date</td></tr>'}
-      </tbody></table></div>
+      });
+    } else {
+      missedHtml += '<tr><td colspan="10" style="text-align:center;color:var(--text-secondary);padding:12px">No missed installments</td></tr>';
+    }
+    missedHtml += '</tbody></table></div>';
+    const missedArrears = missedRows.reduce(function(s,r){return s+r.remaining;},0);
 
-      <h3 style="font-size:14px;margin:16px 0 4px">📊 Loan Summary</h3>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Phone</th><th>Total Arrears</th><th>Days Overdue</th><th>Bucket</th><th>Actions</th></tr></thead><tbody>
-      ${overdueLoans.map(l=>{
-        const d=l._asof_days;
-        const bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
-        const bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
-        return '<tr>' +
-          '<td><strong>'+l.loan_no+'</strong></td>' +
-          '<td>'+(l.loan_clients?.full_name||'-')+'</td>' +
-          '<td>'+(l.loan_clients?.phone||'-')+'</td>' +
+    // ── 3. Loan Summary table ──
+    let summaryHtml = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>' +
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Total Arrears</th><th>Days Overdue</th><th>Bucket</th><th>Actions</th>' +
+      '</tr></thead><tbody>';
+    if(overdueLoans.length){
+      overdueLoans.forEach(function(l){
+        var d=l._asof_days;
+        var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
+        var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
+        summaryHtml += '<tr>' +
+          '<td><strong>'+(l.loan_clients?.full_name||'-')+'</strong></td>' +
+          '<td><a href="tel:'+(l.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(l.loan_clients?.phone||'-')+'</a></td>' +
+          '<td>'+l.loan_no+'</td>' +
           '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(l._asof_arrears)+'</td>' +
           '<td><span class="badge badge-red">'+d+'d</span></td>' +
           '<td><span class="badge" style="background:'+bktColor+';color:#fff">'+bkt+'</span></td>' +
           '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+l.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+l.id+'\',\''+l.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
-      }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
-      </tbody></table></div>
-    `;
+      });
+    } else {
+      summaryHtml += '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:12px">No overdue loans</td></tr>';
+    }
+    summaryHtml += '</tbody></table></div>';
+
+    // ── 4. PAR metrics ──
+    var par30pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>30;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par60pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>60;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par90pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>90;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var parHtml =
+      '<div style="padding:12px 14px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap">' +
+        '<span><strong>PAR 30:</strong> '+par30pct+'%</span>' +
+        '<span><strong>PAR 60:</strong> '+par60pct+'%</span>' +
+        '<span><strong>PAR 90:</strong> '+par90pct+'%</span>' +
+      '</div>' +
+      '<div style="padding:0 14px 12px"><canvas id="chartAging" style="max-height:180px"></canvas></div>';
+
+    // ── Assemble page ──
+    var pageHtml =
+      // Header
+      '<div class="page-header" style="flex-direction:column;align-items:flex-start;gap:10px">' +
+        '<h1>Arrears Report</h1>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%">' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            '<span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">As of date:</span>' +
+            '<input type="date" class="input" style="width:150px;padding:4px 8px;font-size:12px" value="'+asOfDate+'" onchange="renderOverdue({asOfDate:this.value,minDays:document.getElementById(\'arrearsMinDays\')?.value||0})">' +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            '<span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">Min days:</span>' +
+            '<select id="arrearsMinDays" class="select" style="width:auto;padding:4px 8px;font-size:12px" onchange="renderOverdue({asOfDate:document.querySelector(\'input[type=date]\')?.value||\''+asOfDate+'\',minDays:this.value})">' +
+              '<option value="0" '+(minDays===0?'selected':'')+'>All overdue</option>' +
+              '<option value="1" '+(minDays===1?'selected':'')+'>1+ days</option>' +
+              '<option value="7" '+(minDays===7?'selected':'')+'>7+ days</option>' +
+              '<option value="14" '+(minDays===14?'selected':'')+'>14+ days</option>' +
+              '<option value="30" '+(minDays===30?'selected':'')+'>30+ days (PAR 30)</option>' +
+              '<option value="60" '+(minDays===60?'selected':'')+'>60+ days (PAR 60)</option>' +
+              '<option value="90" '+(minDays===90?'selected':'')+'>90+ days (PAR 90)</option>' +
+            '</select>' +
+          '</div>' +
+          '<span class="badge badge-red">'+overdueLoans.length+' loan'+(overdueLoans.length!==1?'s':'')+' &nbsp;·&nbsp; KES '+fmtMoney(totalArrears)+' in arrears</span>' +
+          '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="downloadArrearsExcel()">⬇ Download Excel</button>' +
+        '</div>' +
+      '</div>' +
+      // Section 1: Dues by date (open by default)
+      makeSection('dues', '📋 Clients Due On Date', dueRows.length, duesAmtStr, duesHeader) +
+      // Section 2: Missed installments (open by default)
+      makeSection('missed', '⚠️ Missed Installments — as of '+asOfDate, missedRows.length, 'KES '+fmtMoney(missedArrears)+' unpaid', missedHtml) +
+      // Section 3: Loan summary (collapsed by default)
+      makeSection('loansummary', '📊 Loan-Level Arrears Summary', overdueLoans.length, 'KES '+fmtMoney(totalArrears), summaryHtml) +
+      // Section 4: PAR / Chart (collapsed by default)
+      makeSection('parchart', '📈 Aging Buckets & PAR Metrics', null, 'PAR30: '+par30pct+'%  PAR60: '+par60pct+'%  PAR90: '+par90pct+'%', parHtml);
+
+    main.innerHTML = pageHtml;
+
+    // Open first two sections by default
+    ['dues','missed'].forEach(function(id){
+      var body = document.getElementById('arr-body-'+id);
+      var icon = document.getElementById('arr-icon-'+id);
+      if(body){ body.style.maxHeight = body.scrollHeight+'px'; }
+      if(icon){ icon.style.transform = 'rotate(180deg)'; }
+    });
 
     const ctx=document.getElementById('chartAging');
     if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-180d','>180d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
   }catch(e){console.error(e);toast(e.message,'error')}
 }
 
+function toggleSection(id){
+  var body = document.getElementById('arr-body-'+id);
+  var icon = document.getElementById('arr-icon-'+id);
+  if(!body) return;
+  var isOpen = body.style.maxHeight && body.style.maxHeight !== '0px';
+  body.style.maxHeight = isOpen ? '0' : body.scrollHeight+'px';
+  if(icon) icon.style.transform = isOpen ? '' : 'rotate(180deg)';
+}
+
 function buildDuesTable(dueRows){
-  if(!dueRows||!dueRows.length) return '<div style="text-align:center;padding:12px;color:var(--text-secondary);font-size:12px">No installments scheduled for this date</div>';
-  let html = '<table style="font-size:12px;width:100%"><thead><tr>' +
-    '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due (KES)</th><th>Paid (KES)</th><th>Remaining (KES)</th><th>Status</th><th></th>' +
-    '</tr></thead><tbody>';
-  dueRows.forEach(({loan,s,remaining,paid})=>{
-    const isPaid=remaining===0;
-    const isPartial=paid>0&&remaining>0;
-    const badge=isPaid
-      ?'<span class="badge badge-green">Paid</span>'
-      :isPartial
-        ?'<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
-        :'<span class="badge badge-red">Unpaid</span>';
-    const payBtn=(!isPaid&&hasRole('admin','branch_manager','cashier'))
-      ?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button>':'';
-    html+='<tr style="'+(isPaid?'opacity:0.55':'')+'">' +
+  if(!dueRows||!dueRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">No installments scheduled for this date</div>';
+  var unpaidCount = dueRows.filter(function(r){return r.remaining>0;}).length;
+  var paidCount   = dueRows.filter(function(r){return r.remaining===0;}).length;
+  var html = '<div style="font-size:11px;color:var(--text-secondary);padding:6px 14px">'+unpaidCount+' unpaid &nbsp;·&nbsp; '+paidCount+' paid</div>';
+  html += '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Status</th><th></th>';
+  html += '</tr></thead><tbody>';
+  dueRows.forEach(function(item){
+    var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
+    var isPaid    = remaining===0;
+    var isPartial = paid>0 && remaining>0;
+    var badge = isPaid
+      ? '<span class="badge badge-green">Paid</span>'
+      : isPartial
+        ? '<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
+        : '<span class="badge badge-red">Unpaid</span>';
+    var payBtn = (!isPaid && hasRole('admin','branch_manager','cashier'))
+      ? '<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button>' : '';
+    html += '<tr style="'+(isPaid?'opacity:0.55':'')+'">' +
       '<td><strong>'+(loan.loan_clients?.full_name||'-')+'</strong></td>' +
       '<td><a href="tel:'+(loan.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(loan.loan_clients?.phone||'-')+'</a></td>' +
       '<td>'+loan.loan_no+'</td>' +
@@ -2657,9 +2710,11 @@ function buildDuesTable(dueRows){
       '<td>'+payBtn+'</td>' +
     '</tr>';
   });
-  html+='</tbody></table>';
+  html += '</tbody></table></div>';
   return html;
 }
+
+async function loadArrearsDues
 
 async function loadArrearsDues(dateStr){
   const snap=window._overdueSnapshot;
@@ -2688,8 +2743,15 @@ async function loadArrearsDues(dateStr){
   if(summary){
     const total=dueRows.reduce((s,r)=>s+Number(r.s.total_due||0),0);
     const isFuture=dateStr>new Date().toISOString().slice(0,10);
-    summary.textContent=dueRows.length+' client'+(dueRows.length!==1?'s':'')+' · KES '+fmtMoney(total)+' due'+(isFuture?' (forecast)':'');
+    const unpaid=dueRows.filter(r=>r.remaining>0).length;
+    const paid=dueRows.filter(r=>r.remaining===0).length;
+    summary.textContent=dueRows.length+' client'+(dueRows.length!==1?'s':'')+' · KES '+fmtMoney(total)+' due'+(isFuture?' (forecast)':'')+' · '+unpaid+' unpaid · '+paid+' paid';
   }
+  // Re-expand the dues section after reload
+  const body=document.getElementById('arr-body-dues');
+  const icon=document.getElementById('arr-icon-dues');
+  if(body){ body.style.maxHeight=body.scrollHeight+600+'px'; }
+  if(icon){ icon.style.transform='rotate(180deg)'; }
 }
 
 function downloadArrearsExcel(){
