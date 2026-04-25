@@ -2323,7 +2323,12 @@ function exportRepaymentsExcel(){
 async function renderOverdue(){
   const main=$('#mainContent');
   try{
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id).eq('status','active').gt('overdue_days',0).order('overdue_days',{ascending:false});
+    // FIX: include written_off and defaulted alongside active — all with overdue_days > 0
+    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)')
+      .eq('business_id', currentUser.business_id)
+      .in('status',['active','written_off','defaulted'])
+      .gt('overdue_days',0)
+      .order('overdue_days',{ascending:false});
     const allActive=(cachedData.loans||[]).filter(l=>l.status==='active');
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
@@ -3270,7 +3275,7 @@ async function applyRolloverPenalties(){
   if(!currentUser?.business_id) return;
   try{
     const todayDate=new Date();todayDate.setHours(0,0,0,0);
-    const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
+    const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).in('status',['active','written_off','defaulted']);
     if(!activeLoans?.length)return;
 
     for(const loan of activeLoans){
@@ -3447,7 +3452,7 @@ async function handleExcelImport(ev){
 
   const clientsArr=Array.from(clientsMap.values());
   const totalClients=clientsArr.length;
-  const stats={clientsAdded:0,clientsExisting:0,applicationsAdded:0,applicationsMatched:0,loansAdded:0,loansExisting:0,schedulesAdded:0,paymentsAdded:0,paymentsSkipped:0,errors:0,errorMessages:[]};
+  const stats={clientsAdded:0,clientsExisting:0,applicationsAdded:0,applicationsMatched:0,loansAdded:0,loansExisting:0,schedulesAdded:0,paymentsAdded:0,paymentsSkipped:0,loansWrittenOff:0,loansDefaulted:0,errors:0,errorMessages:[]};
 
   for(let i=0;i<clientsArr.length;i++){
     const c=clientsArr[i];
@@ -3528,12 +3533,28 @@ async function handleExcelImport(ev){
       try{
         // Map Excel status → system status
         const rawStatus=(ln.status||'').toLowerCase();
-        const status=(rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')?'completed':'active';
-        const outstanding=status==='completed'
-          ? 0
+        const status=
+          (rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')
+            ? 'completed'
+          : (rawStatus==='written_off'||rawStatus==='writtenoff'||rawStatus==='written off')
+            ? 'written_off'
+          : (rawStatus==='defaulted'||rawStatus==='default')
+            ? 'defaulted'
+          : 'active';
+        const outstanding=(status==='completed'||status==='written_off'||status==='defaulted')
+          ? (lastPay&&Number(lastPay.balance_after_kes)>=0 ? Number(lastPay.balance_after_kes) : Math.max(totalPayable-totalPaid,0))
           : (lastPay&&lastPay.balance_after_kes!==undefined
-              ? lastPay.balance_after_kes
+              ? Number(lastPay.balance_after_kes)
               : Math.max(totalPayable-totalPaid,0));
+        // Compute overdue_days at import time so the overdue tab is populated immediately
+        const _todayForImport=new Date();_todayForImport.setHours(0,0,0,0);
+        let importOverdueDays=0;
+        let importArrears=0;
+        if(ln.maturity_date&&outstanding>0&&status!=='completed'){
+          const _mat=new Date(ln.maturity_date);_mat.setHours(0,0,0,0);
+          const _diff=Math.floor((_todayForImport-_mat)/(1000*60*60*24));
+          if(_diff>0){ importOverdueDays=_diff; importArrears=outstanding; }
+        }
 
         // ── STEP 1: Create / match loan_application ──────────────────────────
         {
@@ -3601,8 +3622,8 @@ async function handleExcelImport(ev){
           processing_fee:PROCESSING_FEE_FLAT,
           total_interest:totalInterest,
           weekly_installment:weeklyInstallment,
-          arrears_amount:0,
-          overdue_days:0,
+          arrears_amount:importArrears,
+          overdue_days:importOverdueDays,
           disbursement_method:'cash',
           loan_officer_id:currentUser?.id,
           business_id:currentUser.business_id
@@ -3621,16 +3642,20 @@ async function handleExcelImport(ev){
           if(lnErr)throw lnErr;
           loanId=lnIns.id;
           stats.loansAdded++;
+          if(status==='written_off') stats.loansWrittenOff++;
+          if(status==='defaulted') stats.loansDefaulted++;
         }
 
         // ── STEP 3: Generate loan_schedule so accounting dates are correct ────
-        if(termWeeksCalc>0 && firstPayDate){
+        // FIX: anchor from disbursement_date so week-1 due = disbursement+7 days (not first payment date)
+        const scheduleAnchor=ln.disbursement_date||firstPayDate;
+        if(termWeeksCalc>0 && scheduleAnchor){
           const{data:existSched}=await sb('loan_schedules').select('id').eq('loan_id',loanId).limit(1);
           if(!existSched||!existSched.length){
             const schedules=[];
             for(let w=0;w<termWeeksCalc;w++){
-              const due=new Date(firstPayDate);
-              due.setDate(due.getDate()+w*7);
+              const due=new Date(scheduleAnchor);
+              due.setDate(due.getDate()+(w+1)*7);
               const dueDateStr=due.toISOString().slice(0,10);
               const pPrincipal=Number((weeklyInstallment*principalRatio).toFixed(2));
               const pInterest =Number((weeklyInstallment*interestRatio ).toFixed(2));
@@ -3694,7 +3719,30 @@ async function handleExcelImport(ev){
           console.error('[Excel Import] Payment insert failed for loan',ln.loan_number,'payment',p,e);
         }
       }
-    }
+
+      // ── STEP 4: Cascade payments into schedule installments ────────────────
+      // FIX: mark installments paid/partial based on the imported payment history
+      if(loanId && sortedPays.length>0){
+        try{
+          const{data:schedRows}=await sb('loan_schedules').select('*').eq('loan_id',loanId).order('installment_no');
+          if(schedRows&&schedRows.length){
+            let remaining=totalPaid;
+            const schedUpdates=[];
+            for(const s of schedRows){
+              if(remaining<=0){ schedUpdates.push({id:s.id,total_paid:0,principal_paid:0,interest_paid:0,status:'pending'}); continue; }
+              const applied=Math.min(remaining,s.total_due);
+              remaining-=applied;
+              const pPaid=Number((applied*principalRatio).toFixed(2));
+              const iPaid=Number((applied*interestRatio).toFixed(2));
+              const st=applied>=s.total_due?'paid':applied>0?'partial':'pending';
+              schedUpdates.push({id:s.id,total_paid:applied,principal_paid:pPaid,interest_paid:iPaid,status:st});
+            }
+            for(const u of schedUpdates){
+              try{ await sb('loan_schedules').update({total_paid:u.total_paid,principal_paid:u.principal_paid,interest_paid:u.interest_paid,status:u.status}).eq('id',u.id); }catch(_){}
+            }
+          }
+        }catch(cascErr){ console.warn('[Excel Import] Schedule cascade failed for loan',loanId,cascErr); }
+      }
   }
 
   if(progBar)progBar.style.width='100%';
@@ -3712,6 +3760,8 @@ async function handleExcelImport(ev){
         <div>Applications matched: <strong>${stats.applicationsMatched}</strong></div>
         <div>Loans created: <strong>${stats.loansAdded}</strong></div>
         <div>Loans updated: <strong>${stats.loansExisting}</strong></div>
+        <div>Written-off loans: <strong>${stats.loansWrittenOff}</strong></div>
+        <div>Defaulted loans: <strong>${stats.loansDefaulted}</strong></div>
         <div>Schedule items generated: <strong>${stats.schedulesAdded}</strong></div>
         <div>Payments recorded: <strong>${stats.paymentsAdded}</strong></div>
         <div>Duplicate payments skipped: <strong>${stats.paymentsSkipped}</strong></div>
