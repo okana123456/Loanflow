@@ -1154,19 +1154,73 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   return html;
 }
 
+async function loadDueByDate(dateStr){
+  const allLoans = cachedData.loans || [];
+  const allReps  = cachedData.repayments || [];
+
+  // Fetch schedules for the selected date directly from Supabase
+  const{data:scheds} = await sb('loan_schedules')
+    .select('*')
+    .eq('business_id', currentUser.business_id)
+    .eq('due_date', dateStr);
+
+  const scheds2 = scheds || [];
+  const dueAmt  = scheds2.reduce((s,sc)=>s+Number(sc.total_due||0),0);
+  const dueLoanIds = new Set(scheds2.map(s=>s.loan_id));
+
+  // Payments on that date for those loans
+  const paid = allReps
+    .filter(r=>r.payment_date===dateStr && dueLoanIds.has(r.loan_id))
+    .reduce((s,r)=>s+Number(r.amount||0),0);
+  const unpaid = Math.max(0, dueAmt - paid);
+
+  const isToday = dateStr === new Date().toISOString().slice(0,10);
+  const isFuture = dateStr > new Date().toISOString().slice(0,10);
+
+  // Update label
+  const lbl = document.getElementById('dueDateLabel');
+  if(lbl) lbl.textContent = isToday ? '— Today' : isFuture ? '— Upcoming / Forecast' : '— Past date';
+
+  // Update summary cards
+  const cards = document.getElementById('dueSummaryCards');
+  if(cards) cards.innerHTML =
+    '<div class="kpi-card" style="border-top:2px solid var(--accent-green)">' +
+      '<div class="kpi-label">Total Due</div>' +
+      '<div class="kpi-value" style="color:var(--accent-green)">' + fmtMoney(dueAmt) + '</div>' +
+      '<div class="kpi-sub">' + scheds2.length + ' installment' + (scheds2.length!==1?'s':'') + ' · ' + dueLoanIds.size + ' client' + (dueLoanIds.size!==1?'s':'') + '</div>' +
+    '</div>' +
+    '<div class="kpi-card" style="border-top:2px solid var(--accent-blue)">' +
+      '<div class="kpi-label">' + (isFuture?'Expected':'Collected') + '</div>' +
+      '<div class="kpi-value" style="color:var(--accent-blue)">' + (isFuture ? '-' : fmtMoney(paid)) + '</div>' +
+      '<div class="kpi-sub">' + (isFuture?'not yet due':'payments received') + '</div>' +
+    '</div>' +
+    '<div class="kpi-card" style="border-top:2px solid ' + (isFuture?'var(--accent-blue)':unpaid>0?'var(--accent-red)':'var(--accent-green)') + '">' +
+      '<div class="kpi-label">' + (isFuture?'Forecast':'Still Unpaid') + '</div>' +
+      '<div class="kpi-value" style="color:' + (isFuture?'var(--accent-blue)':unpaid>0?'var(--accent-red)':'var(--accent-green)') + '">' + fmtMoney(isFuture?dueAmt:unpaid) + '</div>' +
+      '<div class="kpi-sub">' + (dueAmt===0?'None scheduled':isFuture?'expected collection':'remaining') + '</div>' +
+    '</div>';
+
+  // Update client table
+  const tbl = document.getElementById('dueClientTable');
+  if(tbl) tbl.innerHTML = buildDueTodayTable(scheds2, allLoans, allReps, dateStr);
+}
+
 async function renderDashboard(){
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   try{
-    const[loansR,schedR,repR,appsR,clientsR]=await Promise.all([
+    const todayFetch=new Date().toISOString().slice(0,10);
+    const[loansR,schedR,todaySchedR,repR,appsR,clientsR]=await Promise.all([
       sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id),
-      sb('loan_schedules').select('*').eq('business_id', currentUser.business_id),
+      sb('loan_schedules').select('*').eq('business_id', currentUser.business_id).limit(50000),
+      sb('loan_schedules').select('*').eq('business_id', currentUser.business_id).eq('due_date', todayFetch),
       sb('loan_repayments').select('*').eq('business_id', currentUser.business_id),
       sb('loan_applications').select('*').eq('business_id', currentUser.business_id),
       sb('loan_clients').select('id,created_at,notes').eq('business_id', currentUser.business_id)
     ]);
     const allLoans=loansR.data||[];
     const allScheds=schedR.data||[];
+    const todayScheds=todaySchedR.data||[];
     const allReps=repR.data||[];
     const allApps=appsR.data||[];
     const allClients=clientsR.data||[];
@@ -1189,7 +1243,7 @@ async function renderDashboard(){
 
     // ── DAILY COLLECTION (schedules due TODAY vs payments received TODAY) ──
     // Total Due Today: sum of total_due where due_date is exactly today
-    const dailyDueScheds = allScheds.filter(s=>s.due_date===todayStr);
+    const dailyDueScheds = todayScheds.length ? todayScheds : allScheds.filter(s=>s.due_date===todayStr);
     const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
     // Collected Today: payments dated today on loans with a schedule due today
     const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
@@ -1252,38 +1306,37 @@ async function renderDashboard(){
       <h3 class="dash-h3">Collection</h3>
 
       <!-- ── DAILY COLLECTION ── -->
-      <div class="dash-section-label">📅 Daily Collection — ${todayStr}</div>
-      <div class="dash-grid-3">
+      <!-- ── DATE PICKER FOR DUE CLIENTS ── -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <span style="font-size:13px;font-weight:700;color:var(--text-primary)">📅 View Dues For:</span>
+        <input type="date" id="dueDatePicker" class="input" style="width:160px;padding:5px 10px;font-size:13px;font-weight:600" value="${todayStr}"
+          onchange="loadDueByDate(this.value)">
+        <span id="dueDateLabel" style="font-size:12px;color:var(--text-secondary)">${todayStr===todayStr?'Today':'Selected date'}</span>
+      </div>
+
+      <!-- Summary KPI cards for selected date -->
+      <div class="dash-grid-3" id="dueSummaryCards">
         <div class="kpi-card" style="border-top:2px solid var(--accent-green)">
-          <div class="kpi-label">Due Today</div>
+          <div class="kpi-label">Total Due</div>
           <div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(dailyDueAmt)}</div>
-          <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''} &nbsp;·&nbsp; ${new Set(dailyDueScheds.map(s=>s.loan_id)).size} loan${new Set(dailyDueScheds.map(s=>s.loan_id)).size!==1?'s':''}</div>
+          <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''} · ${new Set(dailyDueScheds.map(s=>s.loan_id)).size} clients</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
-          <div class="kpi-label">Collected Today</div>
+          <div class="kpi-label">Collected</div>
           <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(dailyPaidAmt)}</div>
-          <div class="kpi-sub">vs today's due</div>
+          <div class="kpi-sub">payments received</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid ${dailyUnpaid>0?'var(--accent-red)':'var(--accent-green)'}">
           <div class="kpi-label">Still Unpaid</div>
           <div class="kpi-value" style="color:${dailyUnpaid>0?'var(--accent-red)':'var(--accent-green)'}">${fmtMoney(dailyUnpaid)}</div>
-          <div class="kpi-sub">${dailyDueAmt===0?'No due today':"of today's target"}</div>
+          <div class="kpi-sub">${dailyDueAmt===0?'None due':'remaining'}</div>
         </div>
-      </div>
-      <!-- Daily rate bar -->
-      <div style="margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
-          <span style="font-size:10px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;font-weight:600">Daily Collection Rate</span>
-          <span style="font-size:12px;font-weight:800;color:${dailyRate>=100?'var(--accent-green)':dailyRate>=60?'var(--accent-yellow)':'var(--accent-red)'};font-variant-numeric:tabular-nums">${dailyRate.toFixed(1)}%</span>
-        </div>
-        <div class="dash-rate-bar">
-          <div class="dash-rate-fill" style="width:${Math.min(100,dailyRate).toFixed(1)}%;background:${dailyRate>=100?'var(--accent-green)':dailyRate>=60?'var(--accent-yellow)':'var(--accent-red)'}"></div>
-        </div>
-        ${dailyDueAmt===0?'<div style="font-size:9px;color:var(--text-secondary);margin-top:3px">No installments scheduled for today — rate shows 0%</div>':''}
       </div>
 
-            <!-- ── DUE TODAY CLIENT LIST ── -->
-      ${buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr)}
+      <!-- Client list for selected date -->
+      <div id="dueClientTable">
+        ${buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr)}
+      </div>
 
       <!-- ── PERIOD COLLECTION (cumulative) ── -->
       <div class="dash-section-label">📆 Period Collection — Cumulative (Selected Filter)</div>
@@ -2460,7 +2513,17 @@ async function renderOverdue(opts){
     missedRows.sort((a,b)=>b.daysOld-a.daysOld);
 
     // Store for download
-    window._overdueSnapshot={asOfDate,overdueLoans,missedRows};
+    // Also fetch dues for the selected date for the dues-by-date section
+    const{data:dueScheds}=await sb('loan_schedules')
+      .select('*').eq('business_id',currentUser.business_id).eq('due_date',asOfDate);
+    const dueRows=(dueScheds||[]).map(s=>{
+      const loan=loanMap[s.loan_id];
+      if(!loan)return null;
+      const remaining=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+      return{loan,s,remaining,paid:Number(s.total_paid||0)};
+    }).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
+
+    window._overdueSnapshot={asOfDate,overdueLoans,missedRows,dueRows};
 
     main.innerHTML=`
       <div class="page-header" style="flex-direction:column;align-items:flex-start;gap:10px">
@@ -2490,6 +2553,24 @@ async function renderOverdue(opts){
           <span class="badge badge-red">${overdueLoans.length} loan${overdueLoans.length!==1?'s':''} &nbsp;·&nbsp; KES ${fmtMoney(totalArrears)} in arrears</span>
 
           <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="downloadArrearsExcel()">⬇ Download Excel</button>
+        </div>
+      </div>
+
+      <!-- ── DUES BY DATE SECTION ── -->
+      <div class="card" style="margin-bottom:14px;padding:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:700">📋 Clients Due On:</span>
+            <input type="date" id="duesDatePicker" class="input" style="width:155px;padding:4px 8px;font-size:12px;font-weight:600" value="${asOfDate}"
+              onchange="loadArrearsDues(this.value)">
+            <span id="duesDateSummary" style="font-size:12px;color:var(--text-secondary)">
+              ${dueRows.length} client${dueRows.length!==1?'s':''} · KES ${fmtMoney(dueRows.reduce((s,r)=>s+r.s.total_due,0))} due
+            </span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="downloadArrearsExcel()">⬇ Download Excel</button>
+        </div>
+        <div id="duesClientTable" style="max-height:320px;overflow-y:auto">
+          ${buildDuesTable(dueRows)}
         </div>
       </div>
 
@@ -2549,6 +2630,68 @@ async function renderOverdue(opts){
   }catch(e){console.error(e);toast(e.message,'error')}
 }
 
+function buildDuesTable(dueRows){
+  if(!dueRows||!dueRows.length) return '<div style="text-align:center;padding:12px;color:var(--text-secondary);font-size:12px">No installments scheduled for this date</div>';
+  let html = '<table style="font-size:12px;width:100%"><thead><tr>' +
+    '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due (KES)</th><th>Paid (KES)</th><th>Remaining (KES)</th><th>Status</th><th></th>' +
+    '</tr></thead><tbody>';
+  dueRows.forEach(({loan,s,remaining,paid})=>{
+    const isPaid=remaining===0;
+    const isPartial=paid>0&&remaining>0;
+    const badge=isPaid
+      ?'<span class="badge badge-green">Paid</span>'
+      :isPartial
+        ?'<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
+        :'<span class="badge badge-red">Unpaid</span>';
+    const payBtn=(!isPaid&&hasRole('admin','branch_manager','cashier'))
+      ?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button>':'';
+    html+='<tr style="'+(isPaid?'opacity:0.55':'')+'">' +
+      '<td><strong>'+(loan.loan_clients?.full_name||'-')+'</strong></td>' +
+      '<td><a href="tel:'+(loan.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(loan.loan_clients?.phone||'-')+'</a></td>' +
+      '<td>'+loan.loan_no+'</td>' +
+      '<td style="text-align:center">#'+s.installment_no+'</td>' +
+      '<td>'+fmtMoney(s.total_due)+'</td>' +
+      '<td style="color:var(--accent-green)">'+(paid>0?fmtMoney(paid):'-')+'</td>' +
+      '<td style="color:'+(isPaid?'var(--accent-green)':'var(--accent-red)')+';font-weight:700">'+fmtMoney(remaining)+'</td>' +
+      '<td>'+badge+'</td>' +
+      '<td>'+payBtn+'</td>' +
+    '</tr>';
+  });
+  html+='</tbody></table>';
+  return html;
+}
+
+async function loadArrearsDues(dateStr){
+  const snap=window._overdueSnapshot;
+  if(!snap)return;
+  const loanMap={};
+  (cachedData.loans||[]).forEach(l=>{loanMap[l.id]=l;});
+
+  const{data:scheds}=await sb('loan_schedules')
+    .select('*').eq('business_id',currentUser.business_id).eq('due_date',dateStr);
+
+  const dueRows=((scheds||[]).map(s=>{
+    const loan=loanMap[s.loan_id];
+    if(!loan)return null;
+    const remaining=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+    return{loan,s,remaining,paid:Number(s.total_paid||0)};
+  })).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
+
+  // Update snapshot with new dues
+  snap.dueRows=dueRows;
+  snap.asOfDuesDate=dateStr;
+
+  const tbl=document.getElementById('duesClientTable');
+  if(tbl) tbl.innerHTML=buildDuesTable(dueRows);
+
+  const summary=document.getElementById('duesDateSummary');
+  if(summary){
+    const total=dueRows.reduce((s,r)=>s+Number(r.s.total_due||0),0);
+    const isFuture=dateStr>new Date().toISOString().slice(0,10);
+    summary.textContent=dueRows.length+' client'+(dueRows.length!==1?'s':'')+' · KES '+fmtMoney(total)+' due'+(isFuture?' (forecast)':'');
+  }
+}
+
 function downloadArrearsExcel(){
   const snap=window._overdueSnapshot;
   if(!snap||!snap.missedRows){toast('No data to download','error');return;}
@@ -2581,6 +2724,25 @@ function downloadArrearsExcel(){
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet1), 'Missed Installments');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet2), 'Loan Summary');
+
+  // Sheet 3: Dues by Date (from the date picker at the top)
+  const duesDate = snap.asOfDuesDate || asOfDate;
+  const dueRows  = snap.dueRows || [];
+  if(dueRows.length){
+    const sheet3 = dueRows.map(({loan,s,remaining,paid})=>({
+      'Date': duesDate,
+      'Client Name': loan.loan_clients?.full_name||'-',
+      'Phone': loan.loan_clients?.phone||'-',
+      'Loan #': loan.loan_no,
+      'Installment #': s.installment_no,
+      'Amount Due (KES)': Number(s.total_due||0),
+      'Amount Paid (KES)': paid,
+      'Remaining (KES)': remaining,
+      'Status': remaining===0?'Paid':paid>0?'Partial':'Unpaid'
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet3), 'Dues on '+duesDate);
+  }
+
   XLSX.writeFile(wb, 'Arrears_Report_'+asOfDate+'.xlsx');
   toast('Arrears report downloaded!','success');
 }
