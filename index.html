@@ -1097,8 +1097,9 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   const rows = dailyDueScheds.map(s => {
     const loan = allLoans.find(l => l.id === s.loan_id);
     if(!loan) return null;
-    const paid = allReps.filter(r => r.loan_id === s.loan_id && r.payment_date === todayStr)
-                        .reduce((x,r) => x + Number(r.amount||0), 0);
+    // Use schedule's total_paid (source of truth, same as arrears page)
+    // This correctly reflects ALL payments ever made against this installment
+    const paid = Number(s.total_paid || 0);
     const remaining = Math.max(0, Number(s.total_due||0) - paid);
     return {
       name: loan.loan_clients?.full_name || '-',
@@ -1168,10 +1169,8 @@ async function loadDueByDate(dateStr){
   const dueAmt  = scheds2.reduce((s,sc)=>s+Number(sc.total_due||0),0);
   const dueLoanIds = new Set(scheds2.map(s=>s.loan_id));
 
-  // Payments on that date for those loans
-  const paid = allReps
-    .filter(r=>r.payment_date===dateStr && dueLoanIds.has(r.loan_id))
-    .reduce((s,r)=>s+Number(r.amount||0),0);
+  // Use schedule total_paid (source of truth — reflects ALL payments ever made on each installment)
+  const paid   = scheds2.reduce((s,sc)=>s+Number(sc.total_paid||0),0);
   const unpaid = Math.max(0, dueAmt - paid);
 
   const isToday = dateStr === new Date().toISOString().slice(0,10);
@@ -1247,11 +1246,8 @@ async function renderDashboard(){
     const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
     // Collected Today: payments dated today on loans with a schedule due today
     const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
-    const dailyPaidAmtRaw = allReps
-      .filter(r=>r.payment_date===todayStr && dailyDueLoanIds.has(r.loan_id))
-      .reduce((s,r)=>s+Number(r.amount||0),0);
-    // Cap collected at the due amount so a single payment cannot exceed the day's target
-    const dailyPaidAmt   = Math.min(dailyPaidAmtRaw, dailyDueAmt);
+    // Use schedule total_paid — the true running total paid per installment regardless of payment date
+    const dailyPaidAmt   = Math.min(dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_paid||0),0), dailyDueAmt);
     const dailyRate      = dailyDueAmt>0 ? (dailyPaidAmt/dailyDueAmt)*100 : 0;
     const dailyUnpaid    = Math.max(0, dailyDueAmt - dailyPaidAmt);
 
