@@ -1594,7 +1594,7 @@ function renderAppRows(apps){
     <td>${a.loan_clients?.phone||'-'}</td>
     <td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td>
     <td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td>
-    <td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td>
+    <td>${statusBadge(a.status)}</td><td>${fmtDate(a.application_date||a.created_at)}</td>
     <td>
       <button class="btn btn-outline btn-sm" onclick="viewApplication('${a.id}')">View</button>
       ${a.status==='submitted'&&hasRole('admin','branch_manager')?`<button class="btn btn-success btn-sm" onclick="approveApp('${a.id}')">Approve</button><button class="btn btn-danger btn-sm" onclick="rejectApp('${a.id}')">Reject</button>`:''}
