@@ -884,7 +884,7 @@ function buildSidebar() {
     { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
     { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier'] },
     { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier'] },
-    { id: 'overdue', icon: '!', label: 'Overdue', roles: ['admin', 'branch_manager', 'loan_officer'] },
+    { id: 'overdue', icon: '!', label: 'Arrears', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
     { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
     { id: 'reports', icon: '+', label: 'Reports', roles: ['admin', 'branch_manager'] },
@@ -1195,7 +1195,7 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:2px solid var(--accent-green)">
           <div class="kpi-label">Due Today</div>
           <div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(dailyDueAmt)}</div>
-          <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''}</div>
+          <div class="kpi-sub">${dailyDueScheds.length} installment${dailyDueScheds.length!==1?'s':''} &nbsp;·&nbsp; ${new Set(dailyDueScheds.map(s=>s.loan_id)).size} loan${new Set(dailyDueScheds.map(s=>s.loan_id)).size!==1?'s':''}</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
           <div class="kpi-label">Collected Today</div>
@@ -1272,7 +1272,7 @@ async function renderDashboard(){
       <div class="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Total Portfolio</div><div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(portfolio)}</div><div class="kpi-sub">${active.length} active loans</div></div>
         <div class="kpi-card"><div class="kpi-label">Active Outstanding</div><div class="kpi-value">${fmtMoney(outstanding)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Overdue Loans</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div></div>
+        <div class="kpi-card" style="cursor:pointer" onclick="navigateTo('overdue')"><div class="kpi-label">Loans in Arrears</div><div class="kpi-value" style="color:var(--accent-red)">${overdue.length}</div><div class="kpi-sub" style="color:var(--accent-red)">KES ${fmtMoney(overdue.reduce((s,l)=>s+Number(l.arrears_amount||0),0))} outstanding · tap to view</div></div>
         <div class="kpi-card"><div class="kpi-label">PAR 30</div><div class="kpi-value" style="color:${par30pct>10?'var(--accent-red)':'var(--accent-yellow)'}">${par30pct.toFixed(1)}%</div></div>
       </div>
 
@@ -1594,7 +1594,7 @@ function renderAppRows(apps){
     <td>${a.loan_clients?.phone||'-'}</td>
     <td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td>
     <td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td>
-    <td>${statusBadge(a.status)}</td><td>${fmtDate(a.application_date||a.created_at)}</td>
+    <td>${statusBadge(a.status)}</td><td>${fmtDate(a.created_at)}</td>
     <td>
       <button class="btn btn-outline btn-sm" onclick="viewApplication('${a.id}')">View</button>
       ${a.status==='submitted'&&hasRole('admin','branch_manager')?`<button class="btn btn-success btn-sm" onclick="approveApp('${a.id}')">Approve</button><button class="btn btn-danger btn-sm" onclick="rejectApp('${a.id}')">Reject</button>`:''}
@@ -2319,24 +2319,57 @@ function exportRepaymentsExcel(){
   toast('Exported','success');
 }
 
-// ═══ OVERDUE ═══
-async function renderOverdue(){
+// ═══ ARREARS REPORT (formerly Overdue) ═══
+async function renderOverdue(minDays){
+  minDays=parseInt(minDays||0)||0;
   const main=$('#mainContent');
   try{
-    // FIX: include written_off and defaulted alongside active — all with overdue_days > 0
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)')
-      .eq('business_id', currentUser.business_id)
-      .in('status',['active','written_off','defaulted'])
-      .gt('overdue_days',0)
-      .order('overdue_days',{ascending:false});
+    // Fetch active loans with any overdue_days
+    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',currentUser.business_id).eq('status','active').gt('overdue_days',0).order('overdue_days',{ascending:false});
+    const todayStr=new Date().toISOString().slice(0,10);
+
+    // Fetch all missed installments for these loans
+    const loanIds=(loans||[]).map(l=>l.id);
+    let missedScheds=[];
+    if(loanIds.length){
+      const{data:scheds}=await sb('loan_schedules')
+        .select('*,loans(loan_no,loan_clients(full_name,phone))')
+        .in('loan_id',loanIds)
+        .in('status',['pending','partial','overdue'])
+        .lt('due_date',todayStr)
+        .order('due_date',{ascending:true});
+      missedScheds=(scheds||[]).filter(s=>Number(s.total_due||0)-Number(s.total_paid||0)>0.01);
+    }
+
+    // Apply minDays filter
+    const filtered=(loans||[]).filter(l=>l.overdue_days>=minDays);
     const allActive=(cachedData.loans||[]).filter(l=>l.status==='active');
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
-    (loans||[]).forEach(l=>{const d=l.overdue_days;if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++});
+    filtered.forEach(l=>{const d=l.overdue_days;if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++});
+
+    const totalArrears=filtered.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
 
     main.innerHTML=`
-      <div class="page-header"><h1>Overdue & Collections</h1></div>
-      <div class="charts-grid"><div class="chart-card"><h3>Aging Buckets</h3><canvas id="chartAging"></canvas></div>
+      <div class="page-header" style="flex-direction:column;align-items:flex-start;gap:8px">
+        <h1>Arrears Report</h1>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--text-secondary)">Show loans overdue by at least:</span>
+          <select class="select" style="width:auto;padding:4px 8px;font-size:12px" onchange="renderOverdue(this.value)">
+            <option value="0" ${minDays===0?'selected':''}>All overdue</option>
+            <option value="1" ${minDays===1?'selected':''}>1+ days</option>
+            <option value="7" ${minDays===7?'selected':''}>7+ days</option>
+            <option value="14" ${minDays===14?'selected':''}>14+ days</option>
+            <option value="30" ${minDays===30?'selected':''}>30+ days (PAR 30)</option>
+            <option value="60" ${minDays===60?'selected':''}>60+ days (PAR 60)</option>
+            <option value="90" ${minDays===90?'selected':''}>90+ days (PAR 90)</option>
+          </select>
+          <span class="badge badge-red">${filtered.length} loan${filtered.length!==1?'s':''} · KES ${fmtMoney(totalArrears)} in arrears</span>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart-card"><h3>Aging Buckets</h3><canvas id="chartAging"></canvas></div>
         <div class="card"><h3 style="font-size:14px;margin-bottom:8px">PAR Metrics</h3>
           <div style="font-size:13px">
             <p><strong>PAR 30:</strong> ${portfolio>0?((loans||[]).filter(l=>l.overdue_days>30).reduce((s,l)=>s+Number(l.outstanding_balance||0),0)/portfolio*100).toFixed(1):'0'}%</p>
@@ -2345,8 +2378,51 @@ async function renderOverdue(){
           </div>
         </div>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Phone</th><th>Overdue Amount</th><th>Days</th><th>Last Payment</th><th>Actions</th></tr></thead><tbody>
-      ${(loans||[]).map(l=>`<tr><td><strong>${l.loan_no}</strong></td><td>${l.loan_clients?.full_name||l.client_id?.slice(0,8)||'-'}</td><td>${l.loan_clients?.phone||'-'}</td><td>${fmtMoney(l.arrears_amount)}</td><td><span class="badge badge-red">${l.overdue_days}d</span></td><td>-</td><td>${hasRole('admin','branch_manager','cashier')?`<button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button> `:''}<button class="btn btn-outline btn-sm" onclick="addFollowUp('${l.id}','${l.client_id}')">Follow-Up</button></td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
+
+      <h3 style="font-size:14px;margin:12px 0 6px">📋 Missed Installments — Installment-Level Detail</h3>
+      <div class="table-wrap"><table><thead><tr>
+        <th>Loan #</th><th>Client</th><th>Phone</th><th>Installment #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Days Overdue</th><th>Actions</th>
+      </tr></thead><tbody>
+      ${missedScheds.filter(s=>{
+        const loan=filtered.find(l=>l.id===s.loan_id);
+        return !!loan;
+      }).map(s=>{
+        const loan=filtered.find(l=>l.id===s.loan_id);
+        if(!loan)return '';
+        const remaining=Number(s.total_due||0)-Number(s.total_paid||0);
+        const daysOld=Math.floor((new Date()-new Date(s.due_date))/(1000*60*60*24));
+        const color=daysOld>90?'var(--accent-red)':daysOld>30?'var(--accent-orange)':'var(--accent-yellow)';
+        return `<tr>
+          <td><strong>${loan.loan_no}</strong></td>
+          <td>${loan.loan_clients?.full_name||'-'}</td>
+          <td>${loan.loan_clients?.phone||'-'}</td>
+          <td style="text-align:center">#${s.installment_no}</td>
+          <td>${fmtDate(s.due_date)}</td>
+          <td>${fmtMoney(s.total_due)}</td>
+          <td style="color:var(--accent-green)">${fmtMoney(s.total_paid)}</td>
+          <td style="color:var(--accent-red);font-weight:700">${fmtMoney(remaining)}</td>
+          <td><span class="badge" style="background:${color};color:#fff">${daysOld}d</span></td>
+          <td>${hasRole('admin','branch_manager','cashier')?`<button class="btn btn-success btn-sm" onclick="openPaymentModal('${loan.id}')">Pay</button> `:''}<button class="btn btn-outline btn-sm" onclick="addFollowUp('${loan.id}','${loan.client_id}')">Follow-Up</button></td>
+        </tr>`;
+      }).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No missed installments</td></tr>'}
+      </tbody></table></div>
+
+      <h3 style="font-size:14px;margin:16px 0 6px">📊 Loan-Level Summary</h3>
+      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client</th><th>Phone</th><th>Total Arrears</th><th>Days Overdue</th><th>Bucket</th><th>Actions</th></tr></thead><tbody>
+      ${filtered.map(l=>{
+        const d=l.overdue_days;
+        const bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
+        const bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
+        return `<tr>
+          <td><strong>${l.loan_no}</strong></td>
+          <td>${l.loan_clients?.full_name||'-'}</td>
+          <td>${l.loan_clients?.phone||'-'}</td>
+          <td style="color:var(--accent-red);font-weight:700">${fmtMoney(l.arrears_amount)}</td>
+          <td><span class="badge badge-red">${d}d</span></td>
+          <td><span class="badge" style="background:${bktColor};color:#fff">${bkt}</span></td>
+          <td>${hasRole('admin','branch_manager','cashier')?`<button class="btn btn-success btn-sm" onclick="openPaymentModal('${l.id}')">Pay</button> `:''}<button class="btn btn-outline btn-sm" onclick="addFollowUp('${l.id}','${l.client_id}')">Follow-Up</button></td>
+        </tr>`;
+      }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
       </tbody></table></div>
     `;
 
@@ -2387,7 +2463,7 @@ async function renderReports(){
     {id:'repayment_perf',     title:'Repayment Performance',       icon:'📈', desc:'Collections by period, on-time vs late rates',                       color:'var(--accent-yellow)'},
     {id:'portfolio',          title:'Portfolio Report',            icon:'🏦', desc:'Active loans, outstanding balances, breakdown by product',             color:'var(--accent-blue)'},
     {id:'disbursement',       title:'Disbursement Report',         icon:'💸', desc:'Loans disbursed — amounts, methods, dates',                          color:'var(--accent-purple)'},
-    {id:'aging',              title:'Aging / Overdue Report',      icon:'⚠️', desc:'All overdue loans with aging buckets and PAR metrics',                color:'var(--accent-red)'},
+    {id:'aging',              title:'Arrears Report',      icon:'⚠️', desc:'All overdue loans with aging buckets and PAR metrics',                color:'var(--accent-red)'},
     {id:'income',             title:'Income Report',               icon:'💰', desc:'Interest, fees, registration and penalties collected',                 color:'var(--accent-green)'},
     {id:'portfolio_summary',  title:'Portfolio Summary',           icon:'📊', desc:'Active clients without arrears vs total clients',                     color:'var(--accent-orange)'},
   ];
@@ -2518,7 +2594,7 @@ async function loadReportData(id){
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).eq('status','active');
     const overdue=(loans||[]).filter(l=>l.overdue_days>0);
     const bucket=d=>d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':'90d+';
-    return{title:'Aging / Overdue Report',summary:[
+    return{title:'Arrears Report',summary:[
       {label:'Total Active Loans',value:(loans||[]).length},{label:'Overdue Loans',value:overdue.length},
       {label:'Total Arrears',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.arrears_amount||0),0))},
       {label:'Total Outstanding (Overdue)',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))},
@@ -3275,35 +3351,71 @@ async function applyRolloverPenalties(){
   if(!currentUser?.business_id) return;
   try{
     const todayDate=new Date();todayDate.setHours(0,0,0,0);
-    const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).in('status',['active','written_off','defaulted']);
+    const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
     if(!activeLoans?.length)return;
 
-    for(const loan of activeLoans){
-      if(!loan.maturity_date)continue;
-      const maturity=new Date(loan.maturity_date);maturity.setHours(0,0,0,0);
-      const diffDays=Math.floor((todayDate-maturity)/(1000*60*60*24));
-      if(diffDays>2&&Number(loan.outstanding_balance)>0){
-        const todayStr=todayDate.toISOString().slice(0,10);
-        const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('date_charged',todayStr).eq('reason','Rollover Penalty (15%)').limit(1);
-        if(existing?.length)continue; 
+    // Fetch all unpaid/partial schedules for active loans in one query
+    const activeLoanIds = activeLoans.map(l=>l.id);
+    const{data:allOverdueScheds}=await sb('loan_schedules')
+      .select('loan_id,due_date,total_due,total_paid,status')
+      .in('loan_id',activeLoanIds)
+      .in('status',['pending','partial','overdue'])
+      .lt('due_date',todayDate.toISOString().slice(0,10))
+      .order('due_date',{ascending:true});
 
-        const penaltyAmt=Number(loan.outstanding_balance)*0.15;
-        await sb('loan_penalties').insert({
-          loan_id:loan.id,
-          business_id: currentUser.business_id,
-          penalty_amount:penaltyAmt,
-          reason:'Rollover Penalty (15%)',
-          date_charged:todayStr,
-          is_waived:false
-        });
+    // Group missed installments by loan
+    const missedByLoan={};
+    (allOverdueScheds||[]).forEach(s=>{
+      const unpaid=Number(s.total_due||0)-Number(s.total_paid||0);
+      if(unpaid>0.01){
+        if(!missedByLoan[s.loan_id]) missedByLoan[s.loan_id]={oldest:s.due_date,arrears:0};
+        missedByLoan[s.loan_id].arrears+=unpaid;
+        // oldest is already sorted ascending so first entry is oldest
+      }
+    });
+
+    for(const loan of activeLoans){
+      const missed=missedByLoan[loan.id];
+      if(missed){
+        // overdue_days = days since oldest unpaid installment was due
+        const oldestDue=new Date(missed.oldest);oldestDue.setHours(0,0,0,0);
+        const diffDays=Math.floor((todayDate-oldestDue)/(1000*60*60*24));
+        const todayStr=todayDate.toISOString().slice(0,10);
+
+        // Apply rollover penalty only if past maturity and balance outstanding
+        const maturity=new Date(loan.maturity_date||'2099-01-01');maturity.setHours(0,0,0,0);
+        const pastMaturity=Math.floor((todayDate-maturity)/(1000*60*60*24));
+        if(pastMaturity>2&&Number(loan.outstanding_balance)>0){
+          const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('date_charged',todayStr).eq('reason','Rollover Penalty (15%)').limit(1);
+          if(!existing?.length){
+            const penaltyAmt=Number(loan.outstanding_balance)*0.15;
+            await sb('loan_penalties').insert({
+              loan_id:loan.id,
+              business_id:currentUser.business_id,
+              penalty_amount:penaltyAmt,
+              reason:'Rollover Penalty (15%)',
+              date_charged:todayStr,
+              is_waived:false
+            });
+            await sb('loans').update({
+              outstanding_balance:Number(loan.outstanding_balance)+penaltyAmt,
+              arrears_amount:missed.arrears+penaltyAmt,
+              overdue_days:diffDays
+            }).eq('id',loan.id);
+            console.log(`Rollover penalty KES ${penaltyAmt.toFixed(2)} applied to loan ${loan.loan_no}`);
+            continue;
+          }
+        }
+        // Update overdue_days and arrears based on missed installments
         await sb('loans').update({
-          outstanding_balance:Number(loan.outstanding_balance)+penaltyAmt,
-          arrears_amount:Number(loan.arrears_amount||0)+penaltyAmt,
-          overdue_days:diffDays
+          overdue_days:diffDays,
+          arrears_amount:missed.arrears
         }).eq('id',loan.id);
-        console.log(`Rollover penalty KES ${penaltyAmt.toFixed(2)} applied to loan ${loan.loan_no}`);
-      } else if(diffDays>0){
-        await sb('loans').update({overdue_days:diffDays}).eq('id',loan.id);
+      } else {
+        // No missed installments — clear overdue if it was set
+        if(Number(loan.overdue_days||0)>0){
+          await sb('loans').update({overdue_days:0,arrears_amount:0}).eq('id',loan.id);
+        }
       }
     }
   }catch(e){console.error('Rollover penalty error:',e)}
@@ -3452,7 +3564,7 @@ async function handleExcelImport(ev){
 
   const clientsArr=Array.from(clientsMap.values());
   const totalClients=clientsArr.length;
-  const stats={clientsAdded:0,clientsExisting:0,applicationsAdded:0,applicationsMatched:0,loansAdded:0,loansExisting:0,schedulesAdded:0,paymentsAdded:0,paymentsSkipped:0,loansWrittenOff:0,loansDefaulted:0,errors:0,errorMessages:[]};
+  const stats={clientsAdded:0,clientsExisting:0,applicationsAdded:0,applicationsMatched:0,loansAdded:0,loansExisting:0,schedulesAdded:0,paymentsAdded:0,paymentsSkipped:0,errors:0,errorMessages:[]};
 
   for(let i=0;i<clientsArr.length;i++){
     const c=clientsArr[i];
@@ -3533,28 +3645,12 @@ async function handleExcelImport(ev){
       try{
         // Map Excel status → system status
         const rawStatus=(ln.status||'').toLowerCase();
-        const status=
-          (rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')
-            ? 'completed'
-          : (rawStatus==='written_off'||rawStatus==='writtenoff'||rawStatus==='written off')
-            ? 'written_off'
-          : (rawStatus==='defaulted'||rawStatus==='default')
-            ? 'defaulted'
-          : 'active';
-        const outstanding=(status==='completed'||status==='written_off'||status==='defaulted')
-          ? (lastPay&&Number(lastPay.balance_after_kes)>=0 ? Number(lastPay.balance_after_kes) : Math.max(totalPayable-totalPaid,0))
+        const status=(rawStatus==='cleared'||rawStatus==='closed'||rawStatus==='completed'||rawStatus==='fully_paid'||rawStatus==='paid')?'completed':'active';
+        const outstanding=status==='completed'
+          ? 0
           : (lastPay&&lastPay.balance_after_kes!==undefined
-              ? Number(lastPay.balance_after_kes)
+              ? lastPay.balance_after_kes
               : Math.max(totalPayable-totalPaid,0));
-        // Compute overdue_days at import time so the overdue tab is populated immediately
-        const _todayForImport=new Date();_todayForImport.setHours(0,0,0,0);
-        let importOverdueDays=0;
-        let importArrears=0;
-        if(ln.maturity_date&&outstanding>0&&status!=='completed'){
-          const _mat=new Date(ln.maturity_date);_mat.setHours(0,0,0,0);
-          const _diff=Math.floor((_todayForImport-_mat)/(1000*60*60*24));
-          if(_diff>0){ importOverdueDays=_diff; importArrears=outstanding; }
-        }
 
         // ── STEP 1: Create / match loan_application ──────────────────────────
         {
@@ -3622,8 +3718,8 @@ async function handleExcelImport(ev){
           processing_fee:PROCESSING_FEE_FLAT,
           total_interest:totalInterest,
           weekly_installment:weeklyInstallment,
-          arrears_amount:importArrears,
-          overdue_days:importOverdueDays,
+          arrears_amount:0,
+          overdue_days:0,
           disbursement_method:'cash',
           loan_officer_id:currentUser?.id,
           business_id:currentUser.business_id
@@ -3642,20 +3738,16 @@ async function handleExcelImport(ev){
           if(lnErr)throw lnErr;
           loanId=lnIns.id;
           stats.loansAdded++;
-          if(status==='written_off') stats.loansWrittenOff++;
-          if(status==='defaulted') stats.loansDefaulted++;
         }
 
         // ── STEP 3: Generate loan_schedule so accounting dates are correct ────
-        // FIX: anchor from disbursement_date so week-1 due = disbursement+7 days (not first payment date)
-        const scheduleAnchor=ln.disbursement_date||firstPayDate;
-        if(termWeeksCalc>0 && scheduleAnchor){
+        if(termWeeksCalc>0 && firstPayDate){
           const{data:existSched}=await sb('loan_schedules').select('id').eq('loan_id',loanId).limit(1);
           if(!existSched||!existSched.length){
             const schedules=[];
             for(let w=0;w<termWeeksCalc;w++){
-              const due=new Date(scheduleAnchor);
-              due.setDate(due.getDate()+(w+1)*7);
+              const due=new Date(firstPayDate);
+              due.setDate(due.getDate()+w*7);
               const dueDateStr=due.toISOString().slice(0,10);
               const pPrincipal=Number((weeklyInstallment*principalRatio).toFixed(2));
               const pInterest =Number((weeklyInstallment*interestRatio ).toFixed(2));
@@ -3719,30 +3811,6 @@ async function handleExcelImport(ev){
           console.error('[Excel Import] Payment insert failed for loan',ln.loan_number,'payment',p,e);
         }
       }
-
-      // ── STEP 4: Cascade payments into schedule installments ────────────────
-      // FIX: mark installments paid/partial based on the imported payment history
-      if(loanId && sortedPays.length>0){
-        try{
-          const{data:schedRows}=await sb('loan_schedules').select('*').eq('loan_id',loanId).order('installment_no');
-          if(schedRows&&schedRows.length){
-            let remaining=totalPaid;
-            const schedUpdates=[];
-            for(const s of schedRows){
-              if(remaining<=0){ schedUpdates.push({id:s.id,total_paid:0,principal_paid:0,interest_paid:0,status:'pending'}); continue; }
-              const applied=Math.min(remaining,s.total_due);
-              remaining-=applied;
-              const pPaid=Number((applied*principalRatio).toFixed(2));
-              const iPaid=Number((applied*interestRatio).toFixed(2));
-              const st=applied>=s.total_due?'paid':applied>0?'partial':'pending';
-              schedUpdates.push({id:s.id,total_paid:applied,principal_paid:pPaid,interest_paid:iPaid,status:st});
-            }
-            for(const u of schedUpdates){
-              try{ await sb('loan_schedules').update({total_paid:u.total_paid,principal_paid:u.principal_paid,interest_paid:u.interest_paid,status:u.status}).eq('id',u.id); }catch(_){}
-            }
-          }
-        }catch(cascErr){ console.warn('[Excel Import] Schedule cascade failed for loan',loanId,cascErr); }
-      }
     }
   }
 
@@ -3761,8 +3829,6 @@ async function handleExcelImport(ev){
         <div>Applications matched: <strong>${stats.applicationsMatched}</strong></div>
         <div>Loans created: <strong>${stats.loansAdded}</strong></div>
         <div>Loans updated: <strong>${stats.loansExisting}</strong></div>
-        <div>Written-off loans: <strong>${stats.loansWrittenOff}</strong></div>
-        <div>Defaulted loans: <strong>${stats.loansDefaulted}</strong></div>
         <div>Schedule items generated: <strong>${stats.schedulesAdded}</strong></div>
         <div>Payments recorded: <strong>${stats.paymentsAdded}</strong></div>
         <div>Duplicate payments skipped: <strong>${stats.paymentsSkipped}</strong></div>
