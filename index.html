@@ -3410,6 +3410,7 @@ async function handleExcelImport(ev){
     if(!c.loans.has(loanNo)){
       c.loans.set(loanNo,{
         loan_number:loanNo,
+        application_date:_excelDateToISO(r.application_date),
         disbursement_date:_excelDateToISO(r.disbursement_date),
         maturity_date:_excelDateToISO(r.maturity_date),
         savings_kes:_num(r.savings_kes),
@@ -3422,6 +3423,7 @@ async function handleExcelImport(ev){
     }
     const ln=c.loans.get(loanNo);
     // Latest non-empty values win for loan-level fields
+    if(r.application_date) ln.application_date=_excelDateToISO(r.application_date)||ln.application_date;
     if(r.disbursement_date) ln.disbursement_date=_excelDateToISO(r.disbursement_date)||ln.disbursement_date;
     if(r.maturity_date) ln.maturity_date=_excelDateToISO(r.maturity_date)||ln.maturity_date;
     if(r.status) ln.status=_str(r.status).toLowerCase();
@@ -3557,6 +3559,7 @@ async function handleExcelImport(ev){
               status:'disbursed',
               loan_officer_id:currentUser?.id,
               business_id:currentUser.business_id,
+              applied_at:ln.application_date||ln.disbursement_date||null,
               approved_at:ln.disbursement_date||null,
               reviewed_at:ln.disbursement_date||null,
               approved_by:currentUser?.id
