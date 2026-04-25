@@ -2520,7 +2520,7 @@ async function renderOverdue(opts){
           '<td style="color:var(--accent-green)">'+fmtMoney(s.total_paid)+'</td>' +
           '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
           '<td><span class="badge" style="background:'+color+';color:#fff">'+daysOld+'d</span></td>' +
-          '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(''+loan.id+'')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(''+loan.id+'',''+loan.client_id+'')">Follow-Up</button></td>' +
+          '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+loan.id+'\',\''+loan.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
       }).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No missed installments for this date</td></tr>'}
       </tbody></table></div>
@@ -2538,7 +2538,7 @@ async function renderOverdue(opts){
           '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(l._asof_arrears)+'</td>' +
           '<td><span class="badge badge-red">'+d+'d</span></td>' +
           '<td><span class="badge" style="background:'+bktColor+';color:#fff">'+bkt+'</span></td>' +
-          '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(''+l.id+'')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(''+l.id+'',''+l.client_id+'')">Follow-Up</button></td>' +
+          '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+l.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+l.id+'\',\''+l.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
       }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No overdue loans</td></tr>'}
       </tbody></table></div>
