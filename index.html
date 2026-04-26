@@ -3587,6 +3587,13 @@ async function renderSettings(){
         <div class="form-row">
           <div class="form-group"><label>Paybill / Till Number</label><input class="input" id="setPayheroPaybill" value="${settings.payhero_paybill||''}" placeholder="e.g. 542542"></div>
           <div class="form-group"><label>Channel ID</label><input class="input" id="setPayheroChannelId" value="${settings.payhero_channel_id||''}" placeholder="e.g. 1234"></div>
+          <div class="form-group">
+            <label>Account Prefix <span style="font-size:11px;color:var(--text-secondary);font-weight:400">(clients type this before their National ID)</span></label>
+            <input class="input" id="setPayheroPrefix" value="${settings.payhero_account_prefix||'BRIPTA'}" placeholder="e.g. BRIPTA" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+              Example: if prefix is <strong>BRIPTA</strong>, client enters account number as <strong>BRIPTA29876543</strong> (no spaces)
+            </div>
+          </div>
         </div>
 
         <div class="form-group">
@@ -3602,7 +3609,9 @@ async function renderSettings(){
           <strong style="color:#10b981">How clients pay:</strong><br>
           1. Open M-Pesa → Lipa na M-Pesa → Pay Bill<br>
           2. Business no: <strong>${settings.payhero_paybill||'<your paybill>'}</strong><br>
-          3. Account no: <strong>their National ID number</strong><br>
+          3. Account no: <strong>${settings.payhero_account_prefix||'BRIPTA'} + their National ID</strong> (no spaces)<br>
+          &nbsp;&nbsp;&nbsp;e.g. <code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">${settings.payhero_account_prefix||'BRIPTA'}29876543</code><br>
+          4. Enter amount and PIN<br>
           4. Enter amount and PIN<br>
           ✅ Payment is auto-matched to their active loan in seconds.
         </div>
@@ -3621,7 +3630,7 @@ async function renderSettings(){
 async function saveSettings(){
   try{
     const _g = (id) => document.getElementById(id);
-    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,payhero_enabled:_g('setPayheroEnabled')?_g('setPayheroEnabled').checked:false,payhero_username:_g('setPayheroUsername')?_g('setPayheroUsername').value.trim():'',payhero_password:_g('setPayheroPassword')?_g('setPayheroPassword').value:'',payhero_api_secret:_g('setPayheroApiSecret')?_g('setPayheroApiSecret').value.trim():'',payhero_paybill:_g('setPayheroPaybill')?_g('setPayheroPaybill').value.trim():'',payhero_channel_id:_g('setPayheroChannelId')?_g('setPayheroChannelId').value.trim():'',business_id:currentUser?.business_id||'bripta'};
+    const rec={company_name:$('#setName').value,company_phone:$('#setPhone').value,company_email:$('#setEmail').value,company_address:$('#setAddr').value,currency:$('#setCurrency').value,default_grace_period:Number($('#setGrace').value),default_late_penalty_pct:Number($('#setPenalty').value),default_processing_fee_pct:Number($('#setFee').value),standard_weekly_rate:Number($('#setStdRate').value),micro_weekly_rate:Number($('#setMicroRate').value),micro_threshold:Number($('#setThreshold').value),loan_no_prefix:$('#setLnPfx').value,app_no_prefix:$('#setAppPfx').value,receipt_no_prefix:$('#setRcpPfx').value,disbursement_method:$('#setDisbMethod').value,mpesa_paybill:$('#setPaybill').value,mpesa_consumer_key:$('#setConsumerKey').value,mpesa_consumer_secret:$('#setConsumerSecret').value,mpesa_passkey:$('#setPasskey').value,mpesa_shortcode:$('#setShortcode').value,mpesa_auto_confirm:$('#setAutoConfirm').checked,payhero_enabled:_g('setPayheroEnabled')?_g('setPayheroEnabled').checked:false,payhero_username:_g('setPayheroUsername')?_g('setPayheroUsername').value.trim():'',payhero_password:_g('setPayheroPassword')?_g('setPayheroPassword').value:'',payhero_api_secret:_g('setPayheroApiSecret')?_g('setPayheroApiSecret').value.trim():'',payhero_paybill:_g('setPayheroPaybill')?_g('setPayheroPaybill').value.trim():'',payhero_channel_id:_g('setPayheroChannelId')?_g('setPayheroChannelId').value.trim():'',payhero_account_prefix:_g('setPayheroPrefix')?_g('setPayheroPrefix').value.trim().toUpperCase():'BRIPTA',business_id:currentUser?.business_id||'bripta'};
     const{data:existing}=await sb('loan_settings').select('id').eq('business_id',rec.business_id).single();
     if(existing){await sb('loan_settings').update(rec).eq('id',existing.id)}else{await sb('loan_settings').insert(rec)}
     appSettings={...appSettings,...rec};
