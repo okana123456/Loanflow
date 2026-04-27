@@ -2346,19 +2346,32 @@ async function viewLoan(id){
       </tbody></table></div>
     </div>
     <div id="loanTabPayments" style="display:none">
-      <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>Receipt</th><th>Reference</th><th>Amount</th><th>Method</th><th>Date & Time</th></tr></thead><tbody>
+      <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Method / Ref</th><th>Status</th></tr></thead><tbody>
       ${(()=>{
-        // Combine payments and penalties into one timeline sorted by date
+        // Payments — green rows
         const payRows=(payments||[]).map(p=>({
           date:p.payment_date||p.created_at,
-          html:'<tr style="background:rgba(16,185,129,0.04)"><td><strong>'+p.receipt_no+'</strong></td><td>'+(p.payment_reference||'-')+'</td><td style="color:var(--accent-green);font-weight:700">'+fmtMoney(p.amount)+'</td><td>'+(p.payment_method==='payhero'?'📱 M-Pesa (Auto)':p.payment_method||'-')+'</td><td>'+fmtDateTime(p.payment_date||p.created_at)+'</td></tr>'
+          html:`<tr style="background:rgba(16,185,129,0.04)">
+            <td style="white-space:nowrap">${fmtDate(p.payment_date||p.created_at)}</td>
+            <td>💳 <strong>Payment</strong> <span style="color:var(--text-secondary);font-size:10px">${p.receipt_no}</span></td>
+            <td style="color:var(--accent-green);font-weight:700">− ${fmtMoney(p.amount)}</td>
+            <td style="font-size:11px">${p.payment_method==='payhero'?'📱 M-Pesa (Auto)':p.payment_method||'-'}${p.payment_reference&&p.payment_reference!=='IMPORT'?' · '+p.payment_reference:''}</td>
+            <td><span class="badge badge-green">Received</span></td>
+          </tr>`
         }));
+        // Penalties — red rows
         const penRows=(loanPenalties||[]).map(p=>({
           date:p.date_charged,
-          html:'<tr style="background:rgba(239,68,68,0.06)"><td colspan="2"><strong style="color:var(--accent-red)">⚠️ '+(p.reason||'Rollover Penalty')+'</strong>'+(p.is_waived?' <span class="badge badge-green">Waived</span>':'')+'</td><td style="color:var(--accent-red);font-weight:700">+'+fmtMoney(p.penalty_amount)+'</td><td>Penalty</td><td>'+fmtDate(p.date_charged)+'</td></tr>'
+          html:`<tr style="background:rgba(239,68,68,0.06)">
+            <td style="white-space:nowrap">${fmtDate(p.date_charged)}</td>
+            <td>⚠️ <strong style="color:var(--accent-red)">${p.reason||'Rollover Penalty'}</strong></td>
+            <td style="color:${p.is_waived?'var(--text-secondary)':'var(--accent-red)'};font-weight:700;${p.is_waived?'text-decoration:line-through':''}">+ ${fmtMoney(p.penalty_amount)}</td>
+            <td style="font-size:11px">System</td>
+            <td>${p.is_waived?'<span class="badge badge-green">Waived</span>':'<span class="badge badge-red">Applied</span>'}</td>
+          </tr>`
         }));
         const all=[...payRows,...penRows].sort((a,b)=>new Date(a.date)-new Date(b.date));
-        return all.length?all.map(x=>x.html).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>';
+        return all.length?all.map(x=>x.html).join(''):'<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-secondary)">No payments yet</td></tr>';
       })()}
       </tbody></table></div>
     </div>
@@ -2379,7 +2392,8 @@ function showLoanTab(tab,el){
 async function exportLoanPDF(id){
   const{data:loan}=await sb('loans').select('*').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
-  const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('created_at');
+  const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true});
+  const{data:penalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
   if(!loan)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF();
   doc.setFontSize(16);doc.text('Bripta — Loan Statement',14,20);
@@ -2387,9 +2401,13 @@ async function exportLoanPDF(id){
   doc.text(`Principal: ${fmtMoney(loan.principal_amount)} | Rate: ${loan.interest_rate}%/wk | Term: ${loan.term_weeks} weeks`,14,34);
   doc.text(`Balance: ${fmtMoney(loan.outstanding_balance)} | Status: ${loan.status}`,14,40);
   doc.autoTable({startY:44,head:[['#','Due Date','Due','Paid','Status']],body:(schedules||[]).map(s=>[s.installment_no,s.due_date,fmtMoney(s.total_due),fmtMoney(s.total_paid),s.status]),styles:{fontSize:8}});
-  if(payments?.length){
-    doc.text('Payment History',14,doc.lastAutoTable.finalY+10);
-    doc.autoTable({startY:doc.lastAutoTable.finalY+14,head:[['Receipt','Amount','Method','Date']],body:payments.map(p=>[p.receipt_no,fmtMoney(p.amount),p.payment_method,p.payment_date]),styles:{fontSize:8}});
+  // Combined payment + penalty timeline
+  const payRows=(payments||[]).map(p=>([p.payment_date,'💳 Payment ('+p.receipt_no+')','− '+fmtMoney(p.amount),p.payment_method||'-','Received']));
+  const penRows=(penalties||[]).map(p=>([p.date_charged,'⚠️ '+(p.reason||'Rollover Penalty'),'+ '+fmtMoney(p.penalty_amount),'System',p.is_waived?'Waived':'Applied']));
+  const allRows=[...payRows,...penRows].sort((a,b)=>new Date(a[0])-new Date(b[0]));
+  if(allRows.length){
+    doc.text('Payment & Penalty History',14,doc.lastAutoTable.finalY+10);
+    doc.autoTable({startY:doc.lastAutoTable.finalY+14,head:[['Date','Description','Amount','Method','Status']],body:allRows,styles:{fontSize:8}});
   }
   doc.save(`${loan.loan_no}_Statement.pdf`);toast('PDF exported','success');
 }
