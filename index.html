@@ -1661,7 +1661,7 @@ async function deleteClient(id){
   } catch (e) { toast(e.message, 'error'); }
 }
 
-async // ─── TRANSFER CLIENT ───
+// ─── TRANSFER CLIENT ───
 async function openTransferClientModal(clientId, clientName){
   if(!hasRole('admin','branch_manager'))return toast('Admin/Manager access required','warning');
   const{data:staff}=await sb('loan_staff').select('id,name,role,email').eq('business_id',currentUser.business_id).eq('is_active',true);
