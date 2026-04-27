@@ -1417,7 +1417,7 @@ async function renderClients(page=1){
     if(error)throw error;
     cachedData.clients=clients||[];
     main.innerHTML=`
-      <div class="page-header"><h1>Clients</h1><div><button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
+      <div class="page-header"><h1>Clients</h1><div id="clientsHeaderBtns"><button class="btn btn-outline btn-sm" id="btnBulkTransfer" onclick="openBulkTransferModal()" style="display:none;background:rgba(124,58,237,0.1);border-color:var(--accent-purple);color:var(--accent-purple)">⇄ Transfer Selected (<span id="bulkCount">0</span>)</button> <button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
       <div class="search-bar" style="background:var(--card);padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;display:flex;gap:10px;align-items:center;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
         <span style="font-size:18px">🔎</span>
         <input class="input" id="clientSearchInput" placeholder="Search clients by Name, Phone, or ID Number..." oninput="filterClients(this.value)" style="flex:1;font-size:14px;padding:10px 12px">
@@ -1425,7 +1425,7 @@ async function renderClients(page=1){
         <button class="btn btn-primary btn-sm" id="btnViewAllClients" onclick="showAllClients(true)">View All Clients (${cachedData.clients.length})</button>
       </div>
       <div id="clientsTableWrap" style="display:none">
-        <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Location</th><th>Occupation</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr>${hasRole('admin','branch_manager')?'<th style="width:32px"><input type="checkbox" id="chkAllClients" title="Select all" onchange="toggleAllClientCheckboxes(this.checked)"></th>':''}<th>Name</th><th>ID No</th><th>Phone</th><th>Location</th><th>Occupation</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="clientsBody"></tbody></table></div>
         <div id="clientsPagination"></div>
       </div>
@@ -1455,9 +1455,12 @@ function showAllClients(show){
 }
 
 function renderClientRows(clients){
+  const isAdmin=hasRole('admin','branch_manager');
   return clients.map(c=>{
-    const transferBtn=hasRole('admin','branch_manager')?`<button class="btn btn-outline btn-sm" onclick="openTransferClientModal('${c.id}','${(c.full_name||'').replace(/'/g,"\\'")}')">Transfer</button> `:'';
+    const transferBtn=isAdmin?`<button class="btn btn-outline btn-sm" onclick="openTransferClientModal('${c.id}','${(c.full_name||'').replace(/'/g,"\\'")}')">Transfer</button> `:'';
+    const chkCell=isAdmin?`<td><input type="checkbox" class="client-chk" value="${c.id}" data-name="${(c.full_name||'').replace(/"/g,'&quot;')}" onchange="updateBulkTransferBtn()"></td>`:'';
     return`<tr>
+      ${chkCell}
       <td><strong>${c.full_name}</strong></td><td>${c.id_number||'-'}</td><td>${c.phone||'-'}</td>
       <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.address||''}">${c.address||'-'}</td>
       <td>${c.occupation||'-'}</td>
@@ -1465,6 +1468,68 @@ function renderClientRows(clients){
       <td><span class="badge badge-green">Active</span></td>
       <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> ${transferBtn}</td>
     </tr>`}).join('');
+}
+
+function updateBulkTransferBtn(){
+  const checked=document.querySelectorAll('.client-chk:checked');
+  const btn=document.getElementById('btnBulkTransfer');
+  const cnt=document.getElementById('bulkCount');
+  if(btn){ btn.style.display=checked.length>0?'inline-flex':'none'; }
+  if(cnt){ cnt.textContent=checked.length; }
+}
+
+function toggleAllClientCheckboxes(checked){
+  document.querySelectorAll('.client-chk').forEach(chk=>{ chk.checked=checked; });
+  updateBulkTransferBtn();
+}
+
+async function openBulkTransferModal(){
+  const checked=[...document.querySelectorAll('.client-chk:checked')];
+  if(!checked.length)return toast('Select at least one client','warning');
+  const{data:staff}=await sb('loan_staff').select('id,name,role').eq('business_id',currentUser.business_id).eq('is_active',true);
+  const officers=(staff||[]).filter(s=>{const roles=(s.role||'').split(',');return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r));});
+  const names=checked.slice(0,5).map(c=>c.dataset.name).join(', ')+(checked.length>5?` +${checked.length-5} more`:'');
+  openModal(`
+    <h2>Bulk Transfer Clients</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:4px">Transferring <strong>${checked.length} client${checked.length>1?'s':''}</strong> to a new loan officer.</p>
+    <p style="font-size:11px;color:var(--text-secondary);margin-bottom:16px;padding:8px;background:rgba(124,58,237,0.07);border-radius:6px;border:1px solid rgba(124,58,237,0.15)">${names}</p>
+    <div class="form-group">
+      <label>Assign to Loan Officer *</label>
+      <select class="select" id="bulkTransferOfficerSel">
+        <option value="">— Select Officer —</option>
+        ${officers.map(o=>`<option value="${o.id}">${o.name} (${(o.role||'').replace(/,/g,', ')})</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group"><label>Reason for Transfer</label><textarea class="textarea" id="bulkTransferReason" placeholder="e.g. Officer reassignment, area reallocation..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btnConfirmBulkTransfer" onclick="confirmBulkTransfer()">Transfer ${checked.length} Client${checked.length>1?'s':''}</button>
+    </div>
+  `);
+}
+
+async function confirmBulkTransfer(){
+  const officerId=document.getElementById('bulkTransferOfficerSel')?.value;
+  const reason=document.getElementById('bulkTransferReason')?.value||'';
+  if(!officerId)return toast('Please select an officer','warning');
+  const checked=[...document.querySelectorAll('.client-chk:checked')];
+  if(!checked.length)return toast('No clients selected','warning');
+  const btn=document.getElementById('btnConfirmBulkTransfer');
+  if(btn){btn.disabled=true;btn.textContent='Transferring...';}
+  const clientIds=checked.map(c=>c.value);
+  let done=0,failed=0;
+  for(const clientId of clientIds){
+    try{
+      await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
+      await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
+      await audit('client_transferred','loan_clients',clientId,null,{new_officer_id:officerId,reason,bulk:true});
+      done++;
+    }catch(e){ failed++; console.error('Bulk transfer failed for',clientId,e); }
+  }
+  closeModal();
+  if(failed>0) toast(`${done} transferred, ${failed} failed. Check console for details.`,'warning');
+  else toast(`${done} client${done>1?'s':''} transferred successfully`,'success');
+  renderClients();
 }
 
 function filterClients(q){
