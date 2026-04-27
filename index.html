@@ -1612,7 +1612,7 @@ async function editClient(id){
       <div class="form-group"><label>Next of Kin Phone</label><input class="input" id="ecNokPhone" value="${(c.next_of_kin_phone||'').replace(/"/g,'&quot;')}"></div>
     </div>
     <div class="modal-actions">
-      ${hasRole('admin')?'<button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient(''+c.id+'')">Delete Client</button>':''}
+      ${hasRole('admin')?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient('${c.id}')">Delete Client</button>`:''}
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" id="btnUpdateClient" onclick="updateClient('${c.id}')">Update</button>
     </div>
