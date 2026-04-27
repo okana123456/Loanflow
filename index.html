@@ -1571,12 +1571,41 @@ async function editClient(id){
   if(!c)return toast('Client not found','error');
   openModal(`
     <h2>Edit Client</h2>
-    <div class="form-row"><div class="form-group"><label>Full Name</label><input class="input" id="ecName" value="${(c.full_name||'').replace(/"/g,'&quot;')}"></div><div class="form-group"><label>National ID No</label><input class="input" id="ecIdNo" value="${(c.id_number||'').replace(/"/g,'&quot;')}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="ecPhone" value="${(c.phone||'').replace(/"/g,'&quot;')}"></div><div class="form-group"><label>Email</label><input class="input" id="ecEmail" value="${(c.email||'').replace(/"/g,'&quot;')}"></div></div>
-    <div class="form-row"><div class="form-group"><label>Occupation</label><input class="input" id="ecOccupation" value="${(c.occupation||'').replace(/"/g,'&quot;')}"></div><div class="form-group"><label>Daily Income (KES)</label><input class="input" type="number" id="ecIncome" value="${c.monthly_income||0}"></div></div>
-    <div class="form-group"><label>Address</label><input class="input" id="ecAddress" value="${(c.address||'').replace(/"/g,'&quot;')}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Full Name</label><input class="input" id="ecName" value="${(c.full_name||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-group"><label>National ID No</label><input class="input" id="ecIdNo" value="${(c.id_number||'').replace(/"/g,'&quot;')}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Phone <span style="font-size:11px;color:var(--text-secondary)">(must start with 07...)</span></label>
+        <input class="input" id="ecPhone" value="${(c.phone||'').replace(/"/g,'&quot;')}" placeholder="0712345678">
+      </div>
+      <div class="form-group"><label>Alternative Phone</label><input class="input" id="ecAltPhone" value="${(c.alternative_phone||'').replace(/"/g,'&quot;')}" placeholder="0712345678"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Email</label><input class="input" id="ecEmail" value="${(c.email||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-group"><label>Gender</label>
+        <select class="select" id="ecGender">
+          <option value="">Select</option>
+          <option value="Male" ${c.gender==='Male'?'selected':''}>Male</option>
+          <option value="Female" ${c.gender==='Female'?'selected':''}>Female</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Occupation</label><input class="input" id="ecOccupation" value="${(c.occupation||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-group"><label>Daily Income (KES)</label><input class="input" type="number" id="ecIncome" value="${c.monthly_income||0}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Address</label><input class="input" id="ecAddress" value="${(c.address||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-group"><label>Date of Birth</label><input class="input" type="date" id="ecDob" value="${c.dob||''}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Next of Kin Name</label><input class="input" id="ecNokName" value="${(c.next_of_kin_name||'').replace(/"/g,'&quot;')}"></div>
+      <div class="form-group"><label>Next of Kin Phone</label><input class="input" id="ecNokPhone" value="${(c.next_of_kin_phone||'').replace(/"/g,'&quot;')}"></div>
+    </div>
     <div class="modal-actions">
-      ${hasRole('admin')?`<button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient('${c.id}')">Delete Client</button>`:''}
+      ${hasRole('admin')?'<button class="btn btn-danger" style="margin-right:auto" onclick="deleteClient(''+c.id+'')">Delete Client</button>':''}
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" id="btnUpdateClient" onclick="updateClient('${c.id}')">Update</button>
     </div>
@@ -1587,7 +1616,19 @@ async function updateClient(id){
   const btn=document.getElementById('btnUpdateClient');
   if(btn){ btn.disabled=true; btn.textContent='Processing...'; }
   try{
-    const upd={full_name:$('#ecName').value,id_number:$('#ecIdNo').value,phone:$('#ecPhone').value,email:$('#ecEmail').value,occupation:$('#ecOccupation').value,monthly_income:Number($('#ecIncome').value)||0,address:$('#ecAddress').value};
+    const idNo=($('#ecIdNo').value||'').trim();
+    const phone=($('#ecPhone').value||'').trim();
+    // Normalize phone — ensure 07... format
+    const normPhone=phone.startsWith('254')&&phone.length===12?'0'+phone.slice(3):phone;
+    // Check for duplicate ID/phone excluding this client
+    if(idNo){
+      const{data:dup}=await sb('loan_clients').select('id').eq('business_id',currentUser?.business_id).eq('id_number',idNo).neq('id',id).limit(1);
+      if(dup&&dup.length){
+        if(btn){btn.disabled=false;btn.textContent='Update';}
+        return toast('Another client already has this ID number','error');
+      }
+    }
+    const upd={full_name:$('#ecName').value,id_number:idNo,phone:normPhone,alternative_phone:($('#ecAltPhone')?.value||'').trim(),email:$('#ecEmail').value,gender:$('#ecGender')?.value||'',occupation:$('#ecOccupation').value,monthly_income:Number($('#ecIncome').value)||0,address:$('#ecAddress').value,dob:$('#ecDob')?.value||null,next_of_kin_name:$('#ecNokName')?.value||'',next_of_kin_phone:$('#ecNokPhone')?.value||''};
     const{error}=await sb('loan_clients').update(upd).eq('id',id);
     if(error)throw error;
     await audit('client_updated','loan_clients',id,null,upd);
@@ -1949,7 +1990,7 @@ async function openDisburseModal(appId){
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
       <p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Processing Fee (flat)</span><strong>${fmtMoney(procFee)}</strong></p>
-      <p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Registration Fee</span><strong>${fmtMoney(regFee)}</strong></p>
+      ${regFee>0?`<p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Registration Fee <span style="font-size:10px">(new client, one-time)</span></span><strong>${fmtMoney(regFee)}</strong></p>`:'<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client</p>'}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(net)}</strong></p>
     </div>
@@ -1973,7 +2014,10 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const rate=getAutoRate(amt);
     const c=calcLoan(amt,rate,'flat',term);
     const procFee=PROCESSING_FEE_FLAT;
-    const regFee=REGISTRATION_FEE;
+    // Check if this client already has a previous loan — registration is one-time only
+    const{data:prevLoans}=await sb('loans').select('id').eq('client_id',clientId).eq('business_id',currentUser?.business_id).limit(2);
+    const isReturningClient=(prevLoans&&prevLoans.length>0);
+    const regFee=isReturningClient?0:REGISTRATION_FEE;
     const totalFees=procFee+regFee;
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
     const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
@@ -2100,6 +2144,7 @@ async function viewLoan(id){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true}).order('created_at',{ascending:true});
+  const{data:loanPenalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
   if(!loan)return toast('Loan not found','error');
   const canPay = hasRole('admin','branch_manager','cashier');
   openModal(`
@@ -2130,7 +2175,19 @@ async function viewLoan(id){
     </div>
     <div id="loanTabPayments" style="display:none">
       <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>Receipt</th><th>Reference</th><th>Amount</th><th>Method</th><th>Date & Time</th></tr></thead><tbody>
-      ${(payments||[]).map(p=>`<tr><td><strong>${p.receipt_no}</strong></td><td>${p.payment_reference||'-'}</td><td>${fmtMoney(p.amount)}</td><td>${p.payment_method||'-'}</td><td>${fmtDateTime(p.payment_date||p.created_at)}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>'}
+      ${(()=>{
+        // Combine payments and penalties into one timeline sorted by date
+        const payRows=(payments||[]).map(p=>({
+          date:p.payment_date||p.created_at,
+          html:'<tr style="background:rgba(16,185,129,0.04)"><td><strong>'+p.receipt_no+'</strong></td><td>'+(p.payment_reference||'-')+'</td><td style="color:var(--accent-green);font-weight:700">'+fmtMoney(p.amount)+'</td><td>'+(p.payment_method==='payhero'?'📱 M-Pesa (Auto)':p.payment_method||'-')+'</td><td>'+fmtDateTime(p.payment_date||p.created_at)+'</td></tr>'
+        }));
+        const penRows=(loanPenalties||[]).map(p=>({
+          date:p.date_charged,
+          html:'<tr style="background:rgba(239,68,68,0.06)"><td colspan="2"><strong style="color:var(--accent-red)">⚠️ '+(p.reason||'Rollover Penalty')+'</strong>'+(p.is_waived?' <span class="badge badge-green">Waived</span>':'')+'</td><td style="color:var(--accent-red);font-weight:700">+'+fmtMoney(p.penalty_amount)+'</td><td>Penalty</td><td>'+fmtDate(p.date_charged)+'</td></tr>'
+        }));
+        const all=[...payRows,...penRows].sort((a,b)=>new Date(a.date)-new Date(b.date));
+        return all.length?all.map(x=>x.html).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No payments yet</td></tr>';
+      })()}
       </tbody></table></div>
     </div>
     <div class="modal-actions">
@@ -2404,6 +2461,11 @@ async function savePayment(){
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
     toast(`Payment ${receiptNo} recorded! ${fmtMoney(amount)}`,'success');closeModal();
+    // Auto-refresh due list on dashboard if visible
+    if(document.getElementById('dueClientTable')){
+      const dp=document.getElementById('dueDatePicker');
+      loadDueByDate(dp?dp.value:new Date().toISOString().slice(0,10));
+    }
     if(currentSection==='repayments')renderRepayments();else if(currentSection==='loans')renderLoans();else if(currentSection==='dashboard')renderDashboard();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Confirm Payment'; }
