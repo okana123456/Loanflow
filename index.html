@@ -1425,7 +1425,7 @@ async function renderClients(page=1){
         <button class="btn btn-primary btn-sm" id="btnViewAllClients" onclick="showAllClients(true)">View All Clients (${cachedData.clients.length})</button>
       </div>
       <div id="clientsTableWrap" style="display:none">
-        <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Occupation</th><th>Status</th><th>Actions</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Location</th><th>Occupation</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="clientsBody"></tbody></table></div>
         <div id="clientsPagination"></div>
       </div>
@@ -1456,11 +1456,14 @@ function showAllClients(show){
 
 function renderClientRows(clients){
   return clients.map(c=>{
+    const transferBtn=hasRole('admin','branch_manager')?`<button class="btn btn-outline btn-sm" onclick="openTransferClientModal('${c.id}','${(c.full_name||'').replace(/'/g,"\\'")}')">Transfer</button> `:'';
     return`<tr>
       <td><strong>${c.full_name}</strong></td><td>${c.id_number||'-'}</td><td>${c.phone||'-'}</td>
+      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.address||''}">${c.address||'-'}</td>
       <td>${c.occupation||'-'}</td>
+      <td style="white-space:nowrap">${c.created_at?c.created_at.slice(0,10):'-'}</td>
       <td><span class="badge badge-green">Active</span></td>
-      <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button></td>
+      <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> ${transferBtn}</td>
     </tr>`}).join('');
 }
 
@@ -1509,11 +1512,15 @@ async function saveClient(){
   const btn=document.getElementById('btnSaveClient');
   if(btn){ btn.disabled=true; btn.textContent='Processing...'; }
   try{
-    // Duplicate check (#2): same id_number OR phone in this business
+    // Normalize phone: ensure it starts with 07 if 9 digits starting with 7 or 1
+    let normalizedPhone=phone;
+    if(/^[17]\d{8}$/.test(phone)) normalizedPhone='0'+phone;
+
+    // Duplicate check (#2): same id_number OR phone in this business (check both raw and normalized)
     const{data:dupes,error:dupErr}=await sb('loan_clients')
       .select('id,full_name,id_number,phone')
       .eq('business_id', currentUser?.business_id)
-      .or(`id_number.eq.${idNo},phone.eq.${phone}`)
+      .or(`id_number.eq.${idNo},phone.eq.${normalizedPhone},phone.eq.${phone}`)
       .limit(1);
     if(dupErr) throw dupErr;
     if(dupes && dupes.length){
@@ -1618,8 +1625,10 @@ async function updateClient(id){
   try{
     const idNo=($('#ecIdNo').value||'').trim();
     const phone=($('#ecPhone').value||'').trim();
-    // Normalize phone — ensure 07... format
-    const normPhone=phone.startsWith('254')&&phone.length===12?'0'+phone.slice(3):phone;
+    // Normalize phone — ensure 07... format (fix imported phones like 712345678)
+    let normPhone=phone;
+    if(phone.startsWith('254')&&phone.length===12) normPhone='0'+phone.slice(3);
+    else if(/^[17]\d{8}$/.test(phone)) normPhone='0'+phone;
     // Check for duplicate ID/phone excluding this client
     if(idNo){
       const{data:dup}=await sb('loan_clients').select('id').eq('business_id',currentUser?.business_id).eq('id_number',idNo).neq('id',id).limit(1);
@@ -1652,10 +1661,108 @@ async function deleteClient(id){
   } catch (e) { toast(e.message, 'error'); }
 }
 
-function exportClientsExcel(){
-  const data=(cachedData.clients||[]).map(c=>({Name:c.full_name,'ID No':c.id_number,Phone:c.phone,Email:c.email,Occupation:c.occupation,'Daily Income':c.monthly_income,Status:'Active'}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Clients');XLSX.writeFile(wb,'Bripta_Clients.xlsx');
-  toast('Exported to Excel','success');
+async // ─── TRANSFER CLIENT ───
+async function openTransferClientModal(clientId, clientName){
+  if(!hasRole('admin','branch_manager'))return toast('Admin/Manager access required','warning');
+  const{data:staff}=await sb('loan_staff').select('id,name,role,email').eq('business_id',currentUser.business_id).eq('is_active',true);
+  const officers=(staff||[]).filter(s=>{const roles=(s.role||'').split(',');return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r));});
+  openModal(`
+    <h2>Transfer Client</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Transfer <strong>${clientName}</strong> and all their active loans to a different loan officer.</p>
+    <div class="form-group">
+      <label>Assign to Loan Officer *</label>
+      <select class="select" id="transferOfficerSel">
+        <option value="">— Select Officer —</option>
+        ${officers.map(o=>`<option value="${o.id}">${o.name} (${(o.role||'').replace(/,/g,', ')})</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group"><label>Reason for Transfer</label><textarea class="textarea" id="transferReason" placeholder="e.g. Officer reassignment, area change..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="btnConfirmTransfer" onclick="confirmTransferClient('${clientId}','${clientName}')">Confirm Transfer</button>
+    </div>
+  `);
+}
+
+async function confirmTransferClient(clientId, clientName){
+  const officerId=document.getElementById('transferOfficerSel')?.value;
+  const reason=document.getElementById('transferReason')?.value||'';
+  if(!officerId)return toast('Please select an officer','warning');
+  const btn=document.getElementById('btnConfirmTransfer');
+  if(btn){btn.disabled=true;btn.textContent='Transferring...';}
+  try{
+    // Update all active loans for this client to new officer
+    await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
+    // Update all applications too
+    await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
+    await audit('client_transferred','loan_clients',clientId,null,{client_name:clientName,new_officer_id:officerId,reason});
+    toast(`${clientName} transferred successfully`,'success');
+    closeModal();
+    renderClients();
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent='Confirm Transfer';}
+    toast(e.message,'error');
+  }
+}
+
+async function exportClientsExcel(){
+  try{
+    // Fetch enriched client data with loan info and officer info
+    const[{data:clients},{data:loans},{data:staff}]=await Promise.all([
+      sb('loan_clients').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}),
+      sb('loans').select('id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,maturity_date,overdue_days,arrears_amount,loan_officer_id').eq('business_id',currentUser.business_id),
+      sb('loan_staff').select('id,name').eq('business_id',currentUser.business_id)
+    ]);
+    const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
+    // Group loans by client
+    const loansByClient={};
+    (loans||[]).forEach(l=>{
+      if(!loansByClient[l.client_id])loansByClient[l.client_id]=[];
+      loansByClient[l.client_id].push(l);
+    });
+    const data=(clients||[]).map(c=>{
+      const cLoans=loansByClient[c.id]||[];
+      const activeLoans=cLoans.filter(l=>l.status==='active');
+      const latestLoan=cLoans.sort((a,b)=>new Date(b.disbursement_date||0)-new Date(a.disbursement_date||0))[0];
+      const officerId=latestLoan?.loan_officer_id;
+      const totalBorrowed=cLoans.reduce((s,l)=>s+Number(l.principal_amount||0),0);
+      const totalOutstanding=activeLoans.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
+      const totalArrears=activeLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+      return{
+        'Full Name':c.full_name,
+        'ID Number':c.id_number||'-',
+        'Phone':c.phone||'-',
+        'Alternative Phone':c.alternative_phone||'-',
+        'Email':c.email||'-',
+        'Gender':c.gender||'-',
+        'Date of Birth':c.dob||'-',
+        'Address / Location':c.address||'-',
+        'Occupation':c.occupation||'-',
+        'Employer':c.employer||'-',
+        'Daily Income (KES)':c.monthly_income||0,
+        'Guarantor Name':c.next_of_kin_name||'-',
+        'Guarantor Phone':c.next_of_kin_phone||'-',
+        'Guarantor Relation':c.next_of_kin_relation||'-',
+        'Date Onboarded':c.created_at?c.created_at.slice(0,10):'-',
+        'Loan Officer':officerId?staffMap[officerId]||'-':'-',
+        'Total Loans':cLoans.length,
+        'Active Loans':activeLoans.length,
+        'Latest Loan #':latestLoan?.loan_no||'-',
+        'Total Borrowed (KES)':totalBorrowed,
+        'Outstanding Balance (KES)':totalOutstanding,
+        'Total Arrears (KES)':totalArrears,
+        'Client Status':activeLoans.length>0?'Active Borrower':cLoans.length>0?'Past Borrower':'No Loans'
+      };
+    });
+    const ws=XLSX.utils.json_to_sheet(data);
+    // Auto column widths
+    const cols=[{wch:24},{wch:16},{wch:14},{wch:14},{wch:24},{wch:8},{wch:12},{wch:28},{wch:18},{wch:20},{wch:16},{wch:22},{wch:14},{wch:16},{wch:16},{wch:16},{wch:12},{wch:12},{wch:16},{wch:16},{wch:16},{wch:16}];
+    ws['!cols']=cols;
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Clients');
+    XLSX.writeFile(wb,'Bripta_Clients_'+new Date().toISOString().slice(0,10)+'.xlsx');
+    toast('Client report exported with full details','success');
+  }catch(e){toast(e.message,'error');}
 }
 
 // ═══ PRODUCTS ═══
@@ -2291,6 +2398,18 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     
     const newPaid=Number(loan.total_paid)+amount;
     const newBalance=Number(loan.outstanding_balance)-amount;
+    // Cascade into schedules
+    const{data:mpesaScheds}=await sb('loan_schedules').select('*').eq('loan_id',loan.id).in('status',['pending','overdue','partial']).order('due_date',{ascending:true}).order('installment_no',{ascending:true});
+    let mpesaRem=amount;
+    const mpesaUpdates=[];
+    for(const s of (mpesaScheds||[])){
+      if(mpesaRem<=0)break;
+      const due=Number(s.total_due||0);const ap=Number(s.total_paid||0);const owed=Math.max(0,due-ap);if(owed<=0)continue;
+      const apply=Math.min(mpesaRem,owed);const nTotal=ap+apply;const ss=nTotal>=due?'paid':'partial';
+      mpesaUpdates.push(sb('loan_schedules').update({total_paid:nTotal,status:ss,paid_at:ss==='paid'?new Date().toISOString():null}).eq('id',s.id));
+      mpesaRem-=apply;
+    }
+    if(mpesaUpdates.length)await Promise.all(mpesaUpdates);
     await sb('loans').update({total_paid:newPaid,outstanding_balance:Math.max(0,newBalance),status:newBalance<=0?'completed':loan.status}).eq('id',loan.id);
     await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id}).eq('id',queueId);
     await audit('mpesa_payment_confirmed','loan_repayments',null,null,rec);
@@ -2432,32 +2551,59 @@ async function savePayment(){
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
 
-    const newPaid=Number(loan.total_paid)+amount;
-    const newBalance=Number(loan.outstanding_balance)-amount;
-    const newStatus=newBalance<=0?'completed':loan.status;
-    await sb('loans').update({total_paid:newPaid,outstanding_balance:Math.max(0,newBalance),status:newStatus}).eq('id',loanId);
-
-    // Cascade payment across pending schedules in installment order
-    const{data:scheds}=await sb('loan_schedules').select('*').eq('loan_id',loanId).in('status',['pending','overdue','partial']).order('installment_no');
-    let remaining = amount;
-    const updates = [];
-    for(const s of (scheds||[])){
-      if(remaining<=0) break;
-      const due = Number(s.total_due||0);
-      const alreadyPaid = Number(s.total_paid||0);
-      const owed = Math.max(0, due - alreadyPaid);
-      if(owed<=0) continue;
-      const apply = Math.min(remaining, owed);
-      const newTotal = alreadyPaid + apply;
-      const schedStatus = newTotal >= due ? 'paid' : 'partial';
-      updates.push(sb('loan_schedules').update({
+    // ── Cascade payment across schedules (oldest first by due_date) ──
+    const{data:allScheds}=await sb('loan_schedules')
+      .select('*').eq('loan_id',loanId)
+      .in('status',['pending','overdue','partial'])
+      .order('due_date',{ascending:true})
+      .order('installment_no',{ascending:true});
+    let remaining=amount;
+    const schedUpdates=[];
+    for(const s of (allScheds||[])){
+      if(remaining<=0)break;
+      const due=Number(s.total_due||0);
+      const alreadyPaid=Number(s.total_paid||0);
+      const owed=Math.max(0,due-alreadyPaid);
+      if(owed<=0)continue;
+      const apply=Math.min(remaining,owed);
+      const newTotal=alreadyPaid+apply;
+      const schedStatus=newTotal>=due?'paid':'partial';
+      schedUpdates.push(sb('loan_schedules').update({
         total_paid:newTotal,
         status:schedStatus,
-        paid_at: schedStatus==='paid' ? new Date().toISOString() : null
-      }).eq('id', s.id));
-      remaining -= apply;
+        paid_at:schedStatus==='paid'?new Date().toISOString():null
+      }).eq('id',s.id));
+      remaining-=apply;
     }
-    if(updates.length) await Promise.all(updates);
+    if(schedUpdates.length)await Promise.all(schedUpdates);
+
+    // ── Recalculate arrears and overdue from remaining unpaid past-due schedules ──
+    const todayStr2=new Date().toISOString().slice(0,10);
+    const{data:remainingScheds}=await sb('loan_schedules')
+      .select('due_date,total_due,total_paid,status')
+      .eq('loan_id',loanId)
+      .in('status',['pending','partial','overdue'])
+      .lt('due_date',todayStr2)
+      .order('due_date',{ascending:true});
+    let newArrears=0,newOverdueDays=0;
+    if(remainingScheds&&remainingScheds.length){
+      const unpaid=remainingScheds.filter(s=>Number(s.total_due||0)-Number(s.total_paid||0)>0.01);
+      if(unpaid.length){
+        const oldestDue=new Date(unpaid[0].due_date);oldestDue.setHours(0,0,0,0);
+        const nowD=new Date();nowD.setHours(0,0,0,0);
+        newOverdueDays=Math.max(0,Math.floor((nowD-oldestDue)/(1000*60*60*24)));
+        newArrears=unpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
+      }
+    }
+    const newPaid=Number(loan.total_paid)+amount;
+    const newBalance=Math.max(0,Number(loan.outstanding_balance)-amount);
+    await sb('loans').update({
+      total_paid:newPaid,
+      outstanding_balance:newBalance,
+      status:newBalance<=0?'completed':loan.status,
+      overdue_days:newBalance<=0?0:newOverdueDays,
+      arrears_amount:newBalance<=0?0:Math.max(0,newArrears)
+    }).eq('id',loanId);
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
     toast(`Payment ${receiptNo} recorded! ${fmtMoney(amount)}`,'success');closeModal();
@@ -2894,6 +3040,7 @@ async function saveFollowUp(loanId,clientId){
 async function renderReports(){
   const main=$('#mainContent');
   const reports=[
+    {id:'clients_report',      title:'Clients Report',              icon:'👥', desc:'Full client list with onboarding date, location, loan officer, loan history and balances', color:'var(--accent-blue)'},
     {id:'collection_daily',   title:'Daily Collection Rate',       icon:'📅', desc:'Payments collected today vs scheduled due',                           color:'var(--accent-green)'},
     {id:'collection_monthly', title:'Monthly Collection Rate',     icon:'📆', desc:'Month-to-date collections vs total due this month',                   color:'var(--accent-blue)'},
     {id:'mpesa_payments',     title:'M-Pesa Payments Report',      icon:'📲', desc:'All M-Pesa transactions recorded in the system',                      color:'var(--accent-purple)'},
@@ -2929,6 +3076,52 @@ async function renderReports(){
 // ─── REPORT DATA LOADER ───
 async function loadReportData(id){
   const biz=currentUser.business_id;
+  if(id==='clients_report'){
+    const[{data:clients},{data:loans},{data:staff}]=await Promise.all([
+      sb('loan_clients').select('*').eq('business_id',biz).order('created_at',{ascending:false}),
+      sb('loans').select('id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,overdue_days,arrears_amount,loan_officer_id').eq('business_id',biz),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
+    const loansByClient={};
+    (loans||[]).forEach(l=>{if(!loansByClient[l.client_id])loansByClient[l.client_id]=[];loansByClient[l.client_id].push(l);});
+    const rows=(clients||[]).map(c=>{
+      const cLoans=loansByClient[c.id]||[];
+      const active=cLoans.filter(l=>l.status==='active');
+      const latest=cLoans.sort((a,b)=>new Date(b.disbursement_date||0)-new Date(a.disbursement_date||0))[0];
+      const officerId=latest?.loan_officer_id;
+      return{
+        'Full Name':c.full_name,
+        'ID Number':c.id_number||'-',
+        'Phone':c.phone||'-',
+        'Alt Phone':c.alternative_phone||'-',
+        'Email':c.email||'-',
+        'Gender':c.gender||'-',
+        'DOB':c.dob||'-',
+        'Address / Location':c.address||'-',
+        'Occupation':c.occupation||'-',
+        'Employer':c.employer||'-',
+        'Daily Income':c.monthly_income||0,
+        'Guarantor':c.next_of_kin_name||'-',
+        'Guarantor Phone':c.next_of_kin_phone||'-',
+        'Guarantor Relation':c.next_of_kin_relation||'-',
+        'Date Onboarded':c.created_at?c.created_at.slice(0,10):'-',
+        'Loan Officer':officerId?staffMap[officerId]||'-':'-',
+        'Total Loans':cLoans.length,
+        'Active Loans':active.length,
+        'Latest Loan #':latest?.loan_no||'-',
+        'Total Borrowed':cLoans.reduce((s,l)=>s+Number(l.principal_amount||0),0),
+        'Outstanding (KES)':active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0),
+        'Arrears (KES)':active.reduce((s,l)=>s+Number(l.arrears_amount||0),0),
+        'Status':active.length>0?'Active Borrower':cLoans.length>0?'Past Borrower':'No Loans'
+      };
+    });
+    return{title:'Clients Report',summary:[
+      {label:'Total Clients',value:(clients||[]).length},
+      {label:'Active Borrowers',value:rows.filter(r=>r['Status']==='Active Borrower').length},
+      {label:'Past Borrowers',value:rows.filter(r=>r['Status']==='Past Borrower').length}
+    ],rows,cols:['Full Name','ID Number','Phone','Alt Phone','Email','Gender','DOB','Address / Location','Occupation','Employer','Daily Income','Guarantor','Guarantor Phone','Guarantor Relation','Date Onboarded','Loan Officer','Total Loans','Active Loans','Latest Loan #','Total Borrowed','Outstanding (KES)','Arrears (KES)','Status']};
+  }
   if(id==='collection_daily'){
     const today=new Date().toISOString().slice(0,10);
     const[{data:reps},{data:scheds}]=await Promise.all([
@@ -2976,7 +3169,11 @@ async function loadReportData(id){
     ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date']};
   }
   if(id==='portfolio'){
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).order('created_at',{ascending:false});
+    const[{data:loans},{data:staff}]=await Promise.all([
+      sb('loans').select('*,loan_clients(full_name,phone,id_number,address),loan_staff(name)').eq('business_id',biz).order('created_at',{ascending:false}),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const active=(loans||[]).filter(l=>l.status==='active');
     const totalOutstanding=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const totalPayable=(loans||[]).reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0);
@@ -2990,64 +3187,85 @@ async function loadReportData(id){
     ],rows:(loans||[]).map(l=>({
       'Loan #':l.loan_no,
       'Client':l.loan_clients?.full_name||'-',
+      'ID Number':l.loan_clients?.id_number||'-',
       'Phone':l.loan_clients?.phone||'-',
+      'Location':l.loan_clients?.address||'-',
+      'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
       'Principal':fmtMoney(l.principal_amount),
       'Interest':fmtMoney(l.total_interest||0),
       'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
       'Outstanding':fmtMoney(l.outstanding_balance),
       'Total Paid':fmtMoney(l.total_paid||0),
+      'Arrears':fmtMoney(l.arrears_amount||0),
+      'Overdue Days':l.overdue_days||0,
       'Status':l.status,
-      'Disbursed':l.disbursement_date||'-'
-    })),cols:['Loan #','Client','Phone','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Status','Disbursed']};
+      'Disbursed':l.disbursement_date||'-',
+      'Maturity':l.maturity_date||'-'
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Arrears','Overdue Days','Status','Disbursed','Maturity']};
   }
   if(id==='disbursement'){
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).order('disbursement_date',{ascending:false});
+    const[{data:loans},{data:staff}]=await Promise.all([
+      sb('loans').select('*,loan_clients(full_name,phone,id_number,address)').eq('business_id',biz).order('disbursement_date',{ascending:false}),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const total=(loans||[]).reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
-    const totalPrincipal=(loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0);
-    const totalInterest=(loans||[]).reduce((s,l)=>s+Number(l.total_interest||0),0);
-    const totalPayable=(loans||[]).reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0);
     return{title:'Disbursement Report',summary:[
       {label:'Total Disbursements',value:(loans||[]).length},
       {label:'Total Amount Disbursed',value:fmtMoney(total)},
-      {label:'Total Principal',value:fmtMoney(totalPrincipal)},
-      {label:'Total Interest',value:fmtMoney(totalInterest)},
-      {label:'Total Payable (P+I)',value:fmtMoney(totalPayable)},
+      {label:'Total Principal',value:fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0))},
+      {label:'Total Interest',value:fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.total_interest||0),0))},
       {label:'Total Processing Fees',value:fmtMoney((loans||[]).reduce((s,l)=>s+Number(l.processing_fee||0),0))}
     ],rows:(loans||[]).map(l=>({
       'Loan #':l.loan_no,
       'Client':l.loan_clients?.full_name||'-',
+      'ID Number':l.loan_clients?.id_number||'-',
       'Phone':l.loan_clients?.phone||'-',
-      'Disbursed':fmtMoney(l.disbursed_amount),
+      'Location':l.loan_clients?.address||'-',
+      'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
+      'Disbursed Amount':fmtMoney(l.disbursed_amount),
       'Principal':fmtMoney(l.principal_amount),
       'Interest':fmtMoney(l.total_interest||0),
       'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
       'Processing Fee':fmtMoney(l.processing_fee),
+      'Term (Weeks)':l.term_weeks||'-',
+      'Weekly Installment':fmtMoney(l.weekly_installment||0),
       'Method':l.disbursement_method,
       'Reference':l.disbursement_reference||'-',
-      'Date':l.disbursement_date||'-'
-    })),cols:['Loan #','Client','Phone','Disbursed','Principal','Interest','Total (P+I)','Processing Fee','Method','Reference','Date']};
+      'Disburse Date':l.disbursement_date||'-',
+      'Maturity Date':l.maturity_date||'-',
+      'Status':l.status
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Disbursed Amount','Principal','Interest','Total (P+I)','Processing Fee','Term (Weeks)','Weekly Installment','Method','Reference','Disburse Date','Maturity Date','Status']};
   }
   if(id==='aging'){
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',biz).eq('status','active');
+    const[{data:loans},{data:staff}]=await Promise.all([
+      sb('loans').select('*,loan_clients(full_name,phone,id_number,address)').eq('business_id',biz).eq('status','active'),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const overdue=(loans||[]).filter(l=>l.overdue_days>0);
     const bucket=d=>d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':'90d+';
     return{title:'Arrears Report',summary:[
       {label:'Total Active Loans',value:(loans||[]).length},{label:'Overdue Loans',value:overdue.length},
       {label:'Total Arrears',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.arrears_amount||0),0))},
-      {label:'Total Outstanding (Overdue)',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))},
-      {label:'Total Payable (P+I) Overdue',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.total_payable||l.principal_amount||0),0))}
+      {label:'Total Outstanding (Overdue)',value:fmtMoney(overdue.reduce((s,l)=>s+Number(l.outstanding_balance||0),0))}
     ],rows:overdue.sort((a,b)=>b.overdue_days-a.overdue_days).map(l=>({
       'Loan #':l.loan_no,
       'Client':l.loan_clients?.full_name||'-',
+      'ID Number':l.loan_clients?.id_number||'-',
       'Phone':l.loan_clients?.phone||'-',
+      'Location':l.loan_clients?.address||'-',
+      'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
       'Principal':fmtMoney(l.principal_amount),
       'Interest':fmtMoney(l.total_interest||0),
       'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
       'Outstanding':fmtMoney(l.outstanding_balance),
       'Arrears':fmtMoney(l.arrears_amount),
       'Overdue Days':l.overdue_days,
-      'Bucket':bucket(l.overdue_days)
-    })),cols:['Loan #','Client','Phone','Principal','Interest','Total (P+I)','Outstanding','Arrears','Overdue Days','Bucket']};
+      'Bucket':bucket(l.overdue_days),
+      'Disburse Date':l.disbursement_date||'-',
+      'Maturity Date':l.maturity_date||'-'
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal','Interest','Total (P+I)','Outstanding','Arrears','Overdue Days','Bucket','Disburse Date','Maturity Date']};
   }
   if(id==='income'){
     const[{data:reps},{data:clients}]=await Promise.all([
