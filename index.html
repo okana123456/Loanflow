@@ -2803,12 +2803,20 @@ async function savePayment(){
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
     toast(`Payment ${receiptNo} recorded! ${fmtMoney(amount)}`,'success');closeModal();
+    // Always clear cachedData so dashboard, accounting and arrears reflect the payment immediately
+    cachedData.loans=null;cachedData.schedules=null;cachedData.repayments=null;
     // Auto-refresh due list on dashboard if visible
     if(document.getElementById('dueClientTable')){
       const dp=document.getElementById('dueDatePicker');
       loadDueByDate(dp?dp.value:new Date().toISOString().slice(0,10));
     }
-    if(currentSection==='repayments')renderRepayments();else if(currentSection==='loans')renderLoans();else if(currentSection==='dashboard')renderDashboard();
+    // Refresh current section + always refresh dashboard in background
+    if(currentSection==='repayments')renderRepayments();
+    else if(currentSection==='loans')renderLoans();
+    else if(currentSection==='dashboard')renderDashboard();
+    else if(currentSection==='overdue')renderOverdue();
+    // Always refresh dashboard data in background so KPIs are current
+    if(currentSection!=='dashboard') renderDashboard();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Confirm Payment'; }
     toast(e.message,'error');
