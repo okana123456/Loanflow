@@ -1627,11 +1627,25 @@ async function viewClient(id){
           <strong style="color:var(--accent-green)">${fmtMoney((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE)}</strong>
         </div>
       </div>
-      <h3 style="margin:16px 0 8px;font-size:14px">Loan History</h3>
-      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Balance</th><th>Status</th></tr></thead><tbody>
-      ${(cLoans||[]).map(l=>`<tr><td>${l.loan_no||'-'}</td><td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td><td>${statusBadge(l.status)}</td></tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No loans</td></tr>'}
+      <h3 style="margin:16px 0 8px;font-size:14px">Loan History <span style="font-size:11px;color:var(--text-secondary);font-weight:400">${(cLoans||[]).length} loan${(cLoans||[]).length!==1?'s':''}</span></h3>
+      <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Weekly</th><th>Balance</th><th>Maturity</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(cLoans||[]).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).map(l=>`
+        <tr style="${l.status==='active'&&l.outstanding_balance>0?'':'opacity:0.6'}">
+          <td><strong>${l.loan_no||'-'}</strong></td>
+          <td>${fmtMoney(l.principal_amount)}</td>
+          <td>${fmtMoney(l.weekly_installment)}</td>
+          <td><strong style="color:${l.outstanding_balance>0?'var(--accent-yellow)':'var(--accent-green)'}">${fmtMoney(l.outstanding_balance)}</strong></td>
+          <td style="white-space:nowrap;font-size:12px">${fmtDate(l.maturity_date)}</td>
+          <td>${statusBadge(l.status)}${l.overdue_days>0?` <span class="badge badge-red" style="font-size:10px">${l.overdue_days}d</span>`:''}</td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-outline btn-sm" onclick="closeModal();viewLoan('${l.id}')">View</button>
+            ${hasRole('admin','branch_manager')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-yellow);color:var(--accent-yellow)" onclick="closeModal();openEditLoanModal('${l.id}')">Edit</button>`:''}
+            ${hasRole('admin')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="closeModal();deleteLoanConfirm('${l.id}','${l.loan_no}')">Delete</button>`:''}
+          </td>
+        </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:20px">No loans</td></tr>'}
       </tbody></table></div>
       <div class="modal-actions">
+        <button class="btn btn-outline" onclick="editClient('${c.id}')">✏️ Edit Client</button>
         <button class="btn btn-outline" onclick="closeModal()">Close</button>
       </div>
     `,true);
@@ -1702,7 +1716,9 @@ async function updateClient(id){
         return toast('Another client already has this ID number','error');
       }
     }
-    const upd={full_name:$('#ecName').value,id_number:idNo,phone:normPhone,alternative_phone:($('#ecAltPhone')?.value||'').trim(),email:$('#ecEmail').value,gender:$('#ecGender')?.value||'',occupation:$('#ecOccupation').value,monthly_income:Number($('#ecIncome').value)||0,address:$('#ecAddress').value,dob:$('#ecDob')?.value||null,next_of_kin_name:$('#ecNokName')?.value||'',next_of_kin_phone:$('#ecNokPhone')?.value||''};
+    const upd={full_name:($('#ecName').value||'').trim(),id_number:idNo||null,phone:normPhone||null,alternative_phone:($('#ecAltPhone')?.value||'').trim()||null,email:($('#ecEmail')?.value||'').trim()||null,gender:$('#ecGender')?.value||null,occupation:($('#ecOccupation')?.value||'').trim()||null,monthly_income:Number($('#ecIncome')?.value)||null,address:($('#ecAddress')?.value||'').trim()||null,dob:$('#ecDob')?.value||null,next_of_kin_name:($('#ecNokName')?.value||'').trim()||null,next_of_kin_phone:($('#ecNokPhone')?.value||'').trim()||null,next_of_kin_relation:($('#ecNokRelation')?.value||'').trim()||null};
+    // Remove undefined/null keys that might cause schema errors
+    Object.keys(upd).forEach(k=>{if(upd[k]===null||upd[k]===undefined)delete upd[k];});
     const{error}=await sb('loan_clients').update(upd).eq('id',id);
     if(error)throw error;
     await audit('client_updated','loan_clients',id,null,upd);
@@ -2145,7 +2161,10 @@ async function openDisburseModal(appId){
   const amt=app.applied_amount;
   const rate=getAutoRate(amt);
   const procFee=PROCESSING_FEE_FLAT;
-  const regFee=REGISTRATION_FEE;
+  // Check returning client BEFORE rendering preview so reg fee shows correctly
+  const{data:prevLoans}=await sb('loans').select('id').eq('client_id',app.client_id).eq('business_id',currentUser?.business_id).limit(2);
+  const isReturning=(prevLoans&&prevLoans.length>0);
+  const regFee=isReturning?0:REGISTRATION_FEE;
   const net=amt-procFee-regFee;
   const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   const clientName=app.loan_clients?.full_name||'Unknown Client';
@@ -2162,7 +2181,9 @@ async function openDisburseModal(appId){
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
       <p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Processing Fee (flat)</span><strong>${fmtMoney(procFee)}</strong></p>
-      ${regFee>0?`<p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Registration Fee <span style="font-size:10px">(new client, one-time)</span></span><strong>${fmtMoney(regFee)}</strong></p>`:'<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client</p>'}
+      ${regFee>0
+        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Registration Fee <span style="font-size:10px">(new client, one-time)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
+        :`<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client (${(prevLoans||[]).length} previous loan${(prevLoans||[]).length!==1?'s':''})</p>`}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(net)}</strong></p>
     </div>
@@ -2377,6 +2398,8 @@ async function viewLoan(id){
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline btn-sm" onclick="exportLoanPDF('${loan.id}')">Export PDF</button>
+      ${hasRole('admin','branch_manager')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-yellow);color:var(--accent-yellow)" onclick="openEditLoanModal('${loan.id}')">✏️ Edit Loan</button>`:''}
+      ${hasRole('admin')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="deleteLoanConfirm('${loan.id}','${loan.loan_no}')">🗑 Delete</button>`:''}
       ${canPay?`<button class="btn btn-success" onclick="closeModal();openPaymentModal('${loan.id}')">Record Payment</button>`:''}
       <button class="btn btn-outline" onclick="closeModal()">Close</button>
     </div>
@@ -2387,6 +2410,96 @@ function showLoanTab(tab,el){
   $$('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');
   $('#loanTabSchedule').style.display=tab==='schedule'?'block':'none';
   $('#loanTabPayments').style.display=tab==='payments'?'block':'none';
+}
+
+async function openEditLoanModal(id){
+  const{data:loan}=await sb('loans').select('*,loan_clients(full_name)').eq('id',id).single();
+  if(!loan)return;
+  openModal(`
+    <h2>✏️ Edit Loan — ${loan.loan_no}</h2>
+    <p style="font-size:12px;color:var(--accent-yellow);margin-bottom:16px">⚠️ Changes here will recalculate balance, arrears and overdue days automatically.</p>
+    <div class="form-row">
+      <div class="form-group"><label>Outstanding Balance (KES)</label><input class="input" type="number" id="elBalance" value="${loan.outstanding_balance||0}" step="0.01"></div>
+      <div class="form-group"><label>Maturity Date</label><input class="input" type="date" id="elMaturity" value="${loan.maturity_date||''}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="elDisbDate" value="${loan.disbursement_date||''}"></div>
+      <div class="form-group"><label>Total Paid (KES)</label><input class="input" type="number" id="elTotalPaid" value="${loan.total_paid||0}" step="0.01"></div>
+    </div>
+    <div class="form-group">
+      <label>Waive ALL active penalties on this loan?</label>
+      <select class="select" id="elWaivePenalties">
+        <option value="no">No — keep penalties</option>
+        <option value="yes">Yes — waive all active penalties</option>
+      </select>
+    </div>
+    <div class="form-group"><label>Reason for edit</label><textarea class="textarea" id="elReason" placeholder="e.g. Maturity date correction, balance adjustment after verification..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditLoan('${id}')">Save Changes</button>
+    </div>
+  `);
+}
+
+async function saveEditLoan(id){
+  const balance=Number($('#elBalance')?.value||0);
+  const maturity=$('#elMaturity')?.value;
+  const disbDate=$('#elDisbDate')?.value;
+  const totalPaid=Number($('#elTotalPaid')?.value||0);
+  const waive=$('#elWaivePenalties')?.value==='yes';
+  const reason=$('#elReason')?.value||'Admin adjustment';
+  const todayStr=new Date().toISOString().slice(0,10);
+  try{
+    // 1. Update core loan fields
+    const upd={outstanding_balance:balance,total_paid:totalPaid};
+    if(maturity) upd.maturity_date=maturity;
+    if(disbDate) upd.disbursement_date=disbDate;
+    // Recalculate overdue_days and arrears
+    if(maturity && maturity >= todayStr){
+      upd.overdue_days=0; upd.arrears_amount=0;
+    }
+    const{error}=await sb('loans').update(upd).eq('id',id);
+    if(error)throw error;
+    // 2. Waive penalties if requested
+    if(waive){
+      await sb('loan_penalties').update({is_waived:true,waived_reason:'Admin waived — '+reason}).eq('loan_id',id).eq('is_waived',false);
+    }
+    // 3. If maturity or disbursement date changed, rebuild schedule due dates
+    if(maturity||disbDate){
+      const{data:loan}=await sb('loans').select('disbursement_date,term_weeks').eq('id',id).single();
+      const{data:scheds}=await sb('loan_schedules').select('id,installment_no').eq('loan_id',id).order('installment_no');
+      for(const s of (scheds||[])){
+        const newDue=new Date(loan.disbursement_date);
+        newDue.setDate(newDue.getDate()+s.installment_no*7);
+        await sb('loan_schedules').update({due_date:newDue.toISOString().slice(0,10)}).eq('id',s.id);
+      }
+    }
+    await audit('loan_edited','loans',id,null,{...upd,reason,penalties_waived:waive});
+    toast('Loan updated successfully','success');
+    closeModal();
+    // Refresh all sections that depend on loan data
+    cachedData.loans=null;
+    await renderDashboard();
+    renderLoans();
+  }catch(e){ toast(e.message,'error'); }
+}
+
+async function deleteLoanConfirm(id,loanNo){
+  if(!hasRole('admin'))return toast('Only admins can delete loans','warning');
+  if(!await confirm_(`⚠️ Permanently delete loan ${loanNo}? This will also delete all its schedules, repayments and penalties. This cannot be undone.`))return;
+  try{
+    await sb('loan_penalties').delete().eq('loan_id',id);
+    await sb('loan_schedules').delete().eq('loan_id',id);
+    await sb('loan_repayments').delete().eq('loan_id',id);
+    await sb('loans').delete().eq('id',id);
+    await audit('loan_deleted','loans',id,null,{loan_no:loanNo});
+    toast(`Loan ${loanNo} deleted`,'success');
+    closeModal();
+    // Refresh all sections that depend on loan data
+    cachedData.loans=null;
+    await renderDashboard();
+    renderLoans();
+  }catch(e){ toast(e.message,'error'); }
 }
 
 async function exportLoanPDF(id){
