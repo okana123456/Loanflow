@@ -2730,9 +2730,9 @@ function exportRepaymentsExcel(){
 // ═══ ARREARS REPORT (formerly Overdue) ═══
 async function renderOverdue(opts){
   // opts can be: undefined, a minDays number (legacy), or {asOfDate, minDays}
-  let asOfDate, minDays=0;
-  if(opts && typeof opts==='object'){ asOfDate=opts.asOfDate; minDays=parseInt(opts.minDays||0)||0; }
-  else if(opts!==undefined){ minDays=parseInt(opts)||0; }
+  let asOfDate, minDays=1;
+  if(opts && typeof opts==='object'){ asOfDate=opts.asOfDate; minDays=parseInt(opts.minDays??1)||1; }
+  else if(opts!==undefined){ minDays=parseInt(opts)||1; }
   const todayStr=new Date().toISOString().slice(0,10);
   asOfDate=asOfDate||todayStr;
 
@@ -2923,8 +2923,8 @@ async function renderOverdue(opts){
           '<div style="display:flex;align-items:center;gap:6px">' +
             '<span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">Min days:</span>' +
             '<select id="arrearsMinDays" class="select" style="width:auto;padding:4px 8px;font-size:12px" onchange="renderOverdue({asOfDate:document.querySelector(\'input[type=date]\')?.value||\''+asOfDate+'\',minDays:this.value})">' +
-              '<option value="0" '+(minDays===0?'selected':'')+'>All overdue</option>' +
-              '<option value="1" '+(minDays===1?'selected':'')+'>1+ days</option>' +
+              '<option value="0" '+(minDays===0?'selected':'')+'>All (0+ days)</option>' +
+              '<option value="1" '+(minDays===1?'selected':'')+'>1+ days (default)</option>' +
               '<option value="7" '+(minDays===7?'selected':'')+'>7+ days</option>' +
               '<option value="14" '+(minDays===14?'selected':'')+'>14+ days</option>' +
               '<option value="30" '+(minDays===30?'selected':'')+'>30+ days (PAR 30)</option>' +
@@ -3351,16 +3351,33 @@ async function loadReportData(id){
     })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal','Interest','Total (P+I)','Outstanding','Arrears','Overdue Days','Bucket','Disburse Date','Maturity Date']};
   }
   if(id==='income'){
-    const[{data:reps},{data:clients}]=await Promise.all([
-      sb('loan_repayments').select('*').eq('business_id',biz),
-      sb('loan_clients').select('id,full_name,created_at,notes').eq('business_id',biz)
+    const[{data:reps},{data:clients},{data:activeLoans}]=await Promise.all([
+      sb('loan_repayments').select('*,loans(principal_amount,total_interest,total_payable,loan_no)').eq('business_id',biz),
+      sb('loan_clients').select('id,full_name,created_at,notes').eq('business_id',biz),
+      sb('loans').select('id,principal_amount,total_interest,total_payable,loan_no').eq('business_id',biz).eq('status','active')
     ]);
-    const totalInterest=(reps||[]).reduce((s,r)=>s+Number(r.interest_portion||0),0);
+    // For repayments missing interest_portion, derive it from the loan's interest ratio
+    const calcInterestPortion=(r)=>{
+      if(r.interest_portion && Number(r.interest_portion)>0) return Number(r.interest_portion);
+      const loan=r.loans;
+      if(!loan) return 0;
+      const tp=Number(loan.total_payable||0);
+      const ti=Number(loan.total_interest||0);
+      if(tp<=0) return 0;
+      const ratio=ti/tp;
+      return Number((Number(r.amount||0)*ratio).toFixed(2));
+    };
+    const totalInterest=(reps||[]).reduce((s,r)=>s+calcInterestPortion(r),0);
     const totalPenalties=(reps||[]).reduce((s,r)=>s+Number(r.penalty_portion||0),0);
-    const totalReg=(clients||[]).length*REGISTRATION_FEE;
+    // Registration fees — only count clients who actually paid (have notes tag or created before import)
+    const regClients=(clients||[]).filter(c=>!(c.notes||'').includes('Imported')||(c.notes||'').includes('reg_fee_paid'));
+    const totalReg=regClients.length*REGISTRATION_FEE;
     const totalProc=(cachedData.loans||[]).reduce((s,l)=>s+Number(l.processing_fee||0),0);
     const rows=[];
-    (reps||[]).forEach(r=>rows.push({'Source':'Repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest':fmtMoney(r.interest_portion),'Penalty':fmtMoney(r.penalty_portion),'Total':fmtMoney(r.amount),'Client':'-'}));
+    (reps||[]).forEach(r=>{
+      const iPortion=calcInterestPortion(r);
+      rows.push({'Source':'Repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest':fmtMoney(iPortion),'Penalty':fmtMoney(r.penalty_portion||0),'Total':fmtMoney(r.amount),'Client':r.loans?.loan_no||'-'});
+    });
     (clients||[]).forEach(c=>{const tag=parseRegFeeFromNotes(c.notes);const amt=tag?.amount??REGISTRATION_FEE;const date=tag?.date||(c.created_at?String(c.created_at).slice(0,10):'');rows.push({'Source':'Registration Fee','Receipt':'REG-'+String(c.id).slice(0,8),'Date':date,'Interest':fmtMoney(0),'Penalty':fmtMoney(0),'Total':fmtMoney(amt),'Client':c.full_name});});
     return{title:'Income Report',summary:[
       {label:'Interest Collected',value:fmtMoney(totalInterest)},{label:'Penalties Collected',value:fmtMoney(totalPenalties)},
@@ -4380,7 +4397,15 @@ async function handleExcelImport(ev){
       const sortedPays=ln.payments.slice().sort((a,b)=>(a.payment_date||'').localeCompare(b.payment_date||''));
       const totalPaid=sortedPays.reduce((s,p)=>s+(p.payment_amount_kes||0),0);
       const lastPay=sortedPays[sortedPays.length-1];
-      const firstPayDate=sortedPays.length>0 ? sortedPays[0].payment_date : ln.disbursement_date;
+      // firstPayDate: for schedule generation use disbursement_date + 7 days (first due date).
+      // Using the first payment date causes schedules to start on payment days, not due dates,
+      // making active loans appear overdue incorrectly.
+      const firstPayDate=(()=>{
+        if(ln.disbursement_date){
+          const d=new Date(ln.disbursement_date);d.setDate(d.getDate()+7);return d.toISOString().slice(0,10);
+        }
+        return sortedPays.length>0 ? sortedPays[0].payment_date : null;
+      })();
 
       // Derive term in weeks from disbursement→maturity dates
       let termWeeksCalc=0;
