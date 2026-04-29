@@ -1101,6 +1101,8 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
     if(loan.status !== 'active') return null;
     const paid = Number(s.total_paid || 0);
     const remaining = Math.max(0, Number(s.total_due||0) - paid);
+    // Exclude fully paid installments — no point showing them
+    if(remaining === 0) return null;
     return {
       name: loan.loan_clients?.full_name || '-',
       phone: loan.loan_clients?.phone || '-',
@@ -1243,21 +1245,21 @@ async function renderDashboard(){
     const activeClients = activeClientIds.size;
     const newClientsPeriod = filteredClients.length;
 
+    // Active loan IDs only — used to filter schedules throughout
+    const activeLoanIdSet = new Set(allLoans.filter(l=>l.status==='active').map(l=>l.id));
+
     // ── DAILY COLLECTION (schedules due TODAY vs payments received TODAY) ──
-    // Total Due Today: sum of total_due where due_date is exactly today
-    const dailyDueScheds = todayScheds.length ? todayScheds : allScheds.filter(s=>s.due_date===todayStr);
+    // Filter to active loans only before any KPI calculation
+    const dailyDueScheds = (todayScheds.length ? todayScheds : allScheds.filter(s=>s.due_date===todayStr))
+      .filter(s=>activeLoanIdSet.has(s.loan_id));
     const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    // Collected Today: payments dated today on loans with a schedule due today
     const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
-    // Use schedule total_paid — the true running total paid per installment regardless of payment date
     const dailyPaidAmt   = Math.min(dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_paid||0),0), dailyDueAmt);
     const dailyRate      = dailyDueAmt>0 ? (dailyPaidAmt/dailyDueAmt)*100 : 0;
     const dailyUnpaid    = Math.max(0, dailyDueAmt - dailyPaidAmt);
 
-    // ── PERIOD COLLECTION (cumulative — only schedules whose due_date has ARRIVED) ──
-    // Period Due: only schedules within the filter window AND whose due_date <= today.
-    // This is what makes the rate "react" each day as new dues arrive.
-    const filteredScheds_arrived = filteredScheds.filter(s=>s.due_date<=todayStr);
+    // ── PERIOD COLLECTION — filter to active loans only ──
+    const filteredScheds_arrived = filteredScheds.filter(s=>s.due_date<=todayStr&&activeLoanIdSet.has(s.loan_id));
     const periodDue        = filteredScheds_arrived.reduce((s,sc)=>s+Number(sc.total_due||0),0);
     // Period Collected: payments inside the filter window that belong to those arrived-due schedules' loans
     const periodArrivedLoanIds = new Set(filteredScheds_arrived.map(s=>s.loan_id));
@@ -3108,32 +3110,28 @@ function toggleSection(id){
 }
 
 function buildDuesTable(dueRows){
-  if(!dueRows||!dueRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">No installments scheduled for this date</div>';
-  var unpaidCount = dueRows.filter(function(r){return r.remaining>0;}).length;
-  var paidCount   = dueRows.filter(function(r){return r.remaining===0;}).length;
-  var html = '<div style="font-size:11px;color:var(--text-secondary);padding:6px 14px">'+unpaidCount+' unpaid &nbsp;·&nbsp; '+paidCount+' paid</div>';
-  html += '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
+  // Only show unpaid/partial rows — exclude fully paid installments
+  const filteredRows = (dueRows||[]).filter(function(r){return r.remaining>0;});
+  if(!filteredRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">✅ All installments for this date are paid</div>';
+  var html = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
   html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
-  dueRows.forEach(function(item){
+  filteredRows.forEach(function(item){
     var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
-    var isPaid    = remaining===0;
     var isPartial = paid>0 && remaining>0;
-    var badge = isPaid
-      ? '<span class="badge badge-green">Paid</span>'
-      : isPartial
-        ? '<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
-        : '<span class="badge badge-red">Unpaid</span>';
-    var payBtn = (!isPaid && hasRole('admin','branch_manager','cashier'))
+    var badge = isPartial
+      ? '<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
+      : '<span class="badge badge-red">Unpaid</span>';
+    var payBtn = hasRole('admin','branch_manager','cashier')
       ? '<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button>' : '';
-    html += '<tr style="'+(isPaid?'opacity:0.55':'')+'">' +
+    html += '<tr>' +
       '<td><strong>'+(loan.loan_clients?.full_name||'-')+'</strong></td>' +
       '<td><a href="tel:'+(loan.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(loan.loan_clients?.phone||'-')+'</a></td>' +
       '<td>'+loan.loan_no+'</td>' +
       '<td style="text-align:center">#'+s.installment_no+'</td>' +
       '<td>'+fmtMoney(s.total_due)+'</td>' +
       '<td style="color:var(--accent-green)">'+(paid>0?fmtMoney(paid):'-')+'</td>' +
-      '<td style="color:'+(isPaid?'var(--accent-green)':'var(--accent-red)')+';font-weight:700">'+fmtMoney(remaining)+'</td>' +
+      '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
       '<td>'+badge+'</td>' +
       '<td>'+payBtn+'</td>' +
     '</tr>';
@@ -3145,16 +3143,18 @@ function buildDuesTable(dueRows){
 async function loadArrearsDues(dateStr){
   const snap=window._overdueSnapshot;
   if(!snap)return;
-  const loanMap={};
-  (cachedData.loans||[]).forEach(l=>{loanMap[l.id]=l;});
+  // Only active loans — completed loans must never appear in arrears dues
+  const activeLoanMap={};
+  (cachedData.loans||[]).filter(l=>l.status==='active').forEach(l=>{activeLoanMap[l.id]=l;});
 
   const{data:scheds}=await sb('loan_schedules')
     .select('*').eq('business_id',currentUser.business_id).eq('due_date',dateStr);
 
   const dueRows=((scheds||[]).map(s=>{
-    const loan=loanMap[s.loan_id];
-    if(!loan)return null;
+    const loan=activeLoanMap[s.loan_id];
+    if(!loan)return null; // skip completed/non-active loans
     const remaining=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+    if(remaining===0)return null; // skip fully paid installments
     return{loan,s,remaining,paid:Number(s.total_paid||0)};
   })).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
 
