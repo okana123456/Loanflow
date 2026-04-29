@@ -1156,7 +1156,9 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
 }
 
 async function loadDueByDate(dateStr){
-  const allLoans = cachedData.loans || [];
+  // Only use active loans so completed/paid loans never appear in due list
+  const allLoans = (cachedData.loans || []).filter(l=>l.status==='active');
+  const activeLoanIds = new Set(allLoans.map(l=>l.id));
   const allReps  = cachedData.repayments || [];
 
   // Fetch schedules for the selected date directly from Supabase
@@ -1165,7 +1167,8 @@ async function loadDueByDate(dateStr){
     .eq('business_id', currentUser.business_id)
     .eq('due_date', dateStr);
 
-  const scheds2 = scheds || [];
+  // Filter to active loans only — completed loans must never appear in due list
+  const scheds2 = (scheds||[]).filter(s=>activeLoanIds.has(s.loan_id));
   const dueAmt  = scheds2.reduce((s,sc)=>s+Number(sc.total_due||0),0);
   const dueLoanIds = new Set(scheds2.map(s=>s.loan_id));
 
