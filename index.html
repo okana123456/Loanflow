@@ -1263,9 +1263,8 @@ async function renderDashboard(){
     const periodDue        = filteredScheds_arrived.reduce((s,sc)=>s+Number(sc.total_due||0),0);
     // Period Collected: payments inside the filter window that belong to those arrived-due schedules' loans
     const periodArrivedLoanIds = new Set(filteredScheds_arrived.map(s=>s.loan_id));
-    const periodCollectionRaw = filteredReps
-      .filter(r=>periodArrivedLoanIds.has(r.loan_id))
-      .reduce((s,r)=>s+Number(r.amount||0),0);
+    // Use schedule total_paid capped at total_due — prevents overpayments inflating the rate
+    const periodCollectionRaw = filteredScheds_arrived.reduce((s,sc)=>s+Math.min(Number(sc.total_due||0),Number(sc.total_paid||0)),0);
     // Cap so collections cannot exceed cumulative due (rate stays <= 100%)
     const periodCollection = Math.min(periodCollectionRaw, periodDue);
     const periodCollectionRate = periodDue>0 ? (periodCollection/periodDue)*100 : 0;
@@ -1274,7 +1273,7 @@ async function renderDashboard(){
 
     // Global Snapshots
     const active=allLoans.filter(l=>l.status==='active');
-    const portfolio=active.reduce((s,l)=>s+Number(l.principal_amount||0),0);
+    const portfolio=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const outstanding=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const overdue=active.filter(l=>l.overdue_days>0);
     const par30=active.filter(l=>l.overdue_days>30);
@@ -1343,24 +1342,24 @@ async function renderDashboard(){
       </div>
 
       <!-- ── PERIOD COLLECTION (cumulative) ── -->
-      <div class="dash-section-label">📆 Period Collection — Cumulative (Selected Filter)</div>
+      <div class="dash-section-label">📆 Cumulative Dues to Date — Running Total (Selected Filter)</div>
       <div class="dash-grid-2">
         <div class="kpi-card" style="border-top:2px solid var(--accent-purple)">
-          <div class="kpi-label">Total Due (To Date)</div>
+          <div class="kpi-label">Total Due to Date (Cumulative)</div>
           <div class="kpi-value" style="color:var(--accent-purple)">${fmtMoney(periodDue)}</div>
-          <div class="kpi-sub">${totalDueCount} installment${totalDueCount!==1?'s':''} arrived</div>
+          <div class="kpi-sub">${totalDueCount} installment${totalDueCount!==1?'s':''} arrived — running sum of every daily due</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
-          <div class="kpi-label">Period Collected</div>
+          <div class="kpi-label">Collected from Due (Cumulative)</div>
           <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(periodCollection)}</div>
-          <div class="kpi-sub">${paidPeriodCount} payment${paidPeriodCount!==1?'s':''}</div>
+          <div class="kpi-sub">${paidPeriodCount} payment${paidPeriodCount!==1?'s':''} — from arrived installments only</div>
         </div>
       </div>
       <div class="dash-grid-2">
         <div class="kpi-card" style="border-top:2px solid var(--accent-red)">
           <div class="kpi-label">Unpaid in Period</div>
           <div class="kpi-value" style="color:var(--accent-red)">${fmtMoney(unpaidDueAmt)}</div>
-          <div class="kpi-sub">outstanding target</div>
+          <div class="kpi-sub">From cumulative due — not yet collected</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-yellow)">
           <div class="kpi-label">Arrears Collected</div>
@@ -3771,9 +3770,15 @@ async function renderAccounting() {
     // Registration fees — one per client, dated by client created_at (import sets this correctly)
     const registrationFees = filteredClients.reduce((s,c)=>s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE),0);
 
-    // Interest and penalties — from actual repayment records, filtered by payment_date
-    const principalRecovered = filteredReps.reduce((s,r)=>s+Number(r.principal_portion||0),0);
-    const interestCollected  = filteredReps.reduce((s,r)=>s+Number(r.interest_portion||0),0);
+    // Interest and principal — use stored columns when available, fall back to loan ratio
+    const calcInterestPortionAcct = (r) => {
+      if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
+      const loan = allLoans.find(l => l.id === r.loan_id);
+      if(!loan || Number(loan.total_payable||0) <= 0) return 0;
+      return Number((Number(r.amount||0) * (Number(loan.total_interest||0) / Number(loan.total_payable))).toFixed(2));
+    };
+    const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
+    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
     const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
 
     // Net revenue = all income streams that are NOT principal return
