@@ -1097,8 +1097,8 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   const rows = dailyDueScheds.map(s => {
     const loan = allLoans.find(l => l.id === s.loan_id);
     if(!loan) return null;
-    // Use schedule's total_paid (source of truth, same as arrears page)
-    // This correctly reflects ALL payments ever made against this installment
+    // Only show active loans — exclude completed, defaulted, written_off
+    if(loan.status !== 'active') return null;
     const paid = Number(s.total_paid || 0);
     const remaining = Math.max(0, Number(s.total_due||0) - paid);
     return {
@@ -1280,11 +1280,14 @@ async function renderDashboard(){
     const disbPeriod = filteredDisbursed.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
     const loanCountPeriod = filteredDisbursed.length;
 
-    // Arrears
-    const overdueLoanIds = new Set(overdue.map(l=>l.id));
-    const arrearsReps = filteredReps.filter(r=>overdueLoanIds.has(r.loan_id));
+    // Arrears: loans currently in arrears OR that had arrears (arrears_amount > 0)
+    const arrearsLoanIds = new Set(allLoans.filter(l=>l.status==='active'&&(l.overdue_days>0||l.arrears_amount>0)).map(l=>l.id));
+    // Arrears collected = payments made in the filter period on any loan that has/had arrears
+    const arrearsReps = filteredReps.filter(r=>arrearsLoanIds.has(r.loan_id));
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
+    const arrearsCollectedCount = arrearsReps.length;
     const paidPeriodCount = filteredReps.length;
+    const paidPeriodAmt = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1357,9 +1360,20 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:2px solid var(--accent-yellow)">
           <div class="kpi-label">Arrears Collected</div>
           <div class="kpi-value" style="color:var(--accent-yellow)">${fmtMoney(arrearsCollected)}</div>
-          <div class="kpi-sub">overdue loans in period</div>
+          <div class="kpi-sub">${arrearsCollectedCount} payment${arrearsCollectedCount!==1?'s':''} from ${arrearsLoanIds.size} arrears loan${arrearsLoanIds.size!==1?'s':''}</div>
         </div>
       </div>
+      <div class="dash-grid-2" style="margin-bottom:4px">
+        <div class="kpi-card" style="border-top:2px solid var(--accent-green)">
+          <div class="kpi-label">Total Collected (Period)</div>
+          <div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(paidPeriodAmt)}</div>
+          <div class="kpi-sub">${paidPeriodCount} payment${paidPeriodCount!==1?'s':''} received in period</div>
+        </div>
+        <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
+          <div class="kpi-label">Non-Arrears Collected</div>
+          <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(Math.max(0,paidPeriodAmt-arrearsCollected))}</div>
+          <div class="kpi-sub">from current loans</div>
+        </div>
       <!-- Period rate bar -->
       <div style="margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;flex-wrap:wrap;gap:4px">
