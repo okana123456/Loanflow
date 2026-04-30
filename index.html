@@ -3763,38 +3763,42 @@ async function renderAccounting() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   try{
+    const biz = currentUser.business_id;
     const[loansR,repR,cliR]=await Promise.all([
-      sb('loans').select('*').eq('business_id', currentUser.business_id).limit(10000),
-      // Join loan data directly so interest ratio works even if loan not in allLoans array
-      sb('loan_repayments').select('*,loans(principal_amount,total_interest,total_payable,loan_no)').eq('business_id', currentUser.business_id).limit(10000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id', currentUser.business_id).limit(10000)
+      sb('loans').select('id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status').eq('business_id',biz).limit(10000),
+      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).limit(10000),
+      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000)
     ]);
     const allLoans = loansR.data||[];
     const allReps = repR.data||[];
     const allClients = cliR.data||[];
-    
+
+    // Build loan lookup map for fast interest ratio calculation
+    const loanMap = {};
+    allLoans.forEach(l=>{ loanMap[l.id]=l; });
+
     const f = appFilters.accounting;
     const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
 
-    // Principal disbursed — filter by disbursement_date
+    // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
-    // Processing fees — each loan has PROCESSING_FEE_FLAT stored; use it directly
+    // Processing fees
     const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
-    // Registration fees — one per client, dated by client created_at
+    // Registration fees
     const registrationFees = filteredClients.reduce((s,c)=>s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE),0);
 
-    // Interest calculation — use stored value first, then joined loan data, then array fallback
+    // Interest calculation using loanMap — fast and reliable
     const calcInterestPortionAcct = (r) => {
-      // 1. Use stored interest_portion if already correctly set
+      // Use stored interest_portion if correctly set (non-zero)
       if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
-      // 2. Use joined loan data from Supabase query (avoids 1000-row limit problem)
-      const loan = r.loans || allLoans.find(l => l.id === r.loan_id);
-      if(!loan || Number(loan.total_payable||0) <= 0) return 0;
+      // Derive from loan ratio
+      const loan = loanMap[r.loan_id];
+      if(!loan) return 0;
       const ti = Number(loan.total_interest||0);
       const tp = Number(loan.total_payable||0);
-      if(ti <= 0) return 0;
+      if(ti <= 0 || tp <= 0) return 0;
       return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
