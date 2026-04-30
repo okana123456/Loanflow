@@ -3762,6 +3762,8 @@ async function viewUnmatchedPayments(){
 async function renderAccounting() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
+  // Ensure filter is initialized
+  if(!appFilters.accounting) appFilters.accounting = { type: 'this_month', start: '', end: '' };
   try{
     const biz = currentUser.business_id;
     const[loansR,repR,cliR]=await Promise.all([
@@ -3769,6 +3771,10 @@ async function renderAccounting() {
       sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).limit(10000),
       sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000)
     ]);
+    if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
+    if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
+    if(cliR.error) throw new Error('Clients fetch error: '+cliR.error.message);
+
     const allLoans = loansR.data||[];
     const allReps = repR.data||[];
     const allClients = cliR.data||[];
@@ -3786,20 +3792,23 @@ async function renderAccounting() {
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
     // Processing fees
     const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
-    // Registration fees
-    const registrationFees = filteredClients.reduce((s,c)=>s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE),0);
+    // Registration fees — safely handle null notes
+    const registrationFees = filteredClients.reduce((s,c)=>{
+      try{ return s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE); }
+      catch(e){ return s+REGISTRATION_FEE; }
+    },0);
 
-    // Interest calculation using loanMap — fast and reliable
+    // Interest calculation using loanMap
     const calcInterestPortionAcct = (r) => {
-      // Use stored interest_portion if correctly set (non-zero)
-      if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
-      // Derive from loan ratio
-      const loan = loanMap[r.loan_id];
-      if(!loan) return 0;
-      const ti = Number(loan.total_interest||0);
-      const tp = Number(loan.total_payable||0);
-      if(ti <= 0 || tp <= 0) return 0;
-      return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
+      try{
+        if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
+        const loan = loanMap[r.loan_id];
+        if(!loan) return 0;
+        const ti = Number(loan.total_interest||0);
+        const tp = Number(loan.total_payable||0);
+        if(ti <= 0 || tp <= 0) return 0;
+        return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
+      }catch(e){ return 0; }
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
     const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
@@ -3843,7 +3852,11 @@ async function renderAccounting() {
         </div>
       </div>
     `;
-  } catch(e) { toast(e.message,'error') }
+  } catch(e) { 
+    console.error('Accounting error:', e);
+    main.innerHTML=`<div class="card" style="border-color:var(--accent-red)"><h3 style="color:var(--accent-red)">Accounting Error</h3><p style="font-size:13px;color:var(--text-secondary)">${e.message}</p></div>`;
+    toast(e.message,'error'); 
+  }
 }
 
 // ═══ STAFF ═══
