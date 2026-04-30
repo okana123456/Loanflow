@@ -2606,7 +2606,13 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     if(!loan)return toast('No matching active loan found for: '+refRaw,'warning');
     
     const receiptNo = generateUniqueNo('RCP');
-    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:today(),principal_portion:amount*0.7,interest_portion:amount*0.3,penalty_portion:0,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
+    // Dynamic interest/principal split based on loan's actual ratio
+    const mpTp = Number(loan.total_payable||0);
+    const mpTi = Number(loan.total_interest||0);
+    const mpInterestRatio = (mpTp > 0 && mpTi > 0) ? (mpTi / mpTp) : 0;
+    const mpInterestPortion = Number((amount * mpInterestRatio).toFixed(2));
+    const mpPrincipalPortion = Number((amount - mpInterestPortion).toFixed(2));
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:today(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:0,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
     
@@ -2761,7 +2767,15 @@ async function savePayment(){
 
     const receiptNo = generateUniqueNo('RCP');
 
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:$('#payDate').value,principal_portion:amount*0.7,interest_portion:amount*0.3,penalty_portion:0,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
+    // Calculate interest/principal split dynamically from loan's actual ratio
+    // instead of hardcoded 70/30 which is wrong for varying interest rates
+    const tp = Number(loan.total_payable||0);
+    const ti = Number(loan.total_interest||0);
+    const interestRatio = (tp > 0 && ti > 0) ? (ti / tp) : 0;
+    const interestPortion = Number((amount * interestRatio).toFixed(2));
+    const principalPortion = Number((amount - interestPortion).toFixed(2));
+
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:$('#payDate').value,principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:0,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
 
@@ -3750,9 +3764,10 @@ async function renderAccounting() {
   if(!currentUser?.business_id) return;
   try{
     const[loansR,repR,cliR]=await Promise.all([
-      sb('loans').select('*').eq('business_id', currentUser.business_id),
-      sb('loan_repayments').select('*').eq('business_id', currentUser.business_id),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id', currentUser.business_id)
+      sb('loans').select('*').eq('business_id', currentUser.business_id).limit(10000),
+      // Join loan data directly so interest ratio works even if loan not in allLoans array
+      sb('loan_repayments').select('*,loans(principal_amount,total_interest,total_payable,loan_no)').eq('business_id', currentUser.business_id).limit(10000),
+      sb('loan_clients').select('id,created_at,notes').eq('business_id', currentUser.business_id).limit(10000)
     ]);
     const allLoans = loansR.data||[];
     const allReps = repR.data||[];
@@ -3767,15 +3782,20 @@ async function renderAccounting() {
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
     // Processing fees — each loan has PROCESSING_FEE_FLAT stored; use it directly
     const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
-    // Registration fees — one per client, dated by client created_at (import sets this correctly)
+    // Registration fees — one per client, dated by client created_at
     const registrationFees = filteredClients.reduce((s,c)=>s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE),0);
 
-    // Interest and principal — use stored columns when available, fall back to loan ratio
+    // Interest calculation — use stored value first, then joined loan data, then array fallback
     const calcInterestPortionAcct = (r) => {
+      // 1. Use stored interest_portion if already correctly set
       if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
-      const loan = allLoans.find(l => l.id === r.loan_id);
+      // 2. Use joined loan data from Supabase query (avoids 1000-row limit problem)
+      const loan = r.loans || allLoans.find(l => l.id === r.loan_id);
       if(!loan || Number(loan.total_payable||0) <= 0) return 0;
-      return Number((Number(r.amount||0) * (Number(loan.total_interest||0) / Number(loan.total_payable))).toFixed(2));
+      const ti = Number(loan.total_interest||0);
+      const tp = Number(loan.total_payable||0);
+      if(ti <= 0) return 0;
+      return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
     const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
@@ -4528,10 +4548,21 @@ async function handleExcelImport(ev){
       let appId=null;
 
       // === REVENUE / INTEREST MATH ===
-      // Declared outside try so accessible in the payments loop below.
       const disbursed   = Number(ln.amount_disbursed_kes||0);
-      const totalPayable= Number(ln.loan_amount_kes||0) || disbursed;
-      const principal   = disbursed || totalPayable;
+      const principal   = disbursed || Number(ln.loan_amount_kes||0);
+      // If loan_amount_kes (total payable) is blank or equals disbursed, derive it from
+      // principal + (principal * rate * term) to avoid totalInterest becoming 0
+      let totalPayable  = Number(ln.loan_amount_kes||0);
+      if(!totalPayable || totalPayable <= principal){
+        // Try to derive from weekly installment * term if available
+        const weeklyFromExcel = Number(ln.weekly_repayment_kes||0);
+        const termFromExcel   = Number(ln.loan_term_weeks||0);
+        if(weeklyFromExcel > 0 && termFromExcel > 0){
+          totalPayable = weeklyFromExcel * termFromExcel;
+        } else {
+          totalPayable = principal; // genuine zero-interest loan
+        }
+      }
       const totalInterest = Math.max(0, totalPayable - principal);
       const interestRatio = totalPayable>0 ? (totalInterest/totalPayable) : 0;
       const principalRatio= totalPayable>0 ? (principal   /totalPayable) : 1;
