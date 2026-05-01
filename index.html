@@ -1284,9 +1284,25 @@ async function renderDashboard(){
     const disbPeriod = filteredDisbursed.reduce((s,l)=>s+Number(l.disbursed_amount||0),0);
     const loanCountPeriod = filteredDisbursed.length;
 
-    // Arrears: loans currently in arrears OR that had arrears (arrears_amount > 0)
-    const arrearsLoanIds = new Set(allLoans.filter(l=>l.status==='active'&&(l.overdue_days>0||l.arrears_amount>0)).map(l=>l.id));
-    // Arrears collected = payments made in the filter period on any loan that has/had arrears
+    // Arrears collected — include ANY active loan that:
+    // 1. Currently has overdue_days > 0 or arrears_amount > 0, OR
+    // 2. Has any past-due schedule that is partial/overdue/pending with unpaid balance
+    // This ensures payments on arrears loans count even after partial payment reduces overdue_days
+    const arrearsActiveLoanIdSet = new Set(allLoans.filter(l=>l.status==='active').map(l=>l.id));
+    const currentlyOverdueIds = new Set(
+      allLoans.filter(l=>l.status==='active'&&(l.overdue_days>0||l.arrears_amount>0)).map(l=>l.id)
+    );
+    const hasOverdueSchedule = new Set(
+      (allScheds||[])
+        .filter(s=>
+          arrearsActiveLoanIdSet.has(s.loan_id) &&
+          s.due_date < todayStr &&
+          Number(s.total_due||0) > Number(s.total_paid||0) &&
+          s.status !== 'paid'
+        )
+        .map(s=>s.loan_id)
+    );
+    const arrearsLoanIds = new Set([...currentlyOverdueIds, ...hasOverdueSchedule]);
     const arrearsReps = filteredReps.filter(r=>arrearsLoanIds.has(r.loan_id));
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const arrearsCollectedCount = arrearsReps.length;
