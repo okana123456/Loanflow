@@ -1306,7 +1306,11 @@ async function renderDashboard(){
         .map(s=>s.loan_id)
     );
     const arrearsLoanIds = new Set([...currentlyOverdueIds, ...hasOverdueSchedule]);
-    const arrearsReps = filteredReps.filter(r=>arrearsLoanIds.has(r.loan_id));
+    // Arrears collected — any payment made strictly AFTER a schedule's due date for that loan
+    const arrearsReps = filteredReps.filter(r => {
+      const payDate = r.payment_date || (r.created_at ? r.created_at.slice(0,10) : todayStr);
+      return allScheds.some(s => s.loan_id === r.loan_id && s.due_date < payDate);
+    });
     const arrearsCollected = arrearsReps.reduce((s,r)=>s+Number(r.amount||0),0);
     const arrearsCollectedCount = arrearsReps.length;
     const paidPeriodCount = filteredReps.length;
@@ -3380,10 +3384,12 @@ async function loadReportData(id){
   }
   if(id==='collection_daily'){
     const today=new Date().toISOString().slice(0,10);
-    const[{data:reps},{data:scheds}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_clients(full_name))').eq('business_id',biz).eq('payment_date',today),
-      sb('loan_schedules').select('*').eq('business_id',biz).eq('due_date',today)
+    const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
+      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_date',today),
+      sb('loan_schedules').select('*').eq('business_id',biz).eq('due_date',today),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
+    const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const collected=(reps||[]).reduce((s,r)=>s+Number(r.amount||0),0);
     const due=(scheds||[]).reduce((s,s2)=>s+Number(s2.total_due||0),0);
     const rate=due>0?(collected/due*100):0;
@@ -3391,14 +3397,16 @@ async function loadReportData(id){
       {label:'Date',value:today},{label:'Total Due Today',value:fmtMoney(due)},
       {label:'Total Collected',value:fmtMoney(collected)},{label:'Collection Rate',value:rate.toFixed(1)+'%'},
       {label:'Payments Count',value:(reps||[]).length}
-    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date']};
+    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
   }
   if(id==='collection_monthly'){
     const nowM=new Date().toISOString().slice(0,7);
-    const[{data:reps},{data:scheds}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_clients(full_name))').eq('business_id',biz).gte('payment_date',nowM+'-01'),
-      sb('loan_schedules').select('*').eq('business_id',biz).gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=new Date(nowM+'-01');d.setMonth(d.getMonth()+1);return d.toISOString().slice(0,10)})())
+    const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
+      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).gte('payment_date',nowM+'-01'),
+      sb('loan_schedules').select('*').eq('business_id',biz).gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=new Date(nowM+'-01');d.setMonth(d.getMonth()+1);return d.toISOString().slice(0,10)})()),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
+    const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const collected=(reps||[]).reduce((s,r)=>s+Number(r.amount||0),0);
     const due=(scheds||[]).reduce((s,s2)=>s+Number(s2.total_due||0),0);
     const rate=due>0?(collected/due*100):0;
@@ -3406,23 +3414,31 @@ async function loadReportData(id){
       {label:'Month',value:nowM},{label:'Total Due',value:fmtMoney(due)},
       {label:'Total Collected',value:fmtMoney(collected)},{label:'Collection Rate',value:rate.toFixed(1)+'%'},
       {label:'Payments Count',value:(reps||[]).length}
-    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date']};
+    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
   }
   if(id==='mpesa_payments'){
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_clients(full_name))').eq('business_id',biz).eq('payment_method','mpesa').order('payment_date',{ascending:false});
+    const[{data:reps},{data:staffList}]=await Promise.all([
+      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_method','mpesa').order('payment_date',{ascending:false}),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const total=(reps||[]).reduce((s,r)=>s+Number(r.amount||0),0);
     return{title:'M-Pesa Payments Report',summary:[
       {label:'Total M-Pesa Transactions',value:(reps||[]).length},{label:'Total Amount',value:fmtMoney(total)}
-    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'M-Pesa Ref':r.payment_reference||'-','Date':r.payment_date})),cols:['Receipt','Client','Loan #','Amount','M-Pesa Ref','Date']};
+    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'M-Pesa Ref':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','M-Pesa Ref','Date','Loan Officer']};
   }
   if(id==='repayment_perf'){
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_clients(full_name))').eq('business_id',biz).order('payment_date',{ascending:false});
+    const[{data:reps},{data:staffList}]=await Promise.all([
+      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).order('payment_date',{ascending:false}),
+      sb('loan_staff').select('id,name').eq('business_id',biz)
+    ]);
+    const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const total=(reps||[]).reduce((s,r)=>s+Number(r.amount||0),0);
     const byMethod={};(reps||[]).forEach(r=>{const m=r.payment_method||'unknown';byMethod[m]=(byMethod[m]||0)+Number(r.amount||0);});
     return{title:'Repayment Performance Report',summary:[
       {label:'Total Payments',value:(reps||[]).length},{label:'Total Collected',value:fmtMoney(total)},
       ...Object.entries(byMethod).map(([m,v])=>({label:`Via ${m}`,value:fmtMoney(v)}))
-    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date']};
+    ],rows:(reps||[]).map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
   }
   if(id==='portfolio'){
     const[{data:loans},{data:staff}]=await Promise.all([
@@ -3789,7 +3805,7 @@ async function renderAccounting() {
   try{
     const biz = currentUser.business_id;
     const[loansR,repR,cliR]=await Promise.all([
-      sb('loans').select('id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status').eq('business_id',biz).limit(10000),
+      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).limit(10000),
       sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).limit(10000),
       sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000)
     ]);
@@ -3839,20 +3855,59 @@ async function renderAccounting() {
     // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
 
-    // Officer Revenue Breakdown
-    const officerRevenue = {};
+    // Officer Revenue Breakdown — detailed by reg, proc, interest per officer
+    const clientToOfficer = {};
+    allLoans.forEach(l => { if(l.loan_officer_id) clientToOfficer[l.client_id] = l.loan_officer_id; });
+
+    const officerStats = {};
+    const { data: staffData } = await sb('loan_staff').select('id, name').eq('business_id', biz);
+    (staffData || []).forEach(s => {
+      officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
+    });
+    officerStats['unassigned'] = { name: 'Unassigned', reg: 0, proc: 0, interest: 0, total: 0 };
+
+    filteredClients.forEach(c => {
+      const offId = clientToOfficer[c.id] || 'unassigned';
+      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      const regAmt = Number(parseRegFeeFromNotes(c.notes)?.amount || REGISTRATION_FEE);
+      officerStats[offId].reg += regAmt;
+      officerStats[offId].total += regAmt;
+    });
+
+    filteredLoans.forEach(l => {
+      const offId = l.loan_officer_id || 'unassigned';
+      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      const procAmt = Number(l.processing_fee||0);
+      officerStats[offId].proc += procAmt;
+      officerStats[offId].total += procAmt;
+    });
+
     filteredReps.forEach(r => {
       const loan = loanMap[r.loan_id];
-      if(!loan) return;
-      const officerId = loan.loan_officer_id || 'unassigned';
-      if(!officerRevenue[officerId]) officerRevenue[officerId] = { name: 'Unassigned', total: 0 };
-      const iPortion = calcInterestPortionAcct(r);
-      const pPortion = Number(r.penalty_portion||0);
-      officerRevenue[officerId].total += (iPortion + pPortion);
+      const offId = loan?.loan_officer_id || 'unassigned';
+      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      const intAmt = calcInterestPortionAcct(r) + Number(r.penalty_portion||0);
+      officerStats[offId].interest += intAmt;
+      officerStats[offId].total += intAmt;
     });
-    const {data: staffData} = await sb('loan_staff').select('id, name').eq('business_id', currentUser.business_id);
-    (staffData || []).forEach(s => {
-      if(officerRevenue[s.id]) officerRevenue[s.id].name = s.name;
+
+    let offHtml = '';
+    Object.values(officerStats).forEach(off => {
+      if(off.total > 0 || off.name !== 'Unassigned'){
+        offHtml += `
+          <div style="margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+            <div style="display:flex; justify-content:space-between; font-weight:700; margin-bottom:4px; font-size:14px;">
+              <span>${off.name}</span>
+              <span style="color:var(--accent-green)">${fmtMoney(off.total)}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-secondary);">
+              <span>Reg: ${fmtMoney(off.reg)}</span>
+              <span>Proc: ${fmtMoney(off.proc)}</span>
+              <span>Interest: ${fmtMoney(off.interest)}</span>
+            </div>
+          </div>
+        `;
+      }
     });
 
     main.innerHTML=`
@@ -3872,12 +3927,7 @@ async function renderAccounting() {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px">
         <div class="card">
             <h3 style="font-size:16px;margin-bottom:16px;color:var(--accent-purple)">Officer Performance (Revenue)</h3>
-            ${Object.values(officerRevenue).map(off => `
-              <div style="display:flex;justify-content:space-between;margin-bottom:12px;font-size:14px;border-bottom:1px solid var(--border);padding-bottom:8px">
-                  <span>${off.name}</span>
-                  <strong style="color:var(--accent-green)">${fmtMoney(off.total)}</strong>
-              </div>
-            `).join('')}
+            ${offHtml || '<div style="font-size:13px;color:var(--text-secondary)">No revenue data for this period</div>'}
         </div>
         
         <div class="card">
