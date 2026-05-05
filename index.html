@@ -1311,6 +1311,7 @@ async function renderDashboard(){
     const arrearsCollectedCount = arrearsReps.length;
     const paidPeriodCount = filteredReps.length;
     const paidPeriodAmt = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
+    const paidSchedCount = filteredScheds_arrived.filter(s => Number(s.total_paid) > 0).length;
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
@@ -1371,7 +1372,7 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:2px solid var(--accent-blue)">
           <div class="kpi-label">Collected from Due (Cumulative)</div>
           <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(periodCollection)}</div>
-          <div class="kpi-sub">${paidPeriodCount} payment${paidPeriodCount!==1?'s':''} — from arrived installments only</div>
+          <div class="kpi-sub">${paidSchedCount} installment${paidSchedCount!==1?'s':''} paid — from arrived dues</div>
         </div>
       </div>
       <div class="dash-grid-2">
