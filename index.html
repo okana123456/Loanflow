@@ -1397,6 +1397,8 @@ async function renderDashboard(){
           <div class="kpi-value" style="color:var(--accent-blue)">${fmtMoney(Math.max(0,paidPeriodAmt-arrearsCollected))}</div>
           <div class="kpi-sub">from current loans</div>
         </div>
+      </div> <!-- THIS IS THE MISSING DIV THAT BROKE THE LAYOUT -->
+
       <!-- Period rate bar -->
       <div style="margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;flex-wrap:wrap;gap:4px">
