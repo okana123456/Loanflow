@@ -1459,7 +1459,23 @@ async function renderClients(page=1){
   try{
     const{data:clients,error}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     if(error)throw error;
-    cachedData.clients=clients||[];
+
+    // Fetch staff and active loans to map clients to officers
+    const {data:staffData}=await sb('loan_staff').select('id,name').eq('business_id', currentUser.business_id);
+    const {data:loansData}=await sb('loans').select('client_id,loan_officer_id').eq('business_id', currentUser.business_id).eq('status','active');
+
+    window._staffMap = {};
+    (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
+    window._clientOffMap = {};
+    (loansData||[]).forEach(l=>{ if(l.loan_officer_id) window._clientOffMap[l.client_id] = l.loan_officer_id; });
+
+    let finalClients = clients || [];
+    const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+    if (isOnlyOfficer) {
+        finalClients = finalClients.filter(c => window._clientOffMap[c.id] === currentUser.id);
+    }
+    cachedData.clients = finalClients;
+
     main.innerHTML=`
       <div class="page-header"><h1>Clients</h1><div id="clientsHeaderBtns"><button class="btn btn-outline btn-sm" id="btnBulkTransfer" onclick="openBulkTransferModal()" style="display:none;background:rgba(124,58,237,0.1);border-color:var(--accent-purple);color:var(--accent-purple)">⇄ Transfer Selected (<span id="bulkCount">0</span>)</button> <button class="btn btn-outline btn-sm" onclick="exportClientsExcel()">Export Excel</button> <button class="btn btn-primary" onclick="openAddClientModal()">+ Add Client</button></div></div>
       <div class="search-bar" style="background:var(--card);padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;display:flex;gap:10px;align-items:center;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
@@ -1469,14 +1485,14 @@ async function renderClients(page=1){
         <button class="btn btn-primary btn-sm" id="btnViewAllClients" onclick="showAllClients(true)">View All Clients (${cachedData.clients.length})</button>
       </div>
       <div id="clientsTableWrap" style="display:none">
-        <div class="table-wrap"><table><thead><tr>${hasRole('admin','branch_manager')?'<th style="width:32px"><input type="checkbox" id="chkAllClients" title="Select all" onchange="toggleAllClientCheckboxes(this.checked)"></th>':''}<th>Name</th><th>ID No</th><th>Phone</th><th>Location</th><th>Occupation</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr>${hasRole('admin','branch_manager')?'<th style="width:32px"><input type="checkbox" id="chkAllClients" title="Select all" onchange="toggleAllClientCheckboxes(this.checked)"></th>':''}<th>Name</th><th>ID No</th><th>Phone</th><th>Officer</th><th>Location</th><th>Onboarded</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="clientsBody"></tbody></table></div>
         <div id="clientsPagination"></div>
       </div>
       <div id="clientsEmptyHint" style="text-align:center;padding:40px 20px;color:var(--text-secondary);background:var(--card);border:1px dashed var(--border);border-radius:10px">
         <div style="font-size:32px;margin-bottom:8px">👥</div>
         <div style="font-size:14px">Type in the search bar above or click <strong>"View All Clients"</strong> to load the list.</div>
-        <div style="font-size:12px;margin-top:4px">${cachedData.clients.length} client${cachedData.clients.length===1?'':'s'} registered.</div>
+        <div style="font-size:12px;margin-top:4px">${cachedData.clients.length} client${cachedData.clients.length===1?'':'s'} matching your account.</div>
       </div>
     `;
   }catch(e){toast(e.message,'error')}
@@ -1503,11 +1519,13 @@ function renderClientRows(clients){
   return clients.map(c=>{
     const transferBtn=isAdmin?`<button class="btn btn-outline btn-sm" onclick="openTransferClientModal('${c.id}','${(c.full_name||'').replace(/'/g,"\\'")}')">Transfer</button> `:'';
     const chkCell=isAdmin?`<td><input type="checkbox" class="client-chk" value="${c.id}" data-name="${(c.full_name||'').replace(/"/g,'&quot;')}" onchange="updateBulkTransferBtn()"></td>`:'';
+    const offId = window._clientOffMap?.[c.id];
+    const offName = offId ? (window._staffMap?.[offId] || 'Unassigned') : 'Unassigned';
     return`<tr>
       ${chkCell}
       <td><strong>${c.full_name}</strong></td><td>${c.id_number||'-'}</td><td>${c.phone||'-'}</td>
+      <td><span class="badge badge-gray" style="text-transform:capitalize">${offName}</span></td>
       <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.address||''}">${c.address||'-'}</td>
-      <td>${c.occupation||'-'}</td>
       <td style="white-space:nowrap">${c.created_at?c.created_at.slice(0,10):'-'}</td>
       <td><span class="badge badge-green">Active</span></td>
       <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> ${transferBtn}</td>
@@ -1963,7 +1981,9 @@ async function renderApplications(page=1){
   try{
     const{data:apps}=await sb('loan_applications').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     cachedData.applications=apps||[];
-    const p=paginate(apps||[],page);
+    const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+    if(isOnlyOfficer) cachedData.applications = cachedData.applications.filter(a => a.loan_officer_id === currentUser.id);
+    const p=paginate(cachedData.applications,page);
     main.innerHTML=`
       <div class="page-header"><h1>Loan Applications</h1><button class="btn btn-primary" onclick="openNewApplication()">+ New Application</button></div>
       <div class="search-bar"><input class="input" placeholder="Search application or client..." oninput="filterApps(this.value)"><select class="select" onchange="filterAppStatus(this.value)"><option value="">All Status</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="under_review">Under Review</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="disbursed">Disbursed</option></select></div>
@@ -2292,7 +2312,16 @@ async function renderLoans(page=1){
   loanPage=page;const main=$('#mainContent');
   try{
     const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
-    cachedData.loans=loans||[];
+
+    const {data:staffData}=await sb('loan_staff').select('id,name').eq('business_id', currentUser.business_id);
+    window._staffMap = {};
+    (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
+
+    let finalLoans = loans || [];
+    const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+    if (isOnlyOfficer) finalLoans = finalLoans.filter(l => l.loan_officer_id === currentUser.id);
+
+    cachedData.loans = finalLoans;
     main.innerHTML=`
       <div class="page-header"><h1>Active Loans</h1></div>
       <div class="search-bar">
@@ -2302,14 +2331,14 @@ async function renderLoans(page=1){
         <button class="btn btn-primary btn-sm" id="btnViewAllLoans" onclick="showAllLoans(true)">View All Loans (${cachedData.loans.length})</button>
       </div>
       <div id="loansTableWrap" style="display:none">
-        <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client Name</th><th>Phone</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Client Name</th><th>Phone</th><th>Officer</th><th>Principal</th><th>Balance</th><th>Weekly</th><th>Overdue</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="loansBody"></tbody></table></div>
         <div id="loansPagination"></div>
       </div>
       <div id="loansEmptyHint" style="text-align:center;padding:40px 20px;color:var(--text-secondary);background:var(--card);border:1px dashed var(--border);border-radius:10px">
         <div style="font-size:32px;margin-bottom:8px">💰</div>
         <div style="font-size:14px">Type in the search bar above or click <strong>"View All Loans"</strong> to load the list.</div>
-        <div style="font-size:12px;margin-top:4px">${cachedData.loans.length} loan${cachedData.loans.length===1?'':'s'} on file.</div>
+        <div style="font-size:12px;margin-top:4px">${cachedData.loans.length} loan${cachedData.loans.length===1?'':'s'} matching your account.</div>
       </div>
     `;
   }catch(e){toast(e.message,'error')}
@@ -2338,6 +2367,7 @@ function renderLoanRows(loans){
       <td><strong>${l.loan_no||'-'}</strong></td>
       <td><strong>${l.loan_clients?.full_name||'—'}</strong></td>
       <td>${l.loan_clients?.phone||'-'}</td>
+      <td><span class="badge badge-gray" style="text-transform:capitalize">${window._staffMap?.[l.loan_officer_id]||'Unassigned'}</span></td>
       <td>${fmtMoney(l.principal_amount)}</td><td>${fmtMoney(l.outstanding_balance)}</td>
       <td>${fmtMoney(l.weekly_installment)}</td><td>${l.overdue_days>0?`<span class="badge badge-red">${l.overdue_days}d</span>`:'-'}</td>
       <td>${statusBadge(l.status)}</td>
@@ -2574,11 +2604,13 @@ let repPage=1;
 async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
   try{
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
+    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
     cachedData.repayments=reps||[];
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
-    const filteredReps = filterByDate(cachedData.repayments, 'payment_date', f);
+    let filteredReps = filterByDate(cachedData.repayments, 'payment_date', f);
+    const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+    if (isOnlyOfficer) filteredReps = filteredReps.filter(r => r.loans?.loan_officer_id === currentUser.id);
     const p = paginate(filteredReps, page);
     
     const periodTotal = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
@@ -3860,9 +3892,12 @@ async function renderAccounting() {
     allLoans.forEach(l => { if(l.loan_officer_id) clientToOfficer[l.client_id] = l.loan_officer_id; });
 
     const officerStats = {};
-    const { data: staffData } = await sb('loan_staff').select('id, name').eq('business_id', biz);
+    const { data: staffData } = await sb('loan_staff').select('id, name, role').eq('business_id', biz);
     (staffData || []).forEach(s => {
-      officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
+      // Exclude Admin from Officer Performance
+      if (!(s.role || '').includes('admin')) {
+        officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
+      }
     });
     officerStats['unassigned'] = { name: 'Unassigned', reg: 0, proc: 0, interest: 0, total: 0 };
 
