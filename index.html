@@ -1110,7 +1110,8 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
       installment_no: s.installment_no,
       total_due: Number(s.total_due||0),
       paid, remaining,
-      loan_id: loan.id
+      loan_id: loan.id,
+      loan_officer_id: loan.loan_officer_id || null
     };
   }).filter(Boolean).sort((a,b) => b.remaining - a.remaining);
 
@@ -1126,7 +1127,7 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   html += '</div>';
   html += '<div class="table-wrap" style="max-height:340px;overflow-y:auto;margin-bottom:0">';
   html += '<table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Paid</th><th>Remaining</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
 
   rows.forEach(x => {
@@ -1148,6 +1149,7 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
     html += '<td>' + fmtMoney(x.total_due) + '</td>';
     html += '<td style="color:var(--accent-green)">' + (x.paid>0 ? fmtMoney(x.paid) : '-') + '</td>';
     html += '<td style="color:' + (isPaid?'var(--accent-green)':'var(--accent-red)') + ';font-weight:700">' + fmtMoney(x.remaining) + '</td>';
+    html += '<td><span class="badge badge-gray" style="text-transform:capitalize">' + ((window._staffMap && x.loan_officer_id && window._staffMap[x.loan_officer_id]) || 'Unassigned') + '</span></td>';
     html += '<td>' + badge + '</td>';
     html += '<td>' + payBtn + '</td>';
     html += '</tr>';
@@ -2249,7 +2251,7 @@ async function openDisburseModal(appId){
       <p style="font-size:15px;font-weight:700;margin-bottom:4px">👤 ${clientName}</p>
       <p style="color:var(--text-secondary)">${clientPhone} &nbsp;|&nbsp; <strong>Tier:</strong> ${getAutoTier(amt)} | <strong>Rate:</strong> ${rate}% / week | <strong>Term:</strong> ${app.applied_term_weeks} weeks</p>
     </div>
-    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Disbursement Method</label><select class="select" id="dMethod"><option value="cash" selected>Cash</option><option value="mpesa">M-Pesa</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
+    <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Disbursement Method</label><select class="select" id="dMethod"><option value="cash">Cash</option><option value="mpesa" selected>M-Pesa</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="dRef"></div><div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="dDate" value="${today()}"></div></div>
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${firstRep.toISOString().slice(0,10)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
@@ -2943,7 +2945,7 @@ async function printReceipt(id){
 }
 
 function exportRepaymentsExcel(){
-  const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Client:r.loans?.loan_clients?.full_name||'-',Phone:r.loans?.loan_clients?.phone||'-','Loan #':r.loans?.loan_no||'-',Reference:r.payment_reference||'-',Amount:r.amount,Method:r.payment_method,'Date & Time':fmtDateTime(r.payment_date||r.created_at)}));
+  const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Client:r.loans?.loan_clients?.full_name||'-',Phone:r.loans?.loan_clients?.phone||'-','Loan #':r.loans?.loan_no||'-',Reference:r.payment_reference||'-','Amount (KES)':Number(r.amount||0),Method:r.payment_method,'Date & Time':fmtDateTime(r.payment_date||r.created_at)}));
   const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
   toast('Exported','success');
 }
@@ -2959,9 +2961,16 @@ async function renderOverdue(opts){
 
   const main=$('#mainContent');
   try{
-    // Fetch ALL active loans with client info
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone)')
-      .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false});
+    // Fetch ALL active loans with client info, and staff for officer name mapping
+    const [{data:loans},{data:staffList}]=await Promise.all([
+      sb('loans').select('*,loan_clients(full_name,phone)')
+        .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false}),
+      sb('loan_staff').select('id,name').eq('business_id',currentUser.business_id)
+    ]);
+
+    // Populate global staff map so buildDueTodayTable / buildDuesTable can also use it
+    window._staffMap = {};
+    (staffList||[]).forEach(s=>{ window._staffMap[s.id]=s.name; });
 
     const loanIds=(loans||[]).map(l=>l.id);
     let allScheds=[];
@@ -3009,8 +3018,8 @@ async function renderOverdue(opts){
     const allActive=(loans||[]).filter(l=>l.status==='active');
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
-    overdueLoans.forEach(l=>{const d=l._asof_days;if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
-    const totalArrears=overdueLoans.reduce((s,l)=>s+l._asof_arrears,0);
+    overdueLoans.forEach(l=>{const d=Number(l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
+    const totalArrears=overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
 
     // Build missed installment rows (flat)
     const missedRows=[];
@@ -3070,7 +3079,7 @@ async function renderOverdue(opts){
 
     // ── 2. Missed Installments table ──
     let missedHtml = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>' +
-      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Days Overdue</th><th>Actions</th>' +
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Days Overdue</th><th>Actions</th>' +
       '</tr></thead><tbody>';
     if(missedRows.length){
       missedRows.forEach(function(item){
@@ -3085,44 +3094,48 @@ async function renderOverdue(opts){
           '<td>'+fmtMoney(s.total_due)+'</td>' +
           '<td style="color:var(--accent-green)">'+fmtMoney(s.total_paid)+'</td>' +
           '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
+          '<td><span class="badge badge-gray" style="text-transform:capitalize">'+((window._staffMap && loan.loan_officer_id && window._staffMap[loan.loan_officer_id])||'Unassigned')+'</span></td>' +
           '<td><span class="badge" style="background:'+color+';color:#fff">'+daysOld+'d</span></td>' +
           '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+loan.id+'\',\''+loan.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
       });
     } else {
-      missedHtml += '<tr><td colspan="10" style="text-align:center;color:var(--text-secondary);padding:12px">No missed installments</td></tr>';
+      missedHtml += '<tr><td colspan="11" style="text-align:center;color:var(--text-secondary);padding:12px">No missed installments</td></tr>';
     }
     missedHtml += '</tbody></table></div>';
     const missedArrears = missedRows.reduce(function(s,r){return s+r.remaining;},0);
 
     // ── 3. Loan Summary table ──
     let summaryHtml = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>' +
-      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Total Arrears</th><th>Days Overdue</th><th>Bucket</th><th>Actions</th>' +
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Loan Officer</th><th>Total Arrears</th><th>Days Overdue</th><th>Bucket</th><th>Actions</th>' +
       '</tr></thead><tbody>';
     if(overdueLoans.length){
       overdueLoans.forEach(function(l){
-        var d=l._asof_days;
+        var arrears=Number(l.arrears_amount||0);
+        var d=Number(l.overdue_days||0);
         var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
         var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
+        var officerName=(window._staffMap && l.loan_officer_id && window._staffMap[l.loan_officer_id])||'Unassigned';
         summaryHtml += '<tr>' +
           '<td><strong>'+(l.loan_clients?.full_name||'-')+'</strong></td>' +
           '<td><a href="tel:'+(l.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(l.loan_clients?.phone||'-')+'</a></td>' +
           '<td>'+l.loan_no+'</td>' +
-          '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(l._asof_arrears)+'</td>' +
+          '<td><span class="badge badge-gray" style="text-transform:capitalize">'+officerName+'</span></td>' +
+          '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(arrears)+'</td>' +
           '<td><span class="badge badge-red">'+d+'d</span></td>' +
           '<td><span class="badge" style="background:'+bktColor+';color:#fff">'+bkt+'</span></td>' +
           '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+l.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+l.id+'\',\''+l.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
       });
     } else {
-      summaryHtml += '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:12px">No overdue loans</td></tr>';
+      summaryHtml += '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:12px">No overdue loans</td></tr>';
     }
     summaryHtml += '</tbody></table></div>';
 
     // ── 4. PAR metrics ──
-    var par30pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>30;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
-    var par60pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>60;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
-    var par90pct = portfolio>0?((overdueLoans.filter(function(l){return l._asof_days>90;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par30pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>30;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par60pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>60;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par90pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>90;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
     var parHtml =
       '<div style="padding:12px 14px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap">' +
         '<span><strong>PAR 30:</strong> '+par30pct+'%</span>' +
@@ -3195,7 +3208,7 @@ function buildDuesTable(dueRows){
   const filteredRows = (dueRows||[]).filter(function(r){return r.remaining>0;});
   if(!filteredRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">✅ All installments for this date are paid</div>';
   var html = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
   filteredRows.forEach(function(item){
     var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
@@ -3213,6 +3226,7 @@ function buildDuesTable(dueRows){
       '<td>'+fmtMoney(s.total_due)+'</td>' +
       '<td style="color:var(--accent-green)">'+(paid>0?fmtMoney(paid):'-')+'</td>' +
       '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
+      '<td><span class="badge badge-gray" style="text-transform:capitalize">'+((window._staffMap && loan.loan_officer_id && window._staffMap[loan.loan_officer_id])||'Unassigned')+'</span></td>' +
       '<td>'+badge+'</td>' +
       '<td>'+payBtn+'</td>' +
     '</tr>';
@@ -3452,7 +3466,7 @@ async function loadReportData(id){
       {label:'Date',value:today},{label:'Total Due Today',value:fmtMoney(due)},
       {label:'Total Collected',value:fmtMoney(collected)},{label:'Collection Rate',value:rate.toFixed(1)+'%'},
       {label:'Payments Count',value:filteredRepsDly.length}
-    ],rows:filteredRepsDly.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
+    ],rows:filteredRepsDly.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount (KES)':Number(r.amount||0),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount (KES)','Method','Reference','Date','Loan Officer']};
   }
   if(id==='collection_monthly'){
     const nowM=new Date().toISOString().slice(0,7);
@@ -3471,7 +3485,7 @@ async function loadReportData(id){
       {label:'Month',value:nowM},{label:'Total Due',value:fmtMoney(due)},
       {label:'Total Collected',value:fmtMoney(collected)},{label:'Collection Rate',value:rate.toFixed(1)+'%'},
       {label:'Payments Count',value:filteredRepsMth.length}
-    ],rows:filteredRepsMth.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
+    ],rows:filteredRepsMth.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount (KES)':Number(r.amount||0),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount (KES)','Method','Reference','Date','Loan Officer']};
   }
   if(id==='mpesa_payments'){
     const[{data:reps},{data:staffList}]=await Promise.all([
@@ -3484,7 +3498,7 @@ async function loadReportData(id){
     const total=filteredRepsMpesa.reduce((s,r)=>s+Number(r.amount||0),0);
     return{title:'M-Pesa Payments Report',summary:[
       {label:'Total M-Pesa Transactions',value:filteredRepsMpesa.length},{label:'Total Amount',value:fmtMoney(total)}
-    ],rows:filteredRepsMpesa.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'M-Pesa Ref':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','M-Pesa Ref','Date','Loan Officer']};
+    ],rows:filteredRepsMpesa.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount (KES)':Number(r.amount||0),'M-Pesa Ref':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount (KES)','M-Pesa Ref','Date','Loan Officer']};
   }
   if(id==='repayment_perf'){
     const[{data:reps},{data:staffList}]=await Promise.all([
@@ -3499,7 +3513,7 @@ async function loadReportData(id){
     return{title:'Repayment Performance Report',summary:[
       {label:'Total Payments',value:filteredRepsPerf.length},{label:'Total Collected',value:fmtMoney(total)},
       ...Object.entries(byMethod).map(([m,v])=>({label:`Via ${m}`,value:fmtMoney(v)}))
-    ],rows:filteredRepsPerf.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount':fmtMoney(r.amount),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount','Method','Reference','Date','Loan Officer']};
+    ],rows:filteredRepsPerf.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount (KES)':Number(r.amount||0),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount (KES)','Method','Reference','Date','Loan Officer']};
   }
   if(id==='portfolio'){
     const[{data:loans},{data:staff}]=await Promise.all([
@@ -3526,17 +3540,17 @@ async function loadReportData(id){
       'Phone':l.loan_clients?.phone||'-',
       'Location':l.loan_clients?.address||'-',
       'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
-      'Principal':fmtMoney(l.principal_amount),
-      'Interest':fmtMoney(l.total_interest||0),
-      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
-      'Outstanding':fmtMoney(l.outstanding_balance),
-      'Total Paid':fmtMoney(l.total_paid||0),
-      'Arrears':fmtMoney(l.arrears_amount||0),
+      'Principal (KES)':Number(l.principal_amount||0),
+      'Interest (KES)':Number(l.total_interest||0),
+      'Total P+I (KES)':Number(l.total_payable||l.principal_amount||0),
+      'Outstanding (KES)':Number(l.outstanding_balance||0),
+      'Total Paid (KES)':Number(l.total_paid||0),
+      'Arrears (KES)':Number(l.arrears_amount||0),
       'Overdue Days':l.overdue_days||0,
       'Status':l.status,
       'Disbursed':l.disbursement_date||'-',
       'Maturity':l.maturity_date||'-'
-    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Arrears','Overdue Days','Status','Disbursed','Maturity']};
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal (KES)','Interest (KES)','Total P+I (KES)','Outstanding (KES)','Total Paid (KES)','Arrears (KES)','Overdue Days','Status','Disbursed','Maturity']};
   }
   if(id==='disbursement'){
     const[{data:loans},{data:staff}]=await Promise.all([
@@ -3560,19 +3574,19 @@ async function loadReportData(id){
       'Phone':l.loan_clients?.phone||'-',
       'Location':l.loan_clients?.address||'-',
       'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
-      'Disbursed Amount':fmtMoney(l.disbursed_amount),
-      'Principal':fmtMoney(l.principal_amount),
-      'Interest':fmtMoney(l.total_interest||0),
-      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
-      'Processing Fee':fmtMoney(l.processing_fee),
+      'Disbursed Amount (KES)':Number(l.disbursed_amount||0),
+      'Principal (KES)':Number(l.principal_amount||0),
+      'Interest (KES)':Number(l.total_interest||0),
+      'Total P+I (KES)':Number(l.total_payable||l.principal_amount||0),
+      'Processing Fee (KES)':Number(l.processing_fee||0),
       'Term (Weeks)':l.term_weeks||'-',
-      'Weekly Installment':fmtMoney(l.weekly_installment||0),
+      'Weekly Installment (KES)':Number(l.weekly_installment||0),
       'Method':l.disbursement_method,
       'Reference':l.disbursement_reference||'-',
       'Disburse Date':l.disbursement_date||'-',
       'Maturity Date':l.maturity_date||'-',
       'Status':l.status
-    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Disbursed Amount','Principal','Interest','Total (P+I)','Processing Fee','Term (Weeks)','Weekly Installment','Method','Reference','Disburse Date','Maturity Date','Status']};
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Disbursed Amount (KES)','Principal (KES)','Interest (KES)','Total P+I (KES)','Processing Fee (KES)','Term (Weeks)','Weekly Installment (KES)','Method','Reference','Disburse Date','Maturity Date','Status']};
   }
   if(id==='aging'){
     const[{data:loans},{data:staff}]=await Promise.all([
@@ -3595,16 +3609,16 @@ async function loadReportData(id){
       'Phone':l.loan_clients?.phone||'-',
       'Location':l.loan_clients?.address||'-',
       'Loan Officer':l.loan_officer_id?staffMap[l.loan_officer_id]||'-':'-',
-      'Principal':fmtMoney(l.principal_amount),
-      'Interest':fmtMoney(l.total_interest||0),
-      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
-      'Outstanding':fmtMoney(l.outstanding_balance),
-      'Arrears':fmtMoney(l.arrears_amount),
+      'Principal (KES)':Number(l.principal_amount||0),
+      'Interest (KES)':Number(l.total_interest||0),
+      'Total P+I (KES)':Number(l.total_payable||l.principal_amount||0),
+      'Outstanding (KES)':Number(l.outstanding_balance||0),
+      'Arrears (KES)':Number(l.arrears_amount||0),
       'Overdue Days':l.overdue_days,
       'Bucket':bucket(l.overdue_days),
       'Disburse Date':l.disbursement_date||'-',
       'Maturity Date':l.maturity_date||'-'
-    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal','Interest','Total (P+I)','Outstanding','Arrears','Overdue Days','Bucket','Disburse Date','Maturity Date']};
+    })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal (KES)','Interest (KES)','Total P+I (KES)','Outstanding (KES)','Arrears (KES)','Overdue Days','Bucket','Disburse Date','Maturity Date']};
   }
   if(id==='income'){
     const[{data:reps},{data:clients},{data:activeLoans}]=await Promise.all([
@@ -3632,14 +3646,14 @@ async function loadReportData(id){
     const rows=[];
     (reps||[]).forEach(r=>{
       const iPortion=calcInterestPortion(r);
-      rows.push({'Source':'Repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest':fmtMoney(iPortion),'Penalty':fmtMoney(r.penalty_portion||0),'Total':fmtMoney(r.amount),'Client':r.loans?.loan_no||'-'});
+      rows.push({'Source':'Repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest (KES)':Number(iPortion.toFixed(2)),'Penalty (KES)':Number(r.penalty_portion||0),'Total (KES)':Number(r.amount||0),'Client':r.loans?.loan_no||'-'});
     });
-    (clients||[]).forEach(c=>{const tag=parseRegFeeFromNotes(c.notes);const amt=tag?.amount??REGISTRATION_FEE;const date=tag?.date||(c.created_at?String(c.created_at).slice(0,10):'');rows.push({'Source':'Registration Fee','Receipt':'REG-'+String(c.id).slice(0,8),'Date':date,'Interest':fmtMoney(0),'Penalty':fmtMoney(0),'Total':fmtMoney(amt),'Client':c.full_name});});
+    (clients||[]).forEach(c=>{const tag=parseRegFeeFromNotes(c.notes);const amt=tag?.amount??REGISTRATION_FEE;const date=tag?.date||(c.created_at?String(c.created_at).slice(0,10):'');rows.push({'Source':'Registration Fee','Receipt':'REG-'+String(c.id).slice(0,8),'Date':date,'Interest (KES)':0,'Penalty (KES)':0,'Total (KES)':Number(amt||0),'Client':c.full_name});});
     return{title:'Income Report',summary:[
       {label:'Interest Collected',value:fmtMoney(totalInterest)},{label:'Penalties Collected',value:fmtMoney(totalPenalties)},
       {label:'Registration Fees',value:fmtMoney(totalReg)},{label:'Processing Fees',value:fmtMoney(totalProc)},
       {label:'Grand Total Revenue',value:fmtMoney(totalInterest+totalPenalties+totalReg+totalProc)}
-    ],rows,cols:['Source','Receipt','Client','Date','Interest','Penalty','Total']};
+    ],rows,cols:['Source','Receipt','Client','Date','Interest (KES)','Penalty (KES)','Total (KES)']};
   }
   if(id==='portfolio_summary'){
     const[{data:loans},{data:clients}]=await Promise.all([
@@ -3663,15 +3677,15 @@ async function loadReportData(id){
     ],rows:(loans||[]).map(l=>({
       'Client':l.loan_clients?.full_name||'-',
       'Loan #':l.loan_no,
-      'Principal':fmtMoney(l.principal_amount),
-      'Interest':fmtMoney(l.total_interest||0),
-      'Total (P+I)':fmtMoney(l.total_payable||l.principal_amount||0),
-      'Outstanding':fmtMoney(l.outstanding_balance),
-      'Total Paid':fmtMoney(l.total_paid||0),
-      'Arrears':fmtMoney(l.arrears_amount),
+      'Principal (KES)':Number(l.principal_amount||0),
+      'Interest (KES)':Number(l.total_interest||0),
+      'Total P+I (KES)':Number(l.total_payable||l.principal_amount||0),
+      'Outstanding (KES)':Number(l.outstanding_balance||0),
+      'Total Paid (KES)':Number(l.total_paid||0),
+      'Arrears (KES)':Number(l.arrears_amount||0),
       'Overdue Days':l.overdue_days,
-      'Status':l.arrears_amount>0?'⚠ Has Arrears':'✅ Clean'
-    })),cols:['Client','Loan #','Principal','Interest','Total (P+I)','Outstanding','Total Paid','Arrears','Overdue Days','Status']};
+      'Status':Number(l.arrears_amount||0)>0?'Has Arrears':'Clean'
+    })),cols:['Client','Loan #','Principal (KES)','Interest (KES)','Total P+I (KES)','Outstanding (KES)','Total Paid (KES)','Arrears (KES)','Overdue Days','Status']};
   }
   return null;
 }
@@ -4244,7 +4258,7 @@ async function renderSettings(){
         <h3 style="font-size:16px;margin-bottom:16px">Defaults</h3>
         <div class="form-row"><div class="form-group"><label>Grace Period (days)</label><input class="input" type="number" id="setGrace" value="${settings.default_grace_period||7}"></div><div class="form-group"><label>Late Penalty %</label><input class="input" type="number" id="setPenalty" value="${settings.default_late_penalty_pct||5}"></div></div>
         <div class="form-group"><label>Processing Fee</label><div class="input" style="background:rgba(59,130,246,0.06);display:flex;align-items:center;gap:8px"><strong style="color:var(--accent-blue)">KES 500</strong><span style="color:var(--text-secondary);font-size:12px">(fixed flat fee per disbursement)</span></div><input type="hidden" id="setFee" value="500"></div>
-        <div class="form-group"><label>Default Disbursement Method</label><select class="select" id="setDisbMethod"><option value="cash" ${(settings.disbursement_method||'cash')==='cash'?'selected':''}>Cash (Manual)</option><option value="bank_transfer" ${settings.disbursement_method==='bank_transfer'?'selected':''}>Bank Transfer</option></select></div>
+        <div class="form-group"><label>Default Disbursement Method</label><select class="select" id="setDisbMethod"><option value="cash" ${settings.disbursement_method==='cash'?'selected':''}>Cash (Manual)</option><option value="mpesa" ${(!settings.disbursement_method||settings.disbursement_method==='mpesa')?'selected':''}>M-Pesa</option><option value="bank_transfer" ${settings.disbursement_method==='bank_transfer'?'selected':''}>Bank Transfer</option></select></div>
         <div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:12px;margin-top:8px">
           <strong style="font-size:13px;color:var(--accent-red)">Rollover Penalty Policy</strong>
           <p style="font-size:12px;color:var(--text-secondary);margin-top:4px">After loan maturity date, a <strong>2-day grace period</strong> applies. Thereafter, a <strong>15% rollover penalty</strong> is charged on the outstanding balance. This is calculated automatically each day the system is accessed.</p>
