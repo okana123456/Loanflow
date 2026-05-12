@@ -2680,9 +2680,25 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const mpTp = Number(loan.total_payable||0);
     const mpTi = Number(loan.total_interest||0);
     const mpInterestRatio = (mpTp > 0 && mpTi > 0) ? (mpTi / mpTp) : 0;
-    const mpInterestPortion = Number((amount * mpInterestRatio).toFixed(2));
-    const mpPrincipalPortion = Number((amount - mpInterestPortion).toFixed(2));
-    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:today(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:0,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
+    const mpPreviouslyPaid = Number(loan.total_paid||0);
+
+    // Calculate penalty_portion: any amount paid beyond total_payable is penalty revenue
+    let mpPenaltyPortion = 0, mpInterestPortion, mpPrincipalPortion;
+    if(mpTp > 0 && mpPreviouslyPaid >= mpTp){
+      mpPenaltyPortion = amount;
+      mpInterestPortion = 0;
+      mpPrincipalPortion = 0;
+    } else if(mpTp > 0 && mpPreviouslyPaid + amount > mpTp){
+      mpPenaltyPortion = Number(((mpPreviouslyPaid + amount) - mpTp).toFixed(2));
+      const mpCorePortion = amount - mpPenaltyPortion;
+      mpInterestPortion = Number((mpCorePortion * mpInterestRatio).toFixed(2));
+      mpPrincipalPortion = Number((mpCorePortion - mpInterestPortion).toFixed(2));
+    } else {
+      mpInterestPortion = Number((amount * mpInterestRatio).toFixed(2));
+      mpPrincipalPortion = Number((amount - mpInterestPortion).toFixed(2));
+    }
+
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:new Date().toISOString(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:mpPenaltyPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
     
@@ -2842,10 +2858,27 @@ async function savePayment(){
     const tp = Number(loan.total_payable||0);
     const ti = Number(loan.total_interest||0);
     const interestRatio = (tp > 0 && ti > 0) ? (ti / tp) : 0;
-    const interestPortion = Number((amount * interestRatio).toFixed(2));
-    const principalPortion = Number((amount - interestPortion).toFixed(2));
+    const previouslyPaid = Number(loan.total_paid||0);
 
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:$('#payDate').value,principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:0,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
+    // Calculate penalty_portion: any amount paid beyond total_payable is penalty revenue
+    let penaltyPortion = 0, interestPortion, principalPortion;
+    if(tp > 0 && previouslyPaid >= tp){
+      // Loan is already fully paid — entire payment is a penalty
+      penaltyPortion = amount;
+      interestPortion = 0;
+      principalPortion = 0;
+    } else if(tp > 0 && previouslyPaid + amount > tp){
+      // Payment crosses the total_payable threshold — excess is penalty
+      penaltyPortion = Number(((previouslyPaid + amount) - tp).toFixed(2));
+      const corePortion = amount - penaltyPortion;
+      interestPortion = Number((corePortion * interestRatio).toFixed(2));
+      principalPortion = Number((corePortion - interestPortion).toFixed(2));
+    } else {
+      interestPortion = Number((amount * interestRatio).toFixed(2));
+      principalPortion = Number((amount - interestPortion).toFixed(2));
+    }
+
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:new Date().toISOString(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
 
@@ -3046,13 +3079,14 @@ async function renderOverdue(opts){
     window._overdueSnapshot={asOfDate,overdueLoans,missedRows,dueRows};
 
     // ── Build arrears page using safe string concatenation (no nested backticks) ──
-    function makeSection(id, title, count, amtStr, bodyHtml){
+    function makeSection(id, title, count, amtStr, bodyHtml, btnHtml){
       return '<div class="card" style="margin-bottom:12px;padding:0;overflow:hidden">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer;background:var(--bg-card);border-bottom:1px solid var(--border)" onclick="toggleSection(\''+id+'\')">' +
           '<span style="font-weight:700;font-size:13px">'+title+'</span>' +
           '<div style="display:flex;align-items:center;gap:8px">' +
             (count!==null?'<span class="badge badge-red">'+count+'</span>':'') +
             (amtStr?'<span style="font-size:12px;color:var(--text-secondary)">'+amtStr+'</span>':'') +
+            (btnHtml?btnHtml:'') +
             '<span id="arr-icon-'+id+'" style="font-size:14px;transition:transform .2s">▼</span>' +
           '</div>' +
         '</div>' +
@@ -3167,15 +3201,14 @@ async function renderOverdue(opts){
             '</select>' +
           '</div>' +
           '<span class="badge badge-red">'+overdueLoans.length+' loan'+(overdueLoans.length!==1?'s':'')+' &nbsp;·&nbsp; KES '+fmtMoney(totalArrears)+' in arrears</span>' +
-          '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="downloadArrearsExcel()">⬇ Download Excel</button>' +
         '</div>' +
       '</div>' +
       // Section 1: Dues by date (open by default)
-      makeSection('dues', '📋 Clients Due On Date', dueRows.length, duesAmtStr, duesHeader) +
+      makeSection('dues', '📋 Clients Due On Date', dueRows.length, duesAmtStr, duesHeader, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadDuesExcel()">⬇ Excel</button>') +
       // Section 2: Missed installments (open by default)
-      makeSection('missed', '⚠️ Missed Installments — as of '+asOfDate, missedRows.length, 'KES '+fmtMoney(missedArrears)+' unpaid', missedHtml) +
+      makeSection('missed', '⚠️ Missed Installments — as of '+asOfDate, missedRows.length, 'KES '+fmtMoney(missedArrears)+' unpaid', missedHtml, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadMissedExcel()">⬇ Excel</button>') +
       // Section 3: Loan summary (collapsed by default)
-      makeSection('loansummary', '📊 Loan-Level Arrears Summary', overdueLoans.length, 'KES '+fmtMoney(totalArrears), summaryHtml) +
+      makeSection('loansummary', '📊 Loan-Level Arrears Summary', overdueLoans.length, 'KES '+fmtMoney(totalArrears), summaryHtml, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadArrearsSummaryExcel()">⬇ Excel</button>') +
       // Section 4: PAR / Chart (collapsed by default)
       makeSection('parchart', '📈 Aging Buckets & PAR Metrics', null, 'PAR30: '+par30pct+'%  PAR60: '+par60pct+'%  PAR90: '+par90pct+'%', parHtml);
 
@@ -3275,59 +3308,69 @@ async function loadArrearsDues(dateStr){
   if(icon){ icon.style.transform='rotate(180deg)'; }
 }
 
-function downloadArrearsExcel(){
+function downloadDuesExcel(){
+  const snap=window._overdueSnapshot;
+  if(!snap){toast('No data to download','error');return;}
+  const duesDate=snap.asOfDuesDate||snap.asOfDate;
+  const dueRows=snap.dueRows||[];
+  if(!dueRows.length){toast('No dues data to download','warning');return;}
+  const sheet=dueRows.map(({loan,s,remaining,paid})=>({
+    'Date':duesDate,
+    'Client Name':loan.loan_clients?.full_name||'-',
+    'Phone':loan.loan_clients?.phone||'-',
+    'Loan #':loan.loan_no,
+    'Installment #':s.installment_no,
+    'Amount Due (KES)':Number(s.total_due||0),
+    'Amount Paid (KES)':paid,
+    'Remaining (KES)':remaining,
+    'Status':remaining===0?'Paid':paid>0?'Partial':'Unpaid'
+  }));
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sheet),'Dues on '+duesDate);
+  XLSX.writeFile(wb,'Dues_'+duesDate+'.xlsx');
+  toast('Dues report downloaded!','success');
+}
+
+function downloadMissedExcel(){
   const snap=window._overdueSnapshot;
   if(!snap||!snap.missedRows){toast('No data to download','error');return;}
-  const {asOfDate,missedRows,overdueLoans}=snap;
-
-  // Sheet 1: Missed Installments
-  const sheet1=missedRows.map(({loan,s,remaining,daysOld})=>({
-    'Loan #': loan.loan_no,
-    'Client Name': loan.loan_clients?.full_name||'-',
-    'Phone': loan.loan_clients?.phone||'-',
-    'Installment #': s.installment_no,
-    'Due Date': s.due_date,
-    'Amount Due (KES)': Number(s.total_due||0),
-    'Amount Paid (KES)': Number(s.total_paid||0),
-    'Remaining (KES)': remaining,
-    'Days Overdue': daysOld
+  const{asOfDate,missedRows}=snap;
+  if(!missedRows.length){toast('No missed installments to download','warning');return;}
+  const sheet=missedRows.map(({loan,s,remaining,daysOld})=>({
+    'Loan #':loan.loan_no,
+    'Client Name':loan.loan_clients?.full_name||'-',
+    'Phone':loan.loan_clients?.phone||'-',
+    'Installment #':s.installment_no,
+    'Due Date':s.due_date,
+    'Amount Due (KES)':Number(s.total_due||0),
+    'Amount Paid (KES)':Number(s.total_paid||0),
+    'Remaining (KES)':remaining,
+    'Days Overdue':daysOld
   }));
-
-  // Sheet 2: Loan Summary
-  const sheet2=overdueLoans.map(l=>({
-    'Loan #': l.loan_no,
-    'Client Name': l.loan_clients?.full_name||'-',
-    'Phone': l.loan_clients?.phone||'-',
-    'Total Arrears (KES)': l._asof_arrears,
-    'Days Overdue': l._asof_days,
-    'Outstanding Balance (KES)': Number(l.outstanding_balance||0),
-    'Aging Bucket': l._asof_days<=30?'1-30d':l._asof_days<=60?'31-60d':l._asof_days<=90?'61-90d':l._asof_days<=180?'91-180d':'>180d'
-  }));
-
   const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet1), 'Missed Installments');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet2), 'Loan Summary');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sheet),'Missed Installments');
+  XLSX.writeFile(wb,'Missed_Installments_'+asOfDate+'.xlsx');
+  toast('Missed installments report downloaded!','success');
+}
 
-  // Sheet 3: Dues by Date (from the date picker at the top)
-  const duesDate = snap.asOfDuesDate || asOfDate;
-  const dueRows  = snap.dueRows || [];
-  if(dueRows.length){
-    const sheet3 = dueRows.map(({loan,s,remaining,paid})=>({
-      'Date': duesDate,
-      'Client Name': loan.loan_clients?.full_name||'-',
-      'Phone': loan.loan_clients?.phone||'-',
-      'Loan #': loan.loan_no,
-      'Installment #': s.installment_no,
-      'Amount Due (KES)': Number(s.total_due||0),
-      'Amount Paid (KES)': paid,
-      'Remaining (KES)': remaining,
-      'Status': remaining===0?'Paid':paid>0?'Partial':'Unpaid'
-    }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheet3), 'Dues on '+duesDate);
-  }
-
-  XLSX.writeFile(wb, 'Arrears_Report_'+asOfDate+'.xlsx');
-  toast('Arrears report downloaded!','success');
+function downloadArrearsSummaryExcel(){
+  const snap=window._overdueSnapshot;
+  if(!snap||!snap.overdueLoans){toast('No data to download','error');return;}
+  const{asOfDate,overdueLoans}=snap;
+  if(!overdueLoans.length){toast('No arrears data to download','warning');return;}
+  const sheet=overdueLoans.map(l=>({
+    'Loan #':l.loan_no,
+    'Client Name':l.loan_clients?.full_name||'-',
+    'Phone':l.loan_clients?.phone||'-',
+    'Total Arrears (KES)':l._asof_arrears,
+    'Days Overdue':l._asof_days,
+    'Outstanding Balance (KES)':Number(l.outstanding_balance||0),
+    'Aging Bucket':l._asof_days<=30?'1-30d':l._asof_days<=60?'31-60d':l._asof_days<=90?'61-90d':l._asof_days<=180?'91-180d':'>180d'
+  }));
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sheet),'Loan Arrears Summary');
+  XLSX.writeFile(wb,'Arrears_Summary_'+asOfDate+'.xlsx');
+  toast('Loan arrears summary downloaded!','success');
 }
 
 async function addFollowUp(loanId,clientId){
