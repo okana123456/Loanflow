@@ -2743,6 +2743,7 @@ async function openPaymentModal(loanId){
     <input type="hidden" id="payLoanId" value="${loanId||''}">
     <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="payhero">📲 PayHero (Paybill + ID)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payPayheroInfoWrap" style="display:none"><div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);padding:10px;border-radius:8px;font-size:12px;line-height:1.5">Client pays via M-Pesa Paybill <strong id="payPayheroPaybillHint">—</strong>, account number <strong id="payPayheroAccHint">—</strong>. Payment is matched automatically using their M-Pesa phone number and recorded instantly.</div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
+    <div class="form-group"><label>Amount applied to Penalty (KES)</label><input class="input" type="number" id="payPenaltyAmt" value="0"></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="payNotes"></textarea></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSavePayment" onclick="savePayment()">Confirm Payment</button></div>
   `);
@@ -2858,25 +2859,14 @@ async function savePayment(){
     const tp = Number(loan.total_payable||0);
     const ti = Number(loan.total_interest||0);
     const interestRatio = (tp > 0 && ti > 0) ? (ti / tp) : 0;
-    const previouslyPaid = Number(loan.total_paid||0);
 
-    // Calculate penalty_portion: any amount paid beyond total_payable is penalty revenue
-    let penaltyPortion = 0, interestPortion, principalPortion;
-    if(tp > 0 && previouslyPaid >= tp){
-      // Loan is already fully paid — entire payment is a penalty
-      penaltyPortion = amount;
-      interestPortion = 0;
-      principalPortion = 0;
-    } else if(tp > 0 && previouslyPaid + amount > tp){
-      // Payment crosses the total_payable threshold — excess is penalty
-      penaltyPortion = Number(((previouslyPaid + amount) - tp).toFixed(2));
-      const corePortion = amount - penaltyPortion;
-      interestPortion = Number((corePortion * interestRatio).toFixed(2));
-      principalPortion = Number((corePortion - interestPortion).toFixed(2));
-    } else {
-      interestPortion = Number((amount * interestRatio).toFixed(2));
-      principalPortion = Number((amount - interestPortion).toFixed(2));
-    }
+    // Read explicit penalty amount entered by the cashier
+    const explicitPenalty = Number($('#payPenaltyAmt').value) || 0;
+    const corePayment = Math.max(0, amount - explicitPenalty);
+
+    const penaltyPortion = explicitPenalty;
+    const interestPortion = Number((corePayment * interestRatio).toFixed(2));
+    const principalPortion = Number((corePayment - interestPortion).toFixed(2));
 
     const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:new Date().toISOString(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
@@ -3105,8 +3095,10 @@ async function renderOverdue(opts){
 
     const duesHeader =
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px 10px;border-bottom:1px solid var(--border)">' +
-        '<span style="font-size:12px;color:var(--text-secondary)">Pick date:</span>' +
-        '<input type="date" id="duesDatePicker" class="input" style="width:150px;padding:4px 8px;font-size:12px;font-weight:600" value="'+asOfDate+'" onchange="loadArrearsDues(this.value)">' +
+        '<span style="font-size:12px;color:var(--text-secondary)">From:</span>' +
+        '<input type="date" id="duesStartDate" class="input" style="width:150px;padding:4px 8px;font-size:12px;font-weight:600" value="'+asOfDate+'" onchange="loadArrearsDues(document.getElementById(\'duesStartDate\').value,document.getElementById(\'duesEndDate\').value)">' +
+        '<span style="font-size:12px;color:var(--text-secondary)">To:</span>' +
+        '<input type="date" id="duesEndDate" class="input" style="width:150px;padding:4px 8px;font-size:12px;font-weight:600" value="'+asOfDate+'" onchange="loadArrearsDues(document.getElementById(\'duesStartDate\').value,document.getElementById(\'duesEndDate\').value)">' +
         '<span id="duesDateSummary" style="font-size:12px;color:var(--text-secondary)">'+duesAmtStr+'</span>' +
       '</div>' +
       '<div id="duesClientTable" style="padding:0 0 4px">'+duesTable+'</div>';
@@ -3268,15 +3260,16 @@ function buildDuesTable(dueRows){
   return html;
 }
 
-async function loadArrearsDues(dateStr){
+async function loadArrearsDues(startDate, endDate){
   const snap=window._overdueSnapshot;
   if(!snap)return;
+  if(!endDate) endDate = startDate; // fallback for single-date calls
   // Only active loans — completed loans must never appear in arrears dues
   const activeLoanMap={};
   (cachedData.loans||[]).filter(l=>l.status==='active').forEach(l=>{activeLoanMap[l.id]=l;});
 
   const{data:scheds}=await sb('loan_schedules')
-    .select('*').eq('business_id',currentUser.business_id).eq('due_date',dateStr);
+    .select('*').eq('business_id',currentUser.business_id).gte('due_date',startDate).lte('due_date',endDate);
 
   const dueRows=((scheds||[]).map(s=>{
     const loan=activeLoanMap[s.loan_id];
@@ -3288,7 +3281,9 @@ async function loadArrearsDues(dateStr){
 
   // Update snapshot with new dues
   snap.dueRows=dueRows;
-  snap.asOfDuesDate=dateStr;
+  snap.asOfDuesStartDate=startDate;
+  snap.asOfDuesEndDate=endDate;
+  snap.asOfDuesDate=startDate===endDate?startDate:startDate+'_to_'+endDate;
 
   const tbl=document.getElementById('duesClientTable');
   if(tbl) tbl.innerHTML=buildDuesTable(dueRows);
@@ -3296,7 +3291,7 @@ async function loadArrearsDues(dateStr){
   const summary=document.getElementById('duesDateSummary');
   if(summary){
     const total=dueRows.reduce((s,r)=>s+Number(r.s.total_due||0),0);
-    const isFuture=dateStr>new Date().toISOString().slice(0,10);
+    const isFuture=startDate>new Date().toISOString().slice(0,10);
     const unpaid=dueRows.filter(r=>r.remaining>0).length;
     const paid=dueRows.filter(r=>r.remaining===0).length;
     summary.textContent=dueRows.length+' client'+(dueRows.length!==1?'s':'')+' · KES '+fmtMoney(total)+' due'+(isFuture?' (forecast)':'')+' · '+unpaid+' unpaid · '+paid+' paid';
@@ -3311,23 +3306,30 @@ async function loadArrearsDues(dateStr){
 function downloadDuesExcel(){
   const snap=window._overdueSnapshot;
   if(!snap){toast('No data to download','error');return;}
+  const startDate=snap.asOfDuesStartDate||snap.asOfDuesDate||snap.asOfDate;
+  const endDate=snap.asOfDuesEndDate||startDate;
   const duesDate=snap.asOfDuesDate||snap.asOfDate;
+  const rangeLabel=startDate===endDate?startDate:startDate+' to '+endDate;
+  const fileLabel=startDate===endDate?startDate:startDate+'_to_'+endDate;
+  const sheetLabel=('Dues '+rangeLabel).slice(0,31); // Excel sheet name max 31 chars
   const dueRows=snap.dueRows||[];
   if(!dueRows.length){toast('No dues data to download','warning');return;}
   const sheet=dueRows.map(({loan,s,remaining,paid})=>({
-    'Date':duesDate,
+    'Date Range':rangeLabel,
     'Client Name':loan.loan_clients?.full_name||'-',
     'Phone':loan.loan_clients?.phone||'-',
     'Loan #':loan.loan_no,
+    'Loan Officer':(window._staffMap && loan.loan_officer_id) ? window._staffMap[loan.loan_officer_id] : 'Unassigned',
     'Installment #':s.installment_no,
+    'Due Date':s.due_date,
     'Amount Due (KES)':Number(s.total_due||0),
     'Amount Paid (KES)':paid,
     'Remaining (KES)':remaining,
     'Status':remaining===0?'Paid':paid>0?'Partial':'Unpaid'
   }));
   const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sheet),'Dues on '+duesDate);
-  XLSX.writeFile(wb,'Dues_'+duesDate+'.xlsx');
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sheet),sheetLabel);
+  XLSX.writeFile(wb,'Dues_'+fileLabel+'.xlsx');
   toast('Dues report downloaded!','success');
 }
 
@@ -3340,6 +3342,7 @@ function downloadMissedExcel(){
     'Loan #':loan.loan_no,
     'Client Name':loan.loan_clients?.full_name||'-',
     'Phone':loan.loan_clients?.phone||'-',
+    'Loan Officer':(window._staffMap && loan.loan_officer_id) ? window._staffMap[loan.loan_officer_id] : 'Unassigned',
     'Installment #':s.installment_no,
     'Due Date':s.due_date,
     'Amount Due (KES)':Number(s.total_due||0),
@@ -3362,6 +3365,7 @@ function downloadArrearsSummaryExcel(){
     'Loan #':l.loan_no,
     'Client Name':l.loan_clients?.full_name||'-',
     'Phone':l.loan_clients?.phone||'-',
+    'Loan Officer':(window._staffMap && l.loan_officer_id) ? window._staffMap[l.loan_officer_id] : 'Unassigned',
     'Total Arrears (KES)':l._asof_arrears,
     'Days Overdue':l._asof_days,
     'Outstanding Balance (KES)':Number(l.outstanding_balance||0),
@@ -3973,7 +3977,7 @@ async function renderAccounting() {
       }catch(e){ return 0; }
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
-    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
+    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r) - Number(r.penalty_portion||0)), 0);
     const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
 
     // Net revenue = all income streams that are NOT principal return
