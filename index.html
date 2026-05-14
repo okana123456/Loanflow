@@ -1110,6 +1110,8 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
       installment_no: s.installment_no,
       total_due: Number(s.total_due||0),
       paid, remaining,
+      arrears: Number(loan.arrears_amount || 0),
+      loan_balance: Number(loan.outstanding_balance || 0),
       loan_id: loan.id,
       loan_officer_id: loan.loan_officer_id || null
     };
@@ -1127,7 +1129,7 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   html += '</div>';
   html += '<div class="table-wrap" style="max-height:340px;overflow-y:auto;margin-bottom:0">';
   html += '<table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
 
   rows.forEach(x => {
@@ -1141,14 +1143,17 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
     const payBtn = (!isPaid && hasRole('admin','branch_manager','cashier'))
       ? '<button class="btn btn-success btn-sm" onclick="openPaymentModal(\'' + x.loan_id + '\')">Pay</button>'
       : '';
+    const arrearsCell = x.arrears > 0
+      ? '<td style="color:var(--accent-red);font-weight:700">' + fmtMoney(x.arrears) + '</td>'
+      : '<td><span style="color:var(--text-secondary)">—</span></td>';
     html += '<tr style="' + (isPaid?'opacity:0.55':'') + '">';
     html += '<td><strong>' + x.name + '</strong></td>';
     html += '<td><a href="tel:' + x.phone + '" style="color:var(--accent-blue)">' + x.phone + '</a></td>';
     html += '<td>' + x.loan_no + '</td>';
     html += '<td style="text-align:center">#' + x.installment_no + '</td>';
     html += '<td>' + fmtMoney(x.total_due) + '</td>';
-    html += '<td style="color:var(--accent-green)">' + (x.paid>0 ? fmtMoney(x.paid) : '-') + '</td>';
-    html += '<td style="color:' + (isPaid?'var(--accent-green)':'var(--accent-red)') + ';font-weight:700">' + fmtMoney(x.remaining) + '</td>';
+    html += arrearsCell;
+    html += '<td style="color:var(--accent-yellow);font-weight:700">' + fmtMoney(x.loan_balance) + '</td>';
     html += '<td><span class="badge badge-gray" style="text-transform:capitalize">' + ((window._staffMap && x.loan_officer_id && window._staffMap[x.loan_officer_id]) || 'Unassigned') + '</span></td>';
     html += '<td>' + badge + '</td>';
     html += '<td>' + payBtn + '</td>';
@@ -3284,24 +3289,29 @@ function buildDuesTable(dueRows){
   const filteredRows = (dueRows||[]).filter(function(r){return r.remaining>0;});
   if(!filteredRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">✅ All installments for this date are paid</div>';
   var html = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
   filteredRows.forEach(function(item){
     var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
+    var arrears=Number(loan.arrears_amount||0);
+    var loanBalance=Number(loan.outstanding_balance||0);
     var isPartial = paid>0 && remaining>0;
     var badge = isPartial
       ? '<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
       : '<span class="badge badge-red">Unpaid</span>';
     var payBtn = hasRole('admin','branch_manager','cashier')
       ? '<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button>' : '';
+    var arrearsCell = arrears > 0
+      ? '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(arrears)+'</td>'
+      : '<td><span style="color:var(--text-secondary)">—</span></td>';
     html += '<tr>' +
       '<td><strong>'+(loan.loan_clients?.full_name||'-')+'</strong></td>' +
       '<td><a href="tel:'+(loan.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(loan.loan_clients?.phone||'-')+'</a></td>' +
       '<td>'+loan.loan_no+'</td>' +
       '<td style="text-align:center">#'+s.installment_no+'</td>' +
       '<td>'+fmtMoney(s.total_due)+'</td>' +
-      '<td style="color:var(--accent-green)">'+(paid>0?fmtMoney(paid):'-')+'</td>' +
-      '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
+      arrearsCell +
+      '<td style="color:var(--accent-yellow);font-weight:700">'+fmtMoney(loanBalance)+'</td>' +
       '<td><span class="badge badge-gray" style="text-transform:capitalize">'+((window._staffMap && loan.loan_officer_id && window._staffMap[loan.loan_officer_id])||'Unassigned')+'</span></td>' +
       '<td>'+badge+'</td>' +
       '<td>'+payBtn+'</td>' +
