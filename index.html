@@ -1462,14 +1462,26 @@ async function renderClients(page=1){
     const{data:clients,error}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
     if(error)throw error;
 
-    // Fetch staff and active loans to map clients to officers
+    // Fetch staff and ALL loans (not just active) to map clients to officers — prefer most recent
     const {data:staffData}=await sb('loan_staff').select('id,name').eq('business_id', currentUser.business_id);
-    const {data:loansData}=await sb('loans').select('client_id,loan_officer_id').eq('business_id', currentUser.business_id).eq('status','active');
+    const {data:loansData}=await sb('loans').select('client_id,loan_officer_id,status,disbursement_date').eq('business_id', currentUser.business_id).order('disbursement_date', {ascending: false});
 
     window._staffMap = {};
     (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
+    // Build _clientOffMap: most-recent loan per client takes precedence
     window._clientOffMap = {};
-    (loansData||[]).forEach(l=>{ if(l.loan_officer_id) window._clientOffMap[l.client_id] = l.loan_officer_id; });
+    (loansData||[]).forEach(l=>{
+      if(l.loan_officer_id && !window._clientOffMap[l.client_id]) {
+        window._clientOffMap[l.client_id] = l.loan_officer_id;
+      }
+    });
+    // Fallback: parse [OFFICER:uuid] tag from client notes for clients with no loan
+    (clients||[]).forEach(c=>{
+      if(!window._clientOffMap[c.id]){
+        const m = String(c.notes||'').match(/\[OFFICER:([^\]]+)\]/);
+        if(m) window._clientOffMap[c.id] = m[1];
+      }
+    });
 
     let finalClients = clients || [];
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -1530,7 +1542,7 @@ function renderClientRows(clients){
       <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.address||''}">${c.address||'-'}</td>
       <td style="white-space:nowrap">${c.created_at?c.created_at.slice(0,10):'-'}</td>
       <td><span class="badge badge-green">Active</span></td>
-      <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> ${transferBtn}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> ${isAdmin?`<button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> `:''}${transferBtn}</td>
     </tr>`}).join('');
 }
 
@@ -1587,6 +1599,8 @@ async function confirmBulkTransfer(){
       await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
       await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
       await audit('client_transferred','loan_clients',clientId,null,{new_officer_id:officerId,reason,bulk:true});
+      // Update local cache immediately
+      if(window._clientOffMap) window._clientOffMap[clientId] = officerId;
       done++;
     }catch(e){ failed++; console.error('Bulk transfer failed for',clientId,e); }
   }
@@ -1614,7 +1628,19 @@ function filterClients(q){
   if(pag) pag.innerHTML='';
 }
 
-function openAddClientModal(){
+async function openAddClientModal(){
+  // Fetch staff for officer assignment dropdown
+  const {data:staffList} = await sb('loan_staff').select('id,name,role').eq('business_id', currentUser.business_id).eq('is_active', true);
+  const officers = (staffList||[]).filter(s=>{ const roles=(s.role||'').split(','); return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r.trim())); });
+  const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+  const officerDropdown = `
+    <div class="form-group">
+      <label>Assign to Loan Officer${hasRole('admin','branch_manager')?' *':''}</label>
+      <select class="select" id="cAssignedOfficer" ${isOfficerOnly?'disabled':''}>
+        <option value="">— Select Officer —</option>
+        ${officers.map(o=>`<option value="${o.id}" ${o.id===currentUser.id?'selected':''}>${o.name} (${(o.role||'').replace(/,/g,', ')})</option>`).join('')}
+      </select>
+    </div>`;
   openModal(`
     <h2>Add New Client</h2>
     <div class="form-row"><div class="form-group"><label>Full Name *</label><input class="input" id="cName"></div><div class="form-group"><label>National ID No *</label><input class="input" id="cIdNo"></div></div>
@@ -1627,6 +1653,7 @@ function openAddClientModal(){
     <div class="form-row"><div class="form-group"><label>Guarantor Full Name</label><input class="input" id="cNokName"></div><div class="form-group"><label>Guarantor Phone</label><input class="input" id="cNokPhone"></div></div>
     <div class="form-group"><label>Guarantor Relationship</label><input class="input" id="cNokRel" placeholder="e.g. Spouse, Sibling, Friend"></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
+    ${officerDropdown}
     <div style="padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;align-items:center">
       <span>A one-time <strong>Registration Fee</strong> will be charged on save and recorded as income.</span>
       <strong style="color:var(--accent-green)">KES \${REGISTRATION_FEE}</strong>
@@ -1659,10 +1686,18 @@ async function saveClient(){
 
     const today=new Date().toISOString().slice(0,10);
     const userNotes=($('#cNotes').value||'').trim();
-    const taggedNotes=(userNotes?userNotes+' ':'')+regFeeTag(REGISTRATION_FEE, today);
+    const assignedOfficerId = ($('#cAssignedOfficer')?.value || currentUser?.id || '').trim();
+    const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
+    const taggedNotes=(userNotes?userNotes+' ':'')+regFeeTag(REGISTRATION_FEE, today)+officerTag;
     const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,business_id:currentUser?.business_id,created_by:currentUser?.id};
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
+    // Store officer assignment in caches
+    if(assignedOfficerId && data?.id){
+      if(!window._pendingClientOfficer) window._pendingClientOfficer = {};
+      window._pendingClientOfficer[data.id] = assignedOfficerId;
+      if(window._clientOffMap) window._clientOffMap[data.id] = assignedOfficerId;
+    }
     await audit('client_created','loan_clients',data.id,null,rec);
     await recordRegistrationFeeIncome(data.id, name, today);
     toast(`Client added. Registration fee of KES ${REGISTRATION_FEE} recorded as income.`,'success');closeModal();renderClients();
@@ -1692,6 +1727,20 @@ async function viewClient(id){
         </div>
       </div>
       <h3 style="margin:16px 0 8px;font-size:14px">Loan History <span style="font-size:11px;color:var(--text-secondary);font-weight:400">${(cLoans||[]).length} loan${(cLoans||[]).length!==1?'s':''}</span></h3>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+        <div class="kpi-card" style="border-top:3px solid var(--accent-blue)">
+          <div class="kpi-label">Total Borrowed</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--accent-blue)">${fmtMoney((cLoans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0))}</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid var(--accent-green)">
+          <div class="kpi-label">Total Paid</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--accent-green)">${fmtMoney((cLoans||[]).reduce((s,l)=>s+Number(l.total_paid||0),0))}</div>
+        </div>
+        <div class="kpi-card" style="border-top:3px solid var(--accent-yellow)">
+          <div class="kpi-label">Total Outstanding</div>
+          <div class="kpi-value" style="font-size:14px;color:var(--accent-yellow)">${fmtMoney((cLoans||[]).filter(l=>l.status==='active').reduce((s,l)=>s+Number(l.outstanding_balance||0),0))}</div>
+        </div>
+      </div>
       <div class="table-wrap"><table><thead><tr><th>Loan #</th><th>Principal</th><th>Weekly</th><th>Balance</th><th>Maturity</th><th>Status</th><th>Actions</th></tr></thead><tbody>
       ${(cLoans||[]).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).map(l=>`
         <tr style="${l.status==='active'&&l.outstanding_balance>0?'':'opacity:0.6'}">
@@ -1709,7 +1758,7 @@ async function viewClient(id){
         </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:20px">No loans</td></tr>'}
       </tbody></table></div>
       <div class="modal-actions">
-        <button class="btn btn-outline" onclick="editClient('${c.id}')">✏️ Edit Client</button>
+        ${hasRole('admin','branch_manager')?`<button class="btn btn-outline" onclick="editClient('${c.id}')">✏️ Edit Client</button>`:''}
         <button class="btn btn-outline" onclick="closeModal()">Close</button>
       </div>
     `,true);
@@ -1717,7 +1766,7 @@ async function viewClient(id){
 }
 
 async function editClient(id){
-  const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
+  if(!hasRole('admin','branch_manager')) return toast('Admin/Manager access required','warning');
   if(!c)return toast('Client not found','error');
   openModal(`
     <h2>Edit Client</h2>
@@ -1840,6 +1889,8 @@ async function confirmTransferClient(clientId, clientName){
     await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
     // Update all applications too
     await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
+    // Update local cache immediately so renderClients reflects the change
+    if(window._clientOffMap) window._clientOffMap[clientId] = officerId;
     await audit('client_transferred','loan_clients',clientId,null,{client_name:clientName,new_officer_id:officerId,reason});
     toast(`${clientName} transferred successfully`,'success');
     closeModal();
@@ -3932,10 +3983,11 @@ async function renderAccounting() {
   if(!appFilters.accounting) appFilters.accounting = { type: 'this_month', start: '', end: '' };
   try{
     const biz = currentUser.business_id;
-    const[loansR,repR,cliR]=await Promise.all([
+    const[loansR,repR,cliR,penR]=await Promise.all([
       sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).limit(10000),
       sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).limit(10000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000)
+      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000),
+      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).limit(10000)
     ]);
     if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
     if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
@@ -3944,6 +3996,7 @@ async function renderAccounting() {
     const allLoans = loansR.data||[];
     const allReps = repR.data||[];
     const allClients = cliR.data||[];
+    const allPenalties = penR.data||[];
 
     // Build loan lookup map for fast interest ratio calculation
     const loanMap = {};
@@ -3953,6 +4006,7 @@ async function renderAccounting() {
     const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
+    const filteredPenalties = filterByDate(allPenalties.filter(p=>p.date_charged), 'date_charged', f);
 
     // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
@@ -3964,21 +4018,22 @@ async function renderAccounting() {
       catch(e){ return s+REGISTRATION_FEE; }
     },0);
 
-    // Interest calculation using loanMap
+    // Interest KPI: for each repayment, compute portion = amount × (total_interest / total_payable)
     const calcInterestPortionAcct = (r) => {
       try{
-        if(r.interest_portion && Number(r.interest_portion) > 0) return Number(r.interest_portion);
         const loan = loanMap[r.loan_id];
         if(!loan) return 0;
         const ti = Number(loan.total_interest||0);
         const tp = Number(loan.total_payable||0);
-        if(ti <= 0 || tp <= 0) return 0;
+        if(tp <= 0) return 0;
         return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
       }catch(e){ return 0; }
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
-    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r) - Number(r.penalty_portion||0)), 0);
-    const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
+    // Principal KPI: repayment amount minus interest portion
+    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
+    // Penalties KPI: use loan_penalties table exclusively (is_waived=false, within date range)
+    const penaltiesCollected = filteredPenalties.reduce((s,p)=>s+Number(p.penalty_amount||0),0);
 
     // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
@@ -4017,7 +4072,7 @@ async function renderAccounting() {
       const loan = loanMap[r.loan_id];
       const offId = loan?.loan_officer_id || 'unassigned';
       if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
-      const intAmt = calcInterestPortionAcct(r) + Number(r.penalty_portion||0);
+      const intAmt = calcInterestPortionAcct(r);
       officerStats[offId].interest += intAmt;
       officerStats[offId].total += intAmt;
     });
@@ -4579,7 +4634,10 @@ async function applyRolloverPenalties(){
               status: 'pending'
             });
           }
-          await sb('loan_schedules').insert(newSchedules);
+          const {data: existRolloverScheds} = await sb('loan_schedules').select('id').eq('loan_id', loan.id).gte('installment_no', 990).limit(1);
+          if (!existRolloverScheds?.length) {
+            await sb('loan_schedules').insert(newSchedules);
+          }
         }
       }
     }
