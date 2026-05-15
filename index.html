@@ -3163,7 +3163,7 @@ async function renderOverdue(opts){
 
     // ── 2. Missed Installments table ──
     let missedHtml = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>' +
-      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Officer</th><th>Days Overdue</th><th>Actions</th>' +
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due Date</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Days Overdue</th><th>Actions</th>' +
       '</tr></thead><tbody>';
     if(missedRows.length){
       missedRows.forEach(function(item){
@@ -3178,13 +3178,14 @@ async function renderOverdue(opts){
           '<td>'+fmtMoney(s.total_due)+'</td>' +
           '<td style="color:var(--accent-green)">'+fmtMoney(s.total_paid)+'</td>' +
           '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(remaining)+'</td>' +
+          (function(){ var missedLoanArrears = loanArrears[loan.id] ? loanArrears[loan.id].arrears : 0; return '<td style="color:'+(missedLoanArrears>0?'var(--accent-red)':'var(--text-secondary)')+';font-weight:700">'+(missedLoanArrears>0?fmtMoney(missedLoanArrears):'—')+'</td>'+'<td style="color:var(--accent-yellow);font-weight:700">'+fmtMoney(loan.outstanding_balance||0)+'</td>'; })() +
           '<td><span class="badge badge-gray" style="text-transform:capitalize">'+((window._staffMap && loan.loan_officer_id && window._staffMap[loan.loan_officer_id])||'Unassigned')+'</span></td>' +
           '<td><span class="badge" style="background:'+color+';color:#fff">'+daysOld+'d</span></td>' +
           '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+loan.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+loan.id+'\',\''+loan.client_id+'\')">Follow-Up</button></td>' +
         '</tr>';
       });
     } else {
-      missedHtml += '<tr><td colspan="11" style="text-align:center;color:var(--text-secondary);padding:12px">No missed installments</td></tr>';
+      missedHtml += '<tr><td colspan="13" style="text-align:center;color:var(--text-secondary);padding:12px">No missed installments</td></tr>';
     }
     missedHtml += '</tbody></table></div>';
     const missedArrears = missedRows.reduce(function(s,r){return s+r.remaining;},0);
