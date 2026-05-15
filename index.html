@@ -1129,7 +1129,7 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
   html += '</div>';
   html += '<div class="table-wrap" style="max-height:340px;overflow-y:auto;margin-bottom:0">';
   html += '<table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Due</th><th>Paid</th><th>Remaining</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
 
   rows.forEach(x => {
@@ -1152,6 +1152,8 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
     html += '<td>' + x.loan_no + '</td>';
     html += '<td style="text-align:center">#' + x.installment_no + '</td>';
     html += '<td>' + fmtMoney(x.total_due) + '</td>';
+    html += '<td>' + fmtMoney(x.paid) + '</td>';
+    html += '<td style="color:' + (x.remaining > 0 ? 'var(--accent-red)' : 'var(--accent-green)') + ';font-weight:600">' + fmtMoney(x.remaining) + '</td>';
     html += arrearsCell;
     html += '<td style="color:var(--accent-yellow);font-weight:700">' + fmtMoney(x.loan_balance) + '</td>';
     html += '<td><span class="badge badge-gray" style="text-transform:capitalize">' + ((window._staffMap && x.loan_officer_id && window._staffMap[x.loan_officer_id]) || 'Unassigned') + '</span></td>';
@@ -3289,7 +3291,7 @@ function buildDuesTable(dueRows){
   const filteredRows = (dueRows||[]).filter(function(r){return r.remaining>0;});
   if(!filteredRows.length) return '<div style="text-align:center;padding:16px;color:var(--text-secondary);font-size:12px">✅ All installments for this date are paid</div>';
   var html = '<div class="table-wrap"><table style="font-size:12px"><thead><tr>';
-  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
+  html += '<th>Client</th><th>Phone</th><th>Loan #</th><th>Inst #</th><th>Amount Due</th><th>Paid</th><th>Remaining</th><th>Arrears</th><th>Loan Balance</th><th>Officer</th><th>Status</th><th></th>';
   html += '</tr></thead><tbody>';
   filteredRows.forEach(function(item){
     var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
@@ -3310,6 +3312,8 @@ function buildDuesTable(dueRows){
       '<td>'+loan.loan_no+'</td>' +
       '<td style="text-align:center">#'+s.installment_no+'</td>' +
       '<td>'+fmtMoney(s.total_due)+'</td>' +
+      '<td>'+fmtMoney(paid)+'</td>' +
+      '<td style="color:'+(remaining>0?'var(--accent-red)':'var(--accent-green)')+';font-weight:600">'+fmtMoney(remaining)+'</td>' +
       arrearsCell +
       '<td style="color:var(--accent-yellow);font-weight:700">'+fmtMoney(loanBalance)+'</td>' +
       '<td><span class="badge badge-gray" style="text-transform:capitalize">'+((window._staffMap && loan.loan_officer_id && window._staffMap[loan.loan_officer_id])||'Unassigned')+'</span></td>' +
