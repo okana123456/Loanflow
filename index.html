@@ -3391,6 +3391,8 @@ function downloadDuesExcel(){
     'Amount Due (KES)':Number(s.total_due||0),
     'Amount Paid (KES)':paid,
     'Remaining (KES)':remaining,
+    'Arrears (KES)':Number(loan.arrears_amount||0),
+    'Loan Balance (KES)':Number(loan.outstanding_balance||0),
     'Status':remaining===0?'Paid':paid>0?'Partial':'Unpaid'
   }));
   const wb=XLSX.utils.book_new();
