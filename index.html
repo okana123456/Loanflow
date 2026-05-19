@@ -4035,22 +4035,37 @@ async function renderAccounting() {
       catch(e){ return s+REGISTRATION_FEE; }
     },0);
 
-    // Interest KPI: for each repayment, compute portion = amount × (total_interest / total_payable)
+    // ── CASH-BASIS ACCOUNTING (fixed) ────────────────────────────────────────
+    // Primary: read interest_portion / penalty_portion stored at payment time.
+    // Fallback: if interest_portion is 0 or missing (e.g. Excel-imported records
+    // where total_payable was absent), derive it from the loan's interest ratio
+    // so we never silently drop real interest income.
     const calcInterestPortionAcct = (r) => {
       try{
+        const stored = Number(r.interest_portion||0);
+        if(stored > 0) return stored; // trust the ledger value when present
+        // Fallback for imported/legacy records with no stored portion
         const loan = loanMap[r.loan_id];
         if(!loan) return 0;
         const ti = Number(loan.total_interest||0);
         const tp = Number(loan.total_payable||0);
-        if(tp <= 0) return 0;
-        return Number((Number(r.amount||0) * (ti / tp)).toFixed(2));
+        if(tp <= 0 || ti <= 0) return 0;
+        // Only apply ratio to the non-penalty portion of the payment
+        const pen = Number(r.penalty_portion||0);
+        const core = Math.max(0, Number(r.amount||0) - pen);
+        return Number((core * (ti / tp)).toFixed(2));
       }catch(e){ return 0; }
     };
     const interestCollected  = filteredReps.reduce((s,r) => s + calcInterestPortionAcct(r), 0);
-    // Principal KPI: repayment amount minus interest portion
-    const principalRecovered = filteredReps.reduce((s,r) => s + Math.max(0, Number(r.amount||0) - calcInterestPortionAcct(r)), 0);
-    // Penalties KPI: use loan_penalties table exclusively (is_waived=false, within date range)
-    const penaltiesCollected = filteredPenalties.reduce((s,p)=>s+Number(p.penalty_amount||0),0);
+    // Principal KPI: cash collected minus interest and penalty portions
+    const principalRecovered = filteredReps.reduce((s,r) => {
+      const pen = Number(r.penalty_portion||0);
+      const intAmt = calcInterestPortionAcct(r);
+      return s + Math.max(0, Number(r.amount||0) - intAmt - pen);
+    }, 0);
+    // Penalties KPI: cash basis — sum what was actually collected at payment time,
+    // NOT when the system charged them (which was the old broken behaviour).
+    const penaltiesCollected = filteredReps.reduce((s,r)=>s+Number(r.penalty_portion||0),0);
 
     // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
