@@ -4608,6 +4608,13 @@ async function renderAuditLog(page=1){
 async function applyRolloverPenalties(){
   if(!currentUser?.business_id) return;
   try{
+    // Fetch settings to get the dynamic penalty rate
+    const settings = await loadSettings();
+    // Convert e.g. 5 → 0.05; fallback to 5% if setting is missing
+    const penaltyRate = (Number(settings.default_late_penalty_pct) || 5) / 100;
+    const penaltyPct = Number(settings.default_late_penalty_pct) || 5;
+    const penaltyReason = `Rollover Penalty (${penaltyPct}%)`;
+
     const todayDate=new Date();todayDate.setHours(0,0,0,0);
     const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
     if(!activeLoans?.length)return;
@@ -4622,15 +4629,15 @@ async function applyRolloverPenalties(){
       const pastMaturity=Math.floor((todayDate-maturity)/(1000*60*60*24));
 
       if(pastMaturity > 2 && Number(loan.outstanding_balance) > 0){
-        const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason','Rollover Penalty (15%)').limit(1);
+        const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason',penaltyReason).limit(1);
 
         if(!existing?.length){
-          const penaltyAmt=Number(loan.outstanding_balance)*0.15;
+          const penaltyAmt=Number(loan.outstanding_balance)*penaltyRate;
           await sb('loan_penalties').insert({
             loan_id:loan.id,
             business_id:currentUser.business_id,
             penalty_amount:penaltyAmt,
-            reason:'Rollover Penalty (15%)',
+            reason:penaltyReason,
             date_charged:todayDate.toISOString().slice(0,10),
             is_waived:false
           });
