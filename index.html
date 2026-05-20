@@ -3434,6 +3434,7 @@ function downloadArrearsSummaryExcel(){
     'Loan #':l.loan_no,
     'Client Name':l.loan_clients?.full_name||'-',
     'Phone':l.loan_clients?.phone||'-',
+    'Address':l.loan_clients?.address||'-',
     'Loan Officer':(window._staffMap && l.loan_officer_id) ? window._staffMap[l.loan_officer_id] : 'Unassigned',
     'Total Arrears (KES)':l._asof_arrears,
     'Days Overdue':l._asof_days,
