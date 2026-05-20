@@ -3384,6 +3384,7 @@ function downloadDuesExcel(){
     'Date Range':rangeLabel,
     'Client Name':loan.loan_clients?.full_name||'-',
     'Phone':loan.loan_clients?.phone||'-',
+    'Address':loan.loan_clients?.address||'-',
     'Loan #':loan.loan_no,
     'Loan Officer':(window._staffMap && loan.loan_officer_id) ? window._staffMap[loan.loan_officer_id] : 'Unassigned',
     'Installment #':s.installment_no,
