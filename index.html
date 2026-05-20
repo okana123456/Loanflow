@@ -3044,7 +3044,7 @@ async function renderOverdue(opts){
   try{
     // Fetch ALL active loans with client info, and staff for officer name mapping
     const [{data:loans},{data:staffList}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone)')
+      sb('loans').select('*,loan_clients(full_name,phone,address)')
         .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false}),
       sb('loan_staff').select('id,name').eq('business_id',currentUser.business_id)
     ]);
