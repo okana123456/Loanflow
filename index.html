@@ -4005,8 +4005,8 @@ async function renderAccounting() {
     const[loansR,repR,cliR,penR]=await Promise.all([
       sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(10000),
       sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).order('payment_date', {ascending: false}).limit(10000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).limit(10000),
-      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).limit(10000)
+      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).order('created_at', {ascending: false}).limit(10000),
+      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).order('date_charged', {ascending: false}).limit(10000)
     ]);
     if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
     if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
