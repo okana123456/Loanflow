@@ -4337,7 +4337,7 @@ async function renderSettings(){
   const main=$('#mainContent');
   try{
     const settings=await loadSettings();
-    const callbackUrl=SUPABASE_URL+'/functions/v1/mpesa-c2b-callback';
+    const callbackUrl=SUPABASE_URL+'/functions/v1/payment-callback';
     main.innerHTML=`
       <div class="page-header"><h1>Settings</h1></div>
       <div class="card" style="max-width:700px;margin-bottom:16px">
