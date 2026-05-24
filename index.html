@@ -4433,7 +4433,7 @@ async function saveSettings(){
       try{
         const regResp = await fetch(SUPABASE_URL+'/functions/v1/register-daraja', {
           method:'POST',
-          headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_ANON_KEY},
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_KEY},
           body: JSON.stringify({ shortcode, consumer_key: consumerKey, consumer_secret: consumerSecret, environment: darajaEnv })
         });
         const regJson = await regResp.json().catch(()=>({}));
