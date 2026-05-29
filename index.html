@@ -407,21 +407,27 @@ function filterByDate(data, dateField, filterState) {
     if (filterState.type === 'all') return data;
     const now = new Date();
     let sDate, eDate;
-    
+    // Helper: build a YYYY-MM-DD string from a Date using LOCAL time (no UTC drift)
+    const localDateStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
     if (filterState.type === 'today') {
-        sDate = now.toISOString().slice(0,10);
+        sDate = localDateStr(now);
         eDate = sDate;
     } else if (filterState.type === 'yesterday') {
         const y = new Date(now); y.setDate(y.getDate()-1);
-        sDate = y.toISOString().slice(0,10);
+        sDate = localDateStr(y);
         eDate = sDate;
     } else if (filterState.type === 'this_week') {
         const w = new Date(now); w.setDate(w.getDate() - w.getDay() + 1);
-        sDate = w.toISOString().slice(0,10);
-        eDate = now.toISOString().slice(0,10);
+        sDate = localDateStr(w);
+        eDate = localDateStr(now);
     } else if (filterState.type === 'this_month') {
-        sDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
-        eDate = new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().slice(0,10);
+        // Lock start date to exactly YYYY-MM-01 based on local time
+        const startObj = new Date(now.getFullYear(), now.getMonth(), 1);
+        sDate = `${startObj.getFullYear()}-${String(startObj.getMonth()+1).padStart(2,'0')}-01`;
+        // Lock end date to the last day of the current month based on local time
+        const endObj = new Date(now.getFullYear(), now.getMonth()+1, 0);
+        eDate = `${endObj.getFullYear()}-${String(endObj.getMonth()+1).padStart(2,'0')}-${String(endObj.getDate()).padStart(2,'0')}`;
     } else if (filterState.type === 'custom') {
         sDate = filterState.start; eDate = filterState.end;
         if(!sDate || !eDate) return data; 
