@@ -302,9 +302,10 @@ tr:hover{background:rgba(37,99,235,.04)}
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
-// Added custom storageKey to prevent GoTrue orphaned lock hanging in the browser
+// Added custom storageKey to prevent GoTrue orphaned lock hanging in the browser and configured global headers to bypass default API row limits
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { storageKey: 'bripta-main-auth-v2' }
+    auth: { storageKey: 'bripta-main-auth-v2' },
+    global: { headers: { 'Prefer': 'count=exact' } }
 });
 // Secondary client used ONLY for Admin creating staff without logging themselves out
 const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
