@@ -3970,11 +3970,39 @@ async function renderAccounting() {
   if(!appFilters.accounting) appFilters.accounting = { type: 'this_month', start: '', end: '' };
   try{
     const biz = currentUser.business_id;
+
+    // ── BUILD SERVER-SIDE DATE RANGE ─────────────────────────────────────────
+    // Push the date filter to Postgres so we never hit row-count caps regardless
+    // of how large the table grows. JS filterByDate still runs as a safety net.
+    const f = appFilters.accounting;
+    const now = new Date();
+    let qStart, qEnd;
+    if (f.type === 'this_month') {
+      qStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+      const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
+      qEnd = `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,'0')}-${String(last.getDate()).padStart(2,'0')}`;
+    } else if (f.type === 'today') {
+      qStart = qEnd = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    } else if (f.type === 'yesterday') {
+      const y = new Date(now); y.setDate(y.getDate()-1);
+      qStart = qEnd = `${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,'0')}-${String(y.getDate()).padStart(2,'0')}`;
+    } else if (f.type === 'this_week') {
+      const w = new Date(now); w.setDate(w.getDate() - w.getDay() + 1);
+      qStart = `${w.getFullYear()}-${String(w.getMonth()+1).padStart(2,'0')}-${String(w.getDate()).padStart(2,'0')}`;
+      qEnd = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    } else if (f.type === 'custom' && f.start && f.end) {
+      qStart = f.start; qEnd = f.end;
+    } else {
+      // 'all' or unrecognised — fetch everything
+      qStart = '2000-01-01'; qEnd = '2099-12-31';
+    }
+    const qEndFull = qEnd + 'T23:59:59+00:00'; // inclusive end of day in UTC
+
     const[loansR,repR,cliR,penR]=await Promise.all([
-      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(10000),
-      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).order('payment_date', {ascending: false}).limit(10000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).order('created_at', {ascending: false}).limit(10000),
-      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).order('date_charged', {ascending: false}).limit(10000)
+      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
+      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).gte('payment_date',qStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
+      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
+      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000)
     ]);
     if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
     if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
@@ -3989,7 +4017,8 @@ async function renderAccounting() {
     const loanMap = {};
     allLoans.forEach(l=>{ loanMap[l.id]=l; });
 
-    const f = appFilters.accounting;
+    // JS-side filterByDate runs as a safety net for any edge-case drift
+    // but the server has already done the heavy lifting above.
     const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
     const filteredReps = filterByDate(allReps, 'payment_date', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
