@@ -1084,14 +1084,16 @@ function stripRegFeeTag(notes){ return String(notes||'').replace(/\s*\[REG_FEE:[
 async function recordRegistrationFeeIncome(clientId, clientName, dateISO){
   // Best-effort: try to insert into a generic income table. Silently ignore if it doesn't exist.
   try{
-    await sb('loan_income').insert({
-      business_id: currentUser?.business_id,
-      client_id: clientId,
-      entry_type: 'registration_fee',
-      amount: REGISTRATION_FEE,
-      description: `Registration fee — ${clientName}`,
-      entry_date: dateISO,
-      created_by: currentUser?.id
+    await sb('journal_entries').insert({
+      id:crypto.randomUUID(),
+      business_id:currentUser?.business_id,
+      date:dateISO,
+      ref:'REG-'+clientId.slice(0,8).toUpperCase(),
+      description:`Registration fee — ${clientName}`,
+      debit:'Cash',
+      credit:'Registration Fee Income',
+      amount:REGISTRATION_FEE,
+      synced:false
     });
   }catch(_){ /* table may not exist; tagged note in client.notes is the fallback source of truth */ }
 }
@@ -2443,16 +2445,16 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // Log processing fee as upfront cash income (mirrors recordRegistrationFeeIncome)
     try{
       const feeRcpt=(appSettings?.receipt_no_prefix||'RCP')+'-PF-'+Date.now().toString().slice(-8);
-      await sb('loan_income').insert({
+      await sb('journal_entries').insert({
+        id:crypto.randomUUID(),
         business_id:currentUser?.business_id,
-        source:'processing_fee',
+        date:disbDate,
+        ref:feeRcpt,
         description:`Processing fee (upfront cash) — Loan ${loanNo}`,
+        debit:'Cash',
+        credit:'Processing Fee Income',
         amount:procFee,
-        receipt_no:feeRcpt,
-        income_date:disbDate,
-        loan_id:loan.id,
-        client_id:clientId,
-        recorded_by:currentUser?.id
+        synced:false
       });
     }catch(feeErr){ console.warn('[Disburse] Processing fee income log failed:',feeErr?.message); }
 
@@ -4285,26 +4287,19 @@ async function renderSuspense(){
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
-    const[queueR,loansR]=await Promise.all([
-      sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false}),
+    const[queueR,loansR,suspR]=await Promise.all([
+      sb('mpesa_callback_queue').select('*').eq('confirmed',false).is('loan_id',null).order('created_at',{ascending:false}),
       sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
-        .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
+        .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0),
+      sb('unmatched_payments').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false})
     ]);
 
-    // Show all unconfirmed queue items — business_short_code format varies by
-    // Safaricom environment so we don't filter by it; RLS on Supabase already
-    // scopes to the correct business.
     const queue=(queueR.data||[]);
     const activeLoans=loansR.data||[];
+    const manualSuspense=(suspR.data||[]);
 
-    // Also fetch manually entered suspense records from loan_income
-    const{data:manualSuspense}=await sb('loan_income')
-      .select('*').eq('business_id',currentUser.business_id).eq('entry_type','suspense')
-      .order('created_at',{ascending:false});
-
-    const isSuspUnmatched=r=>!(r.notes||'').includes('MATCHED');
     const totalSuspense=queue.reduce((s,q)=>s+Number(q.trans_amount||0),0)
-      +(manualSuspense||[]).filter(isSuspUnmatched).reduce((s,r)=>s+Number(r.amount||0),0);
+      +(manualSuspense||[]).filter(r=>!r.resolved).reduce((s,r)=>s+Number(r.amount||0),0);
 
     main.innerHTML=`
       <div class="page-header">
@@ -4347,13 +4342,13 @@ async function renderSuspense(){
           <tbody>
             ${(manualSuspense||[]).length?(manualSuspense||[]).map(r=>`
               <tr>
-                <td>${fmtDate(r.income_date||r.created_at)}</td>
-                <td>${r.receipt_no||'-'}</td>
-                <td>${r.description||'-'}</td>
+                <td>${fmtDate(r.created_at)}</td>
+                <td>${r.mpesa_reference||r.invoice_id||'-'}</td>
+                <td>${r.payer_name||'-'} · ${r.payer_phone||'-'} · Acct: ${r.account_number||'-'}</td>
                 <td><strong style="color:var(--accent-green)">KES ${fmtMoney(r.amount)}</strong></td>
-                <td>${!(r.notes||'').includes('MATCHED')?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
-                <td>${isSuspUnmatched(r)?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','manual',${r.amount},'${r.receipt_no||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
-              </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No manual suspense entries</td></tr>'}
+                <td>${!r.resolved?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
+                <td>${!r.resolved?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
+              </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No unmatched payments</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4386,14 +4381,14 @@ async function saveSuspenseEntry(){
   if(!amt||amt<=0)return toast('Enter a valid amount','warning');
   try{
     const rcpt='SUSP-'+Date.now().toString().slice(-8);
-    await sb('loan_income').insert({
+    await sb('unmatched_payments').insert({
       business_id:currentUser.business_id,
-      entry_type:'suspense',
-      description:($('#suspDesc').value||'Unmatched payment')+' | REF:'+($('#suspRef').value||rcpt),
+      account_number:$('#suspRef').value||rcpt,
       amount:amt,
-      entry_date:$('#suspDate').value||today(),
-      created_by:currentUser.id,
-      notes:'SUSPENSE|UNMATCHED|REF:'+($('#suspRef').value||rcpt)
+      payer_phone:'',
+      payer_name:$('#suspDesc').value||'Manual entry',
+      mpesa_reference:$('#suspRef').value||rcpt,
+      resolved:false
     });
     toast('Payment added to suspense account','success');
     closeModal();
@@ -4491,11 +4486,26 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     if(entryType==='mpesa'){
       await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loanId}).eq('id',entryId);
     } else {
-      // Mark as matched by appending to notes (no schema change needed)
-      const{data:liRow}=await sb('loan_income').select('notes').eq('id',entryId).single().catch(()=>({data:null}));
-      const updNotes=((liRow?.notes||'')+' MATCHED:'+loanId).trim();
-      await sb('loan_income').update({notes:updNotes}).eq('id',entryId);
+      // Mark unmatched_payments row as resolved
+      await sb('unmatched_payments').update({
+        resolved:true,
+        resolved_at:new Date().toISOString(),
+        resolved_by:currentUser.id
+      }).eq('id',entryId);
     }
+
+    // Record in journal_entries for accounting
+    await sb('journal_entries').insert({
+      id: crypto.randomUUID(),
+      business_id:currentUser.business_id,
+      date:new Date().toISOString().slice(0,10),
+      ref:receiptNo,
+      description:`Suspense match — ${loan.loan_no} | Ref: ${ref}`,
+      debit:'Loan Repayments',
+      credit:'Suspense Account',
+      amount:amount,
+      synced:false
+    }).catch(e=>console.warn('Journal entry failed:',e.message));
 
     await audit('suspense_matched','loan_repayments',loanId,null,{ref,amount,loan_no:loan.loan_no});
     toast(`Payment KES ${fmtMoney(amount)} matched to ${loan.loan_no}!`,'success');
