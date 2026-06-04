@@ -2212,9 +2212,26 @@ async function submitApplication(){
   if(!$('#appClient').value) return toast('Select a client','warning');
   if(btn){ btn.disabled=true; btn.textContent='Processing...'; }
   try{
+    const selectedClientId=$('#appClient').value;
+
+    // ── Enforce one active loan per client ──────────────────────────────────
+    const{data:activeLoans}=await sb('loans').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).eq('status','active').limit(1);
+    if(activeLoans&&activeLoans.length>0){
+      toast('This client already has an active loan. They must clear it first.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Submit Application'; }
+      return;
+    }
+    const{data:pendingApps}=await sb('loan_applications').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).in('status',['submitted','approved']).limit(1);
+    if(pendingApps&&pendingApps.length>0){
+      toast('This client already has a pending or approved application. Resolve it before submitting a new one.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Submit Application'; }
+      return;
+    }
+    // ───────────────────────────────────────────────────────────────────────
+
     const appNo = generateUniqueNo('APP');
     const amt=Number($('#appAmount').value);
-    const rec={application_no:appNo,client_id:$('#appClient').value,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
+    const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id};
     
     // Robust auto-tier → product mapping (case-insensitive, trims, fallbacks)
     const tier=getAutoTier(amt);
@@ -2306,7 +2323,7 @@ async function openDisburseModal(appId){
   const{data:prevLoans}=await sb('loans').select('id').eq('client_id',app.client_id).eq('business_id',currentUser?.business_id).limit(2);
   const isReturning=(prevLoans&&prevLoans.length>0);
   const regFee=isReturning?0:REGISTRATION_FEE;
-  const net=amt-procFee-regFee;
+  // Net disbursement = full principal (fees are paid upfront in cash, not deducted)
   const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   const clientName=app.loan_clients?.full_name||'Unknown Client';
   const clientPhone=app.loan_clients?.phone||'';
@@ -2321,12 +2338,13 @@ async function openDisburseModal(appId){
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${firstRep.toISOString().slice(0,10)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
-      <p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Processing Fee (flat)</span><strong>${fmtMoney(procFee)}</strong></p>
+      <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>⚡ Processing Fee — Fees Paid Upfront (Not Deducted)</span><strong>${fmtMoney(procFee)}</strong></p>
       ${regFee>0
-        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-red)"><span>− Registration Fee <span style="font-size:10px">(new client, one-time)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
+        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>⚡ Registration Fee <span style="font-size:10px">(new client, one-time) — Paid Upfront (Not Deducted)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
         :`<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client (${(prevLoans||[]).length} previous loan${(prevLoans||[]).length!==1?'s':''})</p>`}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
-      <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(net)}</strong></p>
+      <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(amt)}</strong></p>
+      <p style="font-size:10px;color:var(--text-secondary);margin-top:4px">ℹ️ Fees (KES ${fmtMoney(procFee+regFee)} total) collected in cash upfront. Full principal disbursed to client.</p>
     </div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnConfirmDisburse" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
   `,true);
@@ -2352,13 +2370,13 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const{data:prevLoans}=await sb('loans').select('id').eq('client_id',clientId).eq('business_id',currentUser?.business_id).limit(2);
     const isReturningClient=(prevLoans&&prevLoans.length>0);
     const regFee=isReturningClient?0:REGISTRATION_FEE;
-    const totalFees=procFee+regFee;
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
     const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
 
     const loanNo = generateUniqueNo('LN');
 
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt-totalFees,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id};
+    // Fees are collected upfront in cash — disbursed_amount equals the full principal
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id};
 
     const{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
     if(lErr)throw lErr;
@@ -2375,6 +2393,23 @@ async function confirmDisburse(appId,clientId,termWeeks){
     }
 
     await sb('loan_applications').update({status:'disbursed'}).eq('id',appId);
+
+    // Log processing fee as upfront cash income (mirrors recordRegistrationFeeIncome)
+    try{
+      const feeRcpt=(appSettings?.receipt_no_prefix||'RCP')+'-PF-'+Date.now().toString().slice(-8);
+      await sb('income_records').insert({
+        business_id:currentUser?.business_id,
+        source:'processing_fee',
+        description:`Processing fee (upfront cash) — Loan ${loanNo}`,
+        amount:procFee,
+        receipt_no:feeRcpt,
+        income_date:disbDate,
+        loan_id:loan.id,
+        client_id:clientId,
+        recorded_by:currentUser?.id
+      });
+    }catch(feeErr){ console.warn('[Disburse] Processing fee income log failed:',feeErr?.message); }
+
     await audit('loan_disbursed','loans',loan.id,null,loanRec);
     toast(`Loan ${loanNo} disbursed successfully!`,'success');closeModal();renderDisbursement();
   }catch(e){
@@ -2781,10 +2816,29 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       mpesaRem-=apply;
     }
     if(mpesaUpdates.length)await Promise.all(mpesaUpdates);
-    await sb('loans').update({total_paid:newPaid,outstanding_balance:Math.max(0,newBalance),status:newBalance<=0?'completed':loan.status}).eq('id',loan.id);
+
+    // ── Enforce minimum 1-week interest on early full payoff ──────────────────
+    const mpMinInt = await enforceMinimumWeekInterest(loan, amount);
+    // Re-read loan balances in case the helper adjusted them
+    const { data: loanAfterMpMinInt } = mpMinInt.adjusted
+      ? await sb('loans').select('*').eq('id', loan.id).single()
+      : { data: loan };
+    const mpLoanRef = loanAfterMpMinInt || loan;
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const mpNewPaid    = Number(mpLoanRef.total_paid||0) + amount;
+    const mpNewBalance = Math.max(0, Number(mpLoanRef.outstanding_balance) - amount);
+    await sb('loans').update({
+      total_paid: mpNewPaid,
+      outstanding_balance: mpNewBalance,
+      status: mpNewBalance <= 0 ? 'completed' : mpLoanRef.status
+    }).eq('id', loan.id);
     await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id}).eq('id',queueId);
     await audit('mpesa_payment_confirmed','loan_repayments',null,null,rec);
-    toast(`M-Pesa payment ${receiptNo} confirmed!`,'success');renderRepayments();
+    const mpToastMsg = mpMinInt.adjusted
+      ? `M-Pesa payment ${receiptNo} confirmed! Minimum interest applied — client still owes KES ${fmtMoney(mpMinInt.shortfall)}.`
+      : `M-Pesa payment ${receiptNo} confirmed!`;
+    toast(mpToastMsg, mpMinInt.adjusted ? 'warning' : 'success');renderRepayments();
   }catch(e){toast(e.message,'error')}
 }
 
@@ -2893,6 +2947,65 @@ function onPayMethodChange(v){
   wrap.style.display = (v==='mpesa_c2b') ? 'block' : 'none';
 }
 
+// ═══ MINIMUM INTEREST ENFORCEMENT ═══
+// Policy: regardless of when a client repays, they must pay at least 1 full week's
+// interest — the same amount they would have paid at the first scheduled installment.
+// Returns { adjusted: boolean, shortfall: number, minimumInterest: number }
+async function enforceMinimumWeekInterest(loan, paymentAmount){
+  const result = { adjusted: false, shortfall: 0, minimumInterest: 0 };
+
+  // Only apply when this payment would fully clear the loan
+  const projectedBalance = Number(loan.outstanding_balance) - paymentAmount;
+  if(projectedBalance > 0.01) return result;
+
+  // Minimum interest = principal × weekly_rate / 100  (1 week flat interest)
+  const principal       = Number(loan.principal_amount || 0);
+  const weeklyRate      = Number(loan.interest_rate   || 0);
+  const minimumInterest = Number((principal * weeklyRate / 100).toFixed(2));
+  result.minimumInterest = minimumInterest;
+
+  // Interest already collected on previous repayments for this loan
+  const { data: prevReps } = await sb('loan_repayments')
+    .select('interest_portion').eq('loan_id', loan.id);
+  const totalInterestCollected = (prevReps||[]).reduce((s,r)=>s+Number(r.interest_portion||0), 0);
+
+  // Interest embedded in the current payment (proportional to loan's interest ratio)
+  const tp = Number(loan.total_payable||0);
+  const ti = Number(loan.total_interest||0);
+  const interestRatio = (tp>0 && ti>0) ? (ti/tp) : 0;
+  const interestInThisPayment = paymentAmount * interestRatio;
+
+  const shortfall = Number((minimumInterest - (totalInterestCollected + interestInThisPayment)).toFixed(2));
+  result.shortfall = shortfall;
+
+  if(shortfall <= 0.01) return result; // minimum already covered
+
+  result.adjusted = true;
+
+  // Inflate the loan's outstanding_balance by the shortfall so the client still owes it
+  const correctedBalance = Number((Math.max(0, Number(loan.outstanding_balance) - paymentAmount) + shortfall).toFixed(2));
+  await sb('loans').update({
+    outstanding_balance: correctedBalance,
+    total_interest: Number((Number(loan.total_interest||0) + shortfall).toFixed(2)),
+    total_payable:  Number((Number(loan.total_payable||0)  + shortfall).toFixed(2))
+  }).eq('id', loan.id);
+
+  // Sync the shortfall into the first unpaid schedule installment
+  const { data: firstSched } = await sb('loan_schedules')
+    .select('*').eq('loan_id', loan.id)
+    .in('status',['pending','partial','overdue'])
+    .order('installment_no',{ascending:true}).limit(1);
+  if(firstSched && firstSched.length){
+    const s = firstSched[0];
+    await sb('loan_schedules').update({
+      total_due:    Number((Number(s.total_due||0)    + shortfall).toFixed(2)),
+      interest_due: Number((Number(s.interest_due||0) + shortfall).toFixed(2))
+    }).eq('id', s.id);
+  }
+
+  return result;
+}
+
 async function savePayment(){
   const loanId=$('#payLoanId').value;const amount=Number($('#payAmount').value);
   if(!loanId)return toast('Select a loan','warning');
@@ -2954,6 +3067,22 @@ async function savePayment(){
     }
     if(schedUpdates.length)await Promise.all(schedUpdates);
 
+    // ── Enforce minimum 1-week interest on early full payoff ──────────────────
+    const minIntResult = await enforceMinimumWeekInterest(loan, amount);
+    if(minIntResult.adjusted){
+      toast(
+        `Minimum 1-week interest applied: KES ${fmtMoney(minIntResult.shortfall)} added. ` +
+        `Client must pay the remaining balance of KES ${fmtMoney(minIntResult.shortfall)}.`,
+        'warning'
+      );
+    }
+    // Re-fetch the loan in case enforceMinimumWeekInterest changed its balances
+    const { data: loanAfterMinInt } = minIntResult.adjusted
+      ? await sb('loans').select('*').eq('id', loanId).single()
+      : { data: loan };
+    const loanRef = loanAfterMinInt || loan;
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Recalculate arrears and overdue from remaining unpaid past-due schedules ──
     const todayStr2=new Date().toISOString().slice(0,10);
     const{data:remainingScheds}=await sb('loan_schedules')
@@ -2972,18 +3101,21 @@ async function savePayment(){
         newArrears=unpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
       }
     }
-    const newPaid=Number(loan.total_paid)+amount;
-    const newBalance=Math.max(0,Number(loan.outstanding_balance)-amount);
+    const newPaid=Number(loanRef.total_paid)+amount;
+    const newBalance=Math.max(0,Number(loanRef.outstanding_balance)-amount);
     await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBalance,
-      status:newBalance<=0?'completed':loan.status,
+      status:newBalance<=0?'completed':loanRef.status,
       overdue_days:newBalance<=0?0:newOverdueDays,
       arrears_amount:newBalance<=0?0:Math.max(0,newArrears)
     }).eq('id',loanId);
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
-    toast(`Payment ${receiptNo} recorded! ${fmtMoney(amount)}`,'success');closeModal();
+    const toastMsg = minIntResult.adjusted
+      ? `Payment ${receiptNo} recorded! Remaining interest balance: KES ${fmtMoney(minIntResult.shortfall)}`
+      : `Payment ${receiptNo} recorded! ${fmtMoney(amount)}`;
+    toast(toastMsg,'success');closeModal();
     // Always clear cachedData so dashboard, accounting and arrears reflect the payment immediately
     cachedData.loans=null;cachedData.schedules=null;cachedData.repayments=null;
     // Auto-refresh due list on dashboard if visible
@@ -3089,6 +3221,22 @@ async function renderOverdue(opts){
       const daysOld=Math.floor((asOf-oldest)/(1000*60*60*24));
       return {...loan, _asof_days:daysOld, _asof_arrears:loanArrears[lid].arrears, _scheds:loanArrears[lid].scheds};
     }).filter(Boolean);
+
+    // ── Fallback: include any active loan with arrears_amount > 0 or overdue_days > 0
+    // that was not already captured by the schedule-based logic above
+    const scheduleCapturedIds=new Set(overdueLoans.map(l=>l.id));
+    const fallbackLoans=(loans||[]).filter(l=>
+      l.status==='active' &&
+      !scheduleCapturedIds.has(l.id) &&
+      (Number(l.arrears_amount||0)>0 || Number(l.overdue_days||0)>0)
+    ).map(l=>({
+      ...l,
+      _asof_days:Number(l.overdue_days||0),
+      _asof_arrears:Number(l.arrears_amount||0),
+      _scheds:[]
+    }));
+    overdueLoans=overdueLoans.concat(fallbackLoans);
+    // ────────────────────────────────────────────────────────────────────────
 
     // Apply minDays filter
     if(minDays>0) overdueLoans=overdueLoans.filter(l=>l._asof_days>=minDays);
