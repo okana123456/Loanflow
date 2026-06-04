@@ -2234,8 +2234,15 @@ async function submitApplication(){
     const selectedClientId=$('#appClient').value;
 
     // ── Enforce one active loan per client ──────────────────────────────────
-    const{data:activeLoans}=await sb('loans').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).eq('status','active').limit(1);
-    if(activeLoans&&activeLoans.length>0){
+    const{data:activeLoans}=await sb('loans').select('id,outstanding_balance').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).eq('status','active');
+    // Auto-heal: if a loan shows active but balance is 0 or negative, mark it completed
+    const trueActive=(activeLoans||[]).filter(l=>Number(l.outstanding_balance||0)>0.01);
+    const zeroBalActive=(activeLoans||[]).filter(l=>Number(l.outstanding_balance||0)<=0.01);
+    if(zeroBalActive.length){
+      await Promise.all(zeroBalActive.map(l=>sb('loans').update({status:'completed',arrears_amount:0,overdue_days:0}).eq('id',l.id)));
+      console.log(`[AutoHeal] Marked ${zeroBalActive.length} zero-balance loan(s) as completed for client ${selectedClientId}`);
+    }
+    if(trueActive.length>0){
       toast('This client already has an active loan. They must clear it first.','error');
       if(btn){ btn.disabled=false; btn.textContent='Submit Application'; }
       return;
@@ -2265,9 +2272,16 @@ async function submitApplication(){
       rec.product_id=matchProduct.id;
     } else {
       console.warn(`No product matched tier "${tier}" for business; submitting without product_id.`);
+      // Do NOT add product_id if no match — prevents 400 from unknown column
     }
-    
-    const{error}=await sb('loan_applications').insert(rec);
+    // Try with product_id first; if Supabase rejects (column may not exist), retry without
+    let{error}=await sb('loan_applications').insert(rec);
+    if(error && error.code==='PGRST204' || (error && /product_id|column/.test(error.message||''))){
+      console.warn('product_id column not found in DB — retrying without it');
+      const recFallback={...rec}; delete recFallback.product_id;
+      const res2=await sb('loan_applications').insert(recFallback);
+      error=res2.error;
+    }
     if(error)throw error;
     await audit('application_created','loan_applications',null,null,rec);
     toast(`Application ${appNo} submitted!`,'success');closeModal();renderApplications();
@@ -2403,7 +2417,14 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // Fees are collected upfront in cash — disbursed_amount equals the full principal
     const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
-    const{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
+    // Guard: if loan_type column doesn't exist yet in DB, retry without it
+    let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
+    if(lErr && /loan_type|column/.test(lErr.message||'')){
+      console.warn('loan_type column missing in loans table — retrying without it');
+      const loanFallback={...loanRec}; delete loanFallback.loan_type;
+      const res2=await sb('loans').insert(loanFallback).select().single();
+      loan=res2.data; lErr=res2.error;
+    }
     if(lErr)throw lErr;
 
     const schedules=c.schedule.map((s,i)=>{
@@ -2841,7 +2862,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       mpesaUpdates.push(sb('loan_schedules').update({total_paid:nTotal,status:ss,paid_at:ss==='paid'?new Date().toISOString():null}).eq('id',s.id));
       mpesaRem-=apply;
     }
-    if(mpesaUpdates.length)await Promise.all(mpesaUpdates);
+    if(mpesaUpdates.length)await Promise.allSettled(mpesaUpdates);
 
     // ── Enforce minimum 1-week interest on early full payoff ──────────────────
     const mpMinInt = await enforceMinimumWeekInterest(loan, amount);
@@ -3091,7 +3112,7 @@ async function savePayment(){
       }).eq('id',s.id));
       remaining-=apply;
     }
-    if(schedUpdates.length)await Promise.all(schedUpdates);
+    if(schedUpdates.length)await Promise.allSettled(schedUpdates);
 
     // ── Enforce minimum 1-week interest on early full payoff ──────────────────
     const minIntResult = await enforceMinimumWeekInterest(loan, amount);
@@ -3109,22 +3130,29 @@ async function savePayment(){
     const loanRef = loanAfterMinInt || loan;
     // ─────────────────────────────────────────────────────────────────────────
 
-    // ── Recalculate arrears and overdue from remaining unpaid past-due schedules ──
+    // ── Recalculate arrears from a fresh DB read of schedules (ensures cascade
+    //    writes are visible before we compute the new arrears figure) ──────────
     const todayStr2=new Date().toISOString().slice(0,10);
-    const{data:remainingScheds}=await sb('loan_schedules')
-      .select('due_date,total_due,total_paid,status')
+    // Fetch ALL schedule rows for this loan — past and future — so we can
+    // compute total_paid vs total_due correctly after the cascade
+    const{data:freshScheds}=await sb('loan_schedules')
+      .select('due_date,total_due,total_paid,status,installment_no')
       .eq('loan_id',loanId)
-      .in('status',['pending','partial','overdue'])
-      .lt('due_date',todayStr2)
       .order('due_date',{ascending:true});
     let newArrears=0,newOverdueDays=0;
-    if(remainingScheds&&remainingScheds.length){
-      const unpaid=remainingScheds.filter(s=>Number(s.total_due||0)-Number(s.total_paid||0)>0.01);
-      if(unpaid.length){
-        const oldestDue=new Date(unpaid[0].due_date);oldestDue.setHours(0,0,0,0);
+    if(freshScheds&&freshScheds.length){
+      // Past-due rows where there is still an unpaid balance
+      const pastDueUnpaid=freshScheds.filter(s=>{
+        const isDue=s.due_date<todayStr2;
+        const unpaid=Number(s.total_due||0)-Number(s.total_paid||0);
+        return isDue && unpaid>0.01 && s.status!=='paid';
+      });
+      if(pastDueUnpaid.length){
+        pastDueUnpaid.sort((a,b)=>a.due_date.localeCompare(b.due_date));
+        const oldestDue=new Date(pastDueUnpaid[0].due_date);oldestDue.setHours(0,0,0,0);
         const nowD=new Date();nowD.setHours(0,0,0,0);
         newOverdueDays=Math.max(0,Math.floor((nowD-oldestDue)/(1000*60*60*24)));
-        newArrears=unpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
+        newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
       }
     }
     const newPaid=Number(loanRef.total_paid)+amount;
@@ -3134,7 +3162,7 @@ async function savePayment(){
       outstanding_balance:newBalance,
       status:newBalance<=0?'completed':loanRef.status,
       overdue_days:newBalance<=0?0:newOverdueDays,
-      arrears_amount:newBalance<=0?0:Math.max(0,newArrears)
+      arrears_amount:newBalance<=0?0:Number(Math.max(0,newArrears).toFixed(2))
     }).eq('id',loanId);
 
     await audit('payment_recorded','loan_repayments',null,null,rec);
@@ -3272,7 +3300,7 @@ async function renderOverdue(opts){
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
     overdueLoans.forEach(l=>{const d=Number(l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
-    const totalArrears=overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+    const totalArrears=overdueLoans.reduce((s,l)=>s+Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0),0);
 
     // Build missed installment rows (flat)
     const missedRows=[];
@@ -3368,8 +3396,8 @@ async function renderOverdue(opts){
       '</tr></thead><tbody>';
     if(overdueLoans.length){
       overdueLoans.forEach(function(l){
-        var arrears=Number(l.arrears_amount||0);
-        var d=Number(l.overdue_days||0);
+        var arrears=Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0);
+        var d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);
         var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
         var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
         var officerName=(window._staffMap && l.loan_officer_id && window._staffMap[l.loan_officer_id])||'Unassigned';
@@ -4263,7 +4291,10 @@ async function renderSuspense(){
         .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
     ]);
 
-    const queue=(queueR.data||[]).filter(q=>q.business_short_code===currentUser.business_id||!q.business_short_code);
+    // Show all unconfirmed queue items — business_short_code format varies by
+    // Safaricom environment so we don't filter by it; RLS on Supabase already
+    // scopes to the correct business.
+    const queue=(queueR.data||[]);
     const activeLoans=loansR.data||[];
 
     // Also fetch manually entered suspense records from income_records
