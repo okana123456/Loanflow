@@ -2443,7 +2443,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // Log processing fee as upfront cash income (mirrors recordRegistrationFeeIncome)
     try{
       const feeRcpt=(appSettings?.receipt_no_prefix||'RCP')+'-PF-'+Date.now().toString().slice(-8);
-      await sb('income_records').insert({
+      await sb('loan_income').insert({
         business_id:currentUser?.business_id,
         source:'processing_fee',
         description:`Processing fee (upfront cash) — Loan ${loanNo}`,
@@ -4297,13 +4297,14 @@ async function renderSuspense(){
     const queue=(queueR.data||[]);
     const activeLoans=loansR.data||[];
 
-    // Also fetch manually entered suspense records from income_records
-    const{data:manualSuspense}=await sb('income_records')
-      .select('*').eq('business_id',currentUser.business_id).eq('source','suspense')
+    // Also fetch manually entered suspense records from loan_income
+    const{data:manualSuspense}=await sb('loan_income')
+      .select('*').eq('business_id',currentUser.business_id).eq('entry_type','suspense')
       .order('created_at',{ascending:false});
 
+    const isSuspUnmatched=r=>!(r.notes||'').includes('MATCHED');
     const totalSuspense=queue.reduce((s,q)=>s+Number(q.trans_amount||0),0)
-      +(manualSuspense||[]).filter(r=>!r.matched).reduce((s,r)=>s+Number(r.amount||0),0);
+      +(manualSuspense||[]).filter(isSuspUnmatched).reduce((s,r)=>s+Number(r.amount||0),0);
 
     main.innerHTML=`
       <div class="page-header">
@@ -4350,8 +4351,8 @@ async function renderSuspense(){
                 <td>${r.receipt_no||'-'}</td>
                 <td>${r.description||'-'}</td>
                 <td><strong style="color:var(--accent-green)">KES ${fmtMoney(r.amount)}</strong></td>
-                <td>${r.matched?'<span class="badge badge-green">Matched</span>':'<span class="badge badge-yellow">Pending</span>'}</td>
-                <td>${!r.matched?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','manual',${r.amount},'${r.receipt_no||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
+                <td>${!(r.notes||'').includes('MATCHED')?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
+                <td>${isSuspUnmatched(r)?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','manual',${r.amount},'${r.receipt_no||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
               </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No manual suspense entries</td></tr>'}
           </tbody>
         </table>
@@ -4385,15 +4386,14 @@ async function saveSuspenseEntry(){
   if(!amt||amt<=0)return toast('Enter a valid amount','warning');
   try{
     const rcpt='SUSP-'+Date.now().toString().slice(-8);
-    await sb('income_records').insert({
+    await sb('loan_income').insert({
       business_id:currentUser.business_id,
-      source:'suspense',
-      description:$('#suspDesc').value||'Unmatched payment',
+      entry_type:'suspense',
+      description:($('#suspDesc').value||'Unmatched payment')+' | REF:'+($('#suspRef').value||rcpt),
       amount:amt,
-      receipt_no:$('#suspRef').value||rcpt,
-      income_date:$('#suspDate').value||today(),
-      recorded_by:currentUser.id,
-      matched:false
+      entry_date:$('#suspDate').value||today(),
+      created_by:currentUser.id,
+      notes:'SUSPENSE|UNMATCHED|REF:'+($('#suspRef').value||rcpt)
     });
     toast('Payment added to suspense account','success');
     closeModal();
@@ -4491,7 +4491,10 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     if(entryType==='mpesa'){
       await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loanId}).eq('id',entryId);
     } else {
-      await sb('income_records').update({matched:true,loan_id:loanId}).eq('id',entryId);
+      // Mark as matched by appending to notes (no schema change needed)
+      const{data:liRow}=await sb('loan_income').select('notes').eq('id',entryId).single().catch(()=>({data:null}));
+      const updNotes=((liRow?.notes||'')+' MATCHED:'+loanId).trim();
+      await sb('loan_income').update({notes:updNotes}).eq('id',entryId);
     }
 
     await audit('suspense_matched','loan_repayments',loanId,null,{ref,amount,loan_no:loan.loan_no});
