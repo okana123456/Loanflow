@@ -3228,10 +3228,16 @@ async function renderOverdue(opts){
 
   const main=$('#mainContent');
   try{
-    // Fetch ALL active loans with client info, and staff for officer name mapping
+    // For loan officers: filter to only their assigned loans
+    const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+
+    // Fetch active loans — officers see only their own, admins see all
+    let loansQuery = sb('loans').select('*,loan_clients(full_name,phone,address)')
+      .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false});
+    if(isOfficerOnly) loansQuery = loansQuery.eq('loan_officer_id', currentUser.id);
+
     const [{data:loans},{data:staffList}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone,address)')
-        .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false}),
+      loansQuery,
       sb('loan_staff').select('id,name').eq('business_id',currentUser.business_id)
     ]);
 
@@ -4228,16 +4234,42 @@ async function renderOfficerDashboard(){
       <h3 class="dash-h3">Collection Rates</h3>
       <div class="dash-grid-2" style="margin-bottom:14px">
         <div class="card">
-          <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Daily Collection Rate (Today)</div>
-          <div style="font-size:26px;font-weight:800;color:${rateColor(dailyRate)};margin-bottom:4px">${dailyRate.toFixed(1)}%</div>
-          <div class="dash-rate-bar"><div class="dash-rate-fill" style="width:${Math.min(100,dailyRate).toFixed(1)}%;background:${rateColor(dailyRate)}"></div></div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Collected ${fmtMoney(dailyPaid)} of ${fmtMoney(dailyDue)} due today</div>
+          <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">📅 Daily Collection Rate — Today</div>
+          <div style="font-size:28px;font-weight:800;color:${rateColor(dailyRate)};margin-bottom:6px">${dailyRate.toFixed(1)}%</div>
+          <div class="dash-rate-bar" style="margin-bottom:10px"><div class="dash-rate-fill" style="width:${Math.min(100,dailyRate).toFixed(1)}%;background:${rateColor(dailyRate)}"></div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center">
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Due Today</div>
+              <div style="font-size:13px;font-weight:800;color:var(--text-primary)">${fmtMoney(dailyDue)}</div>
+            </div>
+            <div style="background:rgba(5,150,105,0.12);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--accent-green);text-transform:uppercase;letter-spacing:.4px">Collected</div>
+              <div style="font-size:13px;font-weight:800;color:var(--accent-green)">${fmtMoney(dailyPaid)}</div>
+            </div>
+            <div style="background:rgba(239,68,68,0.1);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--accent-red);text-transform:uppercase;letter-spacing:.4px">Uncollected</div>
+              <div style="font-size:13px;font-weight:800;color:var(--accent-red)">${fmtMoney(Math.max(0,dailyDue-dailyPaid))}</div>
+            </div>
+          </div>
         </div>
         <div class="card">
-          <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Monthly Collection Rate</div>
-          <div style="font-size:26px;font-weight:800;color:${rateColor(monthlyRate)};margin-bottom:4px">${monthlyRate.toFixed(1)}%</div>
-          <div class="dash-rate-bar"><div class="dash-rate-fill" style="width:${Math.min(100,monthlyRate).toFixed(1)}%;background:${rateColor(monthlyRate)}"></div></div>
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Collected ${fmtMoney(monthPaid)} of ${fmtMoney(monthDue)} due this month</div>
+          <div style="font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">📆 Monthly Collection Rate — ${nowM}</div>
+          <div style="font-size:28px;font-weight:800;color:${rateColor(monthlyRate)};margin-bottom:6px">${monthlyRate.toFixed(1)}%</div>
+          <div class="dash-rate-bar" style="margin-bottom:10px"><div class="dash-rate-fill" style="width:${Math.min(100,monthlyRate).toFixed(1)}%;background:${rateColor(monthlyRate)}"></div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center">
+            <div style="background:rgba(255,255,255,0.05);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Month Due</div>
+              <div style="font-size:13px;font-weight:800;color:var(--text-primary)">${fmtMoney(monthDue)}</div>
+            </div>
+            <div style="background:rgba(5,150,105,0.12);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--accent-green);text-transform:uppercase;letter-spacing:.4px">Collected</div>
+              <div style="font-size:13px;font-weight:800;color:var(--accent-green)">${fmtMoney(monthPaid)}</div>
+            </div>
+            <div style="background:rgba(239,68,68,0.1);border-radius:6px;padding:6px 4px">
+              <div style="font-size:9px;font-weight:700;color:var(--accent-red);text-transform:uppercase;letter-spacing:.4px">Uncollected</div>
+              <div style="font-size:13px;font-weight:800;color:var(--accent-red)">${fmtMoney(Math.max(0,monthDue-monthPaid))}</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -4514,6 +4546,66 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
   }catch(e){toast(e.message,'error');}
 }
 
+
+function downloadOfficerPerformanceReport(){
+  const rows = window._perfRows || [];
+  if(!rows.length) return toast('No data to download','warning');
+  const nowM = new Date().toISOString().slice(0,7);
+  const data = rows.map(({o,oActive,oLoansMonth,outstanding,overdueLoans,collected})=>{
+    const clientsInArr = new Set(overdueLoans.map(l=>l.client_id)).size;
+    const totalArrAmt  = overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+    const bq  = oActive.length>0 ? ((oActive.length-clientsInArr)/oActive.length*100) : 100;
+    const par = outstanding>0 ? (totalArrAmt/outstanding*100) : 0;
+    const disbMonth = oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
+    return {
+      'Officer':           o.name||o.email,
+      'Branch':            'TAVETA',
+      'Active Clients':    oActive.length,
+      'ACC Arrears (Clients)': clientsInArr,
+      'BQ %':              Number(bq.toFixed(2)),
+      'OLB (KES)':         Number(outstanding.toFixed(2)),
+      'Arrears (KES)':     Number(totalArrAmt.toFixed(2)),
+      'PAR %':             Number(par.toFixed(2)),
+      'Collections Month (KES)': Number(collected.toFixed(2)),
+      'Disbursed Month (KES)':   Number(disbMonth.toFixed(2))
+    };
+  });
+
+  // Totals row
+  data.push({
+    'Officer':           'TOTALS',
+    'Branch':            '',
+    'Active Clients':    rows.reduce((s,r)=>s+r.oActive.length,0),
+    'ACC Arrears (Clients)': rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0),
+    'BQ %':              '',
+    'OLB (KES)':         Number(rows.reduce((s,r)=>s+r.outstanding,0).toFixed(2)),
+    'Arrears (KES)':     Number(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l.arrears_amount||0),0),0).toFixed(2)),
+    'PAR %':             '',
+    'Collections Month (KES)': Number(rows.reduce((s,r)=>s+r.collected,0).toFixed(2)),
+    'Disbursed Month (KES)':   Number(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0).toFixed(2))
+  });
+
+  const ws = XLSX.utils.json_to_sheet(data);
+
+  // Column widths
+  ws['!cols'] = [
+    {wch:22},{wch:10},{wch:14},{wch:18},{wch:8},
+    {wch:14},{wch:14},{wch:8},{wch:20},{wch:20}
+  ];
+
+  // Header row styling hint (works in Excel)
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for(let C=range.s.c; C<=range.e.c; C++){
+    const cell = ws[XLSX.utils.encode_cell({r:0,c:C})];
+    if(cell) cell.s = {font:{bold:true},fill:{fgColor:{rgb:'1E3A5F'}},font:{color:{rgb:'FFFFFF'},bold:true}};
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Officer Performance');
+  XLSX.writeFile(wb, 'Bripta_Officer_Performance_' + nowM + '.xlsx');
+  toast('Report downloaded','success');
+}
+
 async function renderOfficerPerformance(){
   const main=$('#mainContent');
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
@@ -4543,6 +4635,7 @@ async function renderOfficerPerformance(){
 
     const nowM = new Date().toISOString().slice(0,7);
 
+    window._perfRows = []; // reset
     const rows = filteredOfficers.map(o=>{
       // Match loans where loan_officer_id === o.id (also include apps later)
       const oLoans = allLoans.filter(l=>l.loan_officer_id===o.id);
@@ -4558,36 +4651,65 @@ async function renderOfficerPerformance(){
       const oLoanIds = new Set(oLoans.map(l=>l.id));
       const oRepsMonth = allReps.filter(r=>r.loan_id && oLoanIds.has(r.loan_id) && r.payment_date && r.payment_date.startsWith(nowM));
       const collected = oRepsMonth.reduce((s,r)=>s+Number(r.amount||0),0);
-      return {o,oLoans,oActive,oApps,oAppsMonth,oLoansMonth,oClientIds,portfolio,outstanding,overdueLoans,collected};
+      const row = {o,oLoans,oActive,oApps,oAppsMonth,oLoansMonth,oClientIds,portfolio,outstanding,overdueLoans,collected};
+      window._perfRows.push(row);
+      return row;
     });
 
     main.innerHTML=`
-      <div class="page-header"><h1>Officer Performance Dashboard</h1><button class="btn btn-outline btn-sm" onclick="navigateTo('officer_dashboard')">📊 View Individual Dashboard</button></div>
+      <div class="page-header">
+        <h1>Officer Performance Dashboard</h1>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="navigateTo('officer_dashboard')">📊 Individual Dashboard</button>
+          <button class="btn btn-primary btn-sm" onclick="downloadOfficerPerformanceReport()">⬇ Download Report</button>
+        </div>
+      </div>
       <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Period: <strong>${nowM}</strong> (current month) | ${viewSelf?'Your performance':'All officers'}</p>
 
       <div class="table-wrap" style="margin-bottom:24px">
         <table>
           <thead><tr>
-            <th>Officer</th><th>Role</th><th>Total Loans</th><th>Active Loans</th>
-            <th>Clients</th><th>Loans This Month</th><th>Portfolio (Active)</th>
-            <th>Outstanding</th><th>Overdue</th><th>Collections (Month)</th>
+            <th>Officer</th><th>Branch</th><th>Active Clients</th><th>ACC Arrears</th>
+            <th>BQ %</th><th>OLB (KES)</th><th>Arrears (KES)</th><th>PAR %</th>
+            <th>Collections (Month)</th><th>Disbursed (Month)</th>
           </tr></thead>
           <tbody>
-            ${rows.map(({o,oLoans,oActive,oAppsMonth,oLoansMonth,oClientIds,portfolio,outstanding,overdueLoans,collected})=>`
-              <tr>
-                <td><strong>${o.name||o.email}</strong></td>
-                <td><span class="badge badge-blue">${(o.role||'').replace(/,/g,', ')}</span></td>
-                <td>${oLoans.length}</td>
-                <td><strong style="color:var(--accent-green)">${oActive.length}</strong></td>
-                <td>${oClientIds.size}</td>
-                <td>${oLoansMonth.length}</td>
-                <td>${fmtMoney(portfolio)}</td>
-                <td>${fmtMoney(outstanding)}</td>
-                <td>${overdueLoans.length>0?`<span class="badge badge-red">${overdueLoans.length}</span>`:'<span class="badge badge-green">0</span>'}</td>
-                <td><strong style="color:var(--accent-green)">${fmtMoney(collected)}</strong></td>
-              </tr>
-            `).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No officer data found</td></tr>'}
+            ${rows.map(({o,oLoans,oActive,oClientIds,portfolio,outstanding,overdueLoans,collected,oLoansMonth})=>{
+              const clientsInArr=new Set(overdueLoans.map(l=>l.client_id)).size;
+              const totalArrAmt=overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+              const bq=oActive.length>0?((oActive.length-clientsInArr)/oActive.length*100):100;
+              const par=outstanding>0?(totalArrAmt/outstanding*100):0;
+              const disbMonth=oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
+              const bqColor=bq>=80?'var(--accent-green)':bq>=60?'var(--accent-yellow)':'var(--accent-red)';
+              const parColor=par<=5?'var(--accent-green)':par<=15?'var(--accent-yellow)':'var(--accent-red)';
+              return '<tr>' +
+                '<td><strong>'+( o.name||o.email)+'</strong></td>' +
+                '<td><span class="badge badge-gray">TAVETA</span></td>' +
+                '<td><strong style="color:var(--accent-green)">'+oActive.length+'</strong></td>' +
+                '<td><span class="badge badge-red">'+clientsInArr+'</span></td>' +
+                '<td><strong style="color:'+bqColor+'">'+bq.toFixed(1)+'%</strong></td>' +
+                '<td>'+fmtMoney(outstanding)+'</td>' +
+                '<td style="color:var(--accent-red)">'+fmtMoney(totalArrAmt)+'</td>' +
+                '<td><strong style="color:'+parColor+'">'+par.toFixed(1)+'%</strong></td>' +
+                '<td><strong style="color:var(--accent-green)">'+fmtMoney(collected)+'</strong></td>' +
+                '<td>'+fmtMoney(disbMonth)+'</td>' +
+              '</tr>';
+            }).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--text-secondary)">No officer data found</td></tr>'}
           </tbody>
+          <tfoot>
+            <tr style="font-weight:700;background:rgba(255,255,255,0.04)">
+              <td><strong>TOTALS</strong></td>
+              <td></td>
+              <td><strong>${rows.reduce((s,r)=>s+r.oActive.length,0)}</strong></td>
+              <td><strong>${rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0)}</strong></td>
+              <td></td>
+              <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.outstanding,0))}</strong></td>
+              <td><strong style="color:var(--accent-red)">${fmtMoney(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l.arrears_amount||0),0),0))}</strong></td>
+              <td></td>
+              <td><strong style="color:var(--accent-green)">${fmtMoney(rows.reduce((s,r)=>s+r.collected,0))}</strong></td>
+              <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0))}</strong></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
