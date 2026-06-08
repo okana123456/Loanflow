@@ -4559,7 +4559,7 @@ function downloadOfficerPerformanceReport(){
     const disbMonth = oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
     return {
       'Officer':           o.name||o.email,
-      'Branch':            'TAVETA',
+      'Branch':            'Bripta001',
       'Active Clients':    oActive.length,
       'ACC Arrears (Clients)': clientsInArr,
       'BQ %':              Number(bq.toFixed(2)),
@@ -4684,7 +4684,7 @@ async function renderOfficerPerformance(){
               const parColor=par<=5?'var(--accent-green)':par<=15?'var(--accent-yellow)':'var(--accent-red)';
               return '<tr>' +
                 '<td><strong>'+( o.name||o.email)+'</strong></td>' +
-                '<td><span class="badge badge-gray">TAVETA</span></td>' +
+                '<td><span class="badge badge-gray">Bripta001</span></td>' +
                 '<td><strong style="color:var(--accent-green)">'+oActive.length+'</strong></td>' +
                 '<td><span class="badge badge-red">'+clientsInArr+'</span></td>' +
                 '<td><strong style="color:'+bqColor+'">'+bq.toFixed(1)+'%</strong></td>' +
