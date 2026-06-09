@@ -4129,9 +4129,10 @@ async function renderOfficerDashboard(){
     // Total clients (all unique clients ever under this officer)
     const totalClients=oClientIds.size;
 
-    // Loan count breakdown
-    const newLoans=oLoans.filter(l=>l.loan_type==='new_loan'||(!l.loan_type&&oLoans.filter(x=>x.client_id===l.client_id).length===1));
-    const repeatLoans=oLoans.filter(l=>l.loan_type==='repeat_loan');
+    // Loan count breakdown — month only
+    const oLoansMonth=oLoans.filter(l=>(l.disbursement_date||'').startsWith(nowM));
+    const newLoans=oLoansMonth.filter(l=>l.loan_type==='new_loan'||(!l.loan_type&&oLoans.filter(x=>x.client_id===l.client_id).length===1));
+    const repeatLoans=oLoansMonth.filter(l=>l.loan_type==='repeat_loan');
 
     // Disbursement amount this month
     const disbMonth=oLoans.filter(l=>(l.disbursement_date||'').startsWith(nowM))
