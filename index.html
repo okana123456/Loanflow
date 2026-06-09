@@ -4201,9 +4201,9 @@ async function renderOfficerDashboard(){
           <div class="kpi-sub">Onboarded this month</div>
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-orange)">
-          <div class="kpi-label">Loan Count</div>
-          <div class="kpi-value" style="color:var(--accent-orange)">${oActive.length} active</div>
-          <div class="kpi-sub">${newLoans.length} new · ${repeatLoans.length} repeat</div>
+          <div class="kpi-label">Loan Count (This Month)</div>
+          <div class="kpi-value" style="color:var(--accent-orange)">${oLoansMonth.length}</div>
+          <div class="kpi-sub">${oLoansMonth.filter(l=>l.loan_type==='new_loan').length} new · ${oLoansMonth.filter(l=>l.loan_type==='repeat_loan').length} repeat</div>
         </div>
       </div>
 
