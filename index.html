@@ -2260,9 +2260,22 @@ async function submitApplication(){
     const appNo = generateUniqueNo('APP');
     const amt=Number($('#appAmount').value);
     // Determine loan type: 'new_loan' if this is the client's first ever loan, 'repeat_loan' otherwise
-    const{data:prevLoanCheck}=await sb('loans').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).limit(1);
+    const{data:prevLoanCheck}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(1);
     const loanType=(prevLoanCheck&&prevLoanCheck.length>0)?'repeat_loan':'new_loan';
-    const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:currentUser?.id,business_id:currentUser?.business_id,loan_type:loanType};
+    // ── Preserve assigned loan officer ──────────────────────────────────────
+    // If the client already has a loan (and therefore an assigned officer),
+    // keep that officer on the new application — UNLESS the person submitting
+    // is themselves a loan officer (in which case it's their own client now).
+    let appOfficerId = currentUser?.id;
+    if(prevLoanCheck && prevLoanCheck.length > 0 && prevLoanCheck[0].loan_officer_id){
+      const isOfficerSubmitting = hasRole('loan_officer') && !hasRole('admin','branch_manager');
+      if(!isOfficerSubmitting){
+        // Admin/manager submitting on behalf of a client — keep the client's
+        // existing assigned officer instead of attributing it to the admin
+        appOfficerId = prevLoanCheck[0].loan_officer_id;
+      }
+    }
+    const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:appOfficerId,business_id:currentUser?.business_id,loan_type:loanType};
     
     // Robust auto-tier → product mapping (case-insensitive, trims, fallbacks)
     const tier=getAutoTier(amt);
@@ -2405,7 +2418,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const c=calcLoan(amt,rate,'flat',term);
     const procFee=PROCESSING_FEE_FLAT;
     // Check if this client already has a previous loan — registration is one-time only
-    const{data:prevLoans}=await sb('loans').select('id').eq('client_id',clientId).eq('business_id',currentUser?.business_id).limit(2);
+    const{data:prevLoans}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',clientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(2);
     const isReturningClient=(prevLoans&&prevLoans.length>0);
     const regFee=isReturningClient?0:REGISTRATION_FEE;
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
@@ -2414,10 +2427,22 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const loanNo = generateUniqueNo('LN');
 
     // Determine loan type based on whether client has any previous loans
-    const{data:prevLoanTypeCheck}=await sb('loans').select('id').eq('client_id',clientId).eq('business_id',currentUser?.business_id).limit(1);
-    const disbLoanType=(prevLoanTypeCheck&&prevLoanTypeCheck.length>0)?'repeat_loan':'new_loan';
+    const disbLoanType=isReturningClient?'repeat_loan':'new_loan';
+
+    // ── Preserve assigned loan officer at disbursement ──────────────────────
+    // Priority: (1) the officer already on this application, (2) the client's
+    // most recent previous loan's officer, (3) fallback to currentUser.
+    // This prevents an admin disbursing on behalf of a client from
+    // overwriting the officer assignment.
+    let disbOfficerId = currentUser?.id;
+    const{data:appOfficerRow}=await sb('loan_applications').select('loan_officer_id').eq('id',appId).single();
+    if(appOfficerRow?.loan_officer_id){
+      disbOfficerId = appOfficerRow.loan_officer_id;
+    } else if(isReturningClient && prevLoans[0]?.loan_officer_id){
+      disbOfficerId = prevLoans[0].loan_officer_id;
+    }
     // Fees are collected upfront in cash — disbursed_amount equals the full principal
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:currentUser?.id,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
     // Guard: if loan_type column doesn't exist yet in DB, retry without it
     let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
@@ -3245,6 +3270,14 @@ async function renderOverdue(opts){
     window._staffMap = {};
     (staffList||[]).forEach(s=>{ window._staffMap[s.id]=s.name; });
 
+    // Populate cachedData.loans with the loans visible to this user (officer-scoped
+    // if applicable) so the dues date-picker (loadArrearsDues) always has data to
+    // work with — fixes "forecast date shows no clients" when the dashboard
+    // hasn't been visited yet, and ensures officers only see their own clients
+    // in the dues forecast too.
+    cachedData = cachedData || {};
+    cachedData.loans = loans || [];
+
     const loanIds=(loans||[]).map(l=>l.id);
     let allScheds=[];
     if(loanIds.length){
@@ -3538,12 +3571,21 @@ async function loadArrearsDues(startDate, endDate){
   const snap=window._overdueSnapshot;
   if(!snap)return;
   if(!endDate) endDate = startDate; // fallback for single-date calls
-  // Only active loans — completed loans must never appear in arrears dues
+
+  // Only active loans — completed loans must never appear in arrears dues.
+  // cachedData.loans is populated by renderOverdue (officer-scoped if applicable),
+  // so this map is always available and correctly scoped — even on a
+  // forecast/future date and without visiting the dashboard first.
   const activeLoanMap={};
   (cachedData.loans||[]).filter(l=>l.status==='active').forEach(l=>{activeLoanMap[l.id]=l;});
 
-  const{data:scheds}=await sb('loan_schedules')
-    .select('*').eq('business_id',currentUser.business_id).gte('due_date',startDate).lte('due_date',endDate);
+  const loanIds=Object.keys(activeLoanMap);
+  let scheds=[];
+  if(loanIds.length){
+    const{data}=await sb('loan_schedules')
+      .select('*').in('loan_id',loanIds).gte('due_date',startDate).lte('due_date',endDate);
+    scheds=data||[];
+  }
 
   const dueRows=((scheds||[]).map(s=>{
     const loan=activeLoanMap[s.loan_id];
@@ -4623,8 +4665,10 @@ async function renderOfficerPerformance(){
     const allApps=appsR.data||[];
     const allStaff=staffR.data||[];
 
-    // Filter to staff who have ANY of the relevant roles (role can be comma-separated)
-    const relevantRoles = ['loan_officer','admin','branch_manager'];
+    // Filter to staff who have the loan_officer role ONLY.
+    // Admins/branch managers should not appear in officer performance —
+    // clients should always be attributed to a loan officer, never to admin.
+    const relevantRoles = ['loan_officer'];
     const officers = allStaff.filter(s => {
       const roles = (s.role||'').split(',').map(r=>r.trim());
       return roles.some(r => relevantRoles.includes(r));
@@ -5386,7 +5430,13 @@ async function renderAuditLog(page=1){
   }catch(e){toast(e.message,'error')}
 }
 
-// ═══ ROLLOVER PENALTY ═══
+// ═══ ROLLOVER PENALTY (ONE-TIME PER LOAN) ═══
+// Policy: a loan can be "rolled over" at most ONCE in its lifetime. The first
+// time a loan goes past maturity + grace period, a one-time rollover penalty
+// is charged and the balance is restructured into a fresh 3-week schedule.
+// After that single rollover, if the client falls behind again, the system
+// must NOT roll over a second time — instead the entire outstanding balance
+// simply becomes arrears (no new schedules, no second penalty).
 async function applyRolloverPenalties(){
   if(!currentUser?.business_id) return;
   try{
@@ -5396,9 +5446,12 @@ async function applyRolloverPenalties(){
 
     const todayDate=new Date();todayDate.setHours(0,0,0,0);
     const todayStr = todayDate.toISOString().slice(0,10);
-    
-    // Unique reason string per day prevents the system from locking out future penalties
-    const penaltyReason = `Rollover Penalty (${penaltyPct}%) - ${todayStr}`;
+
+    // Special marker reason — presence of ANY penalty with this prefix on a
+    // loan means it has already been rolled over once and must never be
+    // rolled over again.
+    const ROLLOVER_MARKER_PREFIX = 'Rollover Penalty (';
+    const penaltyReason = `${ROLLOVER_MARKER_PREFIX}${penaltyPct}%) - ${todayStr}`;
 
     const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
     if(!activeLoans?.length)return;
@@ -5413,66 +5466,87 @@ async function applyRolloverPenalties(){
       const pastMaturity=Math.floor((todayDate-maturity)/(1000*60*60*24));
 
       if(pastMaturity > 2 && Number(loan.outstanding_balance) > 0){
-        // Ensure we haven't penalized them today already
-        const{data:existing}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason',penaltyReason).limit(1);
 
-        if(!existing?.length){
-          const penaltyAmt = Number(loan.outstanding_balance) * penaltyRate;
-          
-          await sb('loan_penalties').insert({
-            loan_id:loan.id,
-            business_id:currentUser.business_id,
-            penalty_amount:penaltyAmt,
-            reason:penaltyReason,
-            date_charged:todayStr,
-            is_waived:false
-          });
+        // ── Has this loan EVER been rolled over before? ──────────────────
+        const{data:priorRollovers}=await sb('loan_penalties')
+          .select('id')
+          .eq('loan_id',loan.id)
+          .ilike('reason', `${ROLLOVER_MARKER_PREFIX}%`)
+          .limit(1);
+        const alreadyRolledOver = !!(priorRollovers && priorRollovers.length);
 
-          // FIX 1: Permanently delete old unpaid schedules so we don't double-bill them
-          await sb('loan_schedules')
-            .delete()
-            .eq('loan_id', loan.id)
-            .in('status', ['pending', 'overdue', 'partial']);
-
-          // FIX 2: Update total_payable to keep the accounting math completely balanced
-          const newBalance = Number(loan.outstanding_balance) + penaltyAmt;
-          const newTotalPayable = Number(loan.total_payable || 0) + penaltyAmt; 
-          const newWeeklyInstallment = newBalance / 3;
-
-          let newMaturity = new Date();
-          newMaturity.setDate(newMaturity.getDate() + 21);
-
+        if(alreadyRolledOver){
+          // ── ONE-TIME ROLLOVER ALREADY USED ───────────────────────────
+          // Do NOT charge another penalty and do NOT create new schedules.
+          // The entire outstanding balance becomes arrears from here on.
+          const newOverdueDays = Math.max(0, pastMaturity);
           await sb('loans').update({
-            outstanding_balance: newBalance,
-            total_payable: newTotalPayable, 
-            arrears_amount: 0,
-            overdue_days: 0,
-            maturity_date: newMaturity.toISOString().slice(0,10)
+            arrears_amount: Number(loan.outstanding_balance) || 0,
+            overdue_days: newOverdueDays
           }).eq('id',loan.id);
-
-          const newSchedules = [];
-          // Use a timestamp-based installment number to ensure they are always unique
-          const baseInstallmentNo = Math.floor(Date.now() / 1000000); 
-          
-          for(let i=1; i<=3; i++){
-            let due = new Date();
-            due.setDate(due.getDate() + (i*7));
-            newSchedules.push({
-              loan_id: loan.id,
-              business_id: currentUser.business_id,
-              installment_no: baseInstallmentNo + i,
-              due_date: due.toISOString().slice(0,10),
-              principal_due: newWeeklyInstallment,
-              interest_due: 0,
-              total_due: newWeeklyInstallment,
-              principal_paid: 0,
-              interest_paid: 0,
-              total_paid: 0,
-              status: 'pending'
-            });
-          }
-          await sb('loan_schedules').insert(newSchedules);
+          continue;
         }
+
+        // ── First-ever rollover for this loan ──────────────────────────
+        // Ensure we haven't already processed today (idempotency within the day)
+        const{data:existingToday}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason',penaltyReason).limit(1);
+        if(existingToday?.length) continue;
+
+        const penaltyAmt = Number(loan.outstanding_balance) * penaltyRate;
+
+        await sb('loan_penalties').insert({
+          loan_id:loan.id,
+          business_id:currentUser.business_id,
+          penalty_amount:penaltyAmt,
+          reason:penaltyReason,
+          date_charged:todayStr,
+          is_waived:false
+        });
+
+        // Permanently delete old unpaid schedules so we don't double-bill them
+        await sb('loan_schedules')
+          .delete()
+          .eq('loan_id', loan.id)
+          .in('status', ['pending', 'overdue', 'partial']);
+
+        // Update total_payable to keep the accounting math completely balanced
+        const newBalance = Number(loan.outstanding_balance) + penaltyAmt;
+        const newTotalPayable = Number(loan.total_payable || 0) + penaltyAmt;
+        const newWeeklyInstallment = newBalance / 3;
+
+        let newMaturity = new Date();
+        newMaturity.setDate(newMaturity.getDate() + 21);
+
+        await sb('loans').update({
+          outstanding_balance: newBalance,
+          total_payable: newTotalPayable,
+          arrears_amount: 0,
+          overdue_days: 0,
+          maturity_date: newMaturity.toISOString().slice(0,10)
+        }).eq('id',loan.id);
+
+        const newSchedules = [];
+        // Use a timestamp-based installment number to ensure they are always unique
+        const baseInstallmentNo = Math.floor(Date.now() / 1000000);
+
+        for(let i=1; i<=3; i++){
+          let due = new Date();
+          due.setDate(due.getDate() + (i*7));
+          newSchedules.push({
+            loan_id: loan.id,
+            business_id: currentUser.business_id,
+            installment_no: baseInstallmentNo + i,
+            due_date: due.toISOString().slice(0,10),
+            principal_due: newWeeklyInstallment,
+            interest_due: 0,
+            total_due: newWeeklyInstallment,
+            principal_paid: 0,
+            interest_paid: 0,
+            total_paid: 0,
+            status: 'pending'
+          });
+        }
+        await sb('loan_schedules').insert(newSchedules);
       }
     }
   }catch(e){console.error('Rollover penalty error:',e)}
