@@ -890,7 +890,7 @@ function buildSidebar() {
     { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
     { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier'] },
-    { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'] },
     { id: 'overdue', icon: '!', label: 'Arrears', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
     { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
@@ -2791,20 +2791,27 @@ async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
   try{
     const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
-    cachedData.repayments=reps||[];
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
-    let filteredReps = filterByDate(cachedData.repayments, 'payment_date', f);
+    let filteredReps = filterByDate(reps||[], 'payment_date', f);
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
     if (isOnlyOfficer) filteredReps = filteredReps.filter(r => r.loans?.loan_officer_id === currentUser.id);
+    // Store the OFFICER-SCOPED list so Export Excel never leaks other
+    // officers' repayments to a loan_officer user.
+    cachedData.repayments = filteredReps;
     const p = paginate(filteredReps, page);
     
     const periodTotal = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
 
-    const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
-    const myQueue = (mpesaQueue||[]).filter(q => q.business_short_code === currentUser.business_id || !q.business_short_code);
-
     const canPay = hasRole('admin','branch_manager','cashier');
+    // Pending M-Pesa confirmation queue is an admin/cashier action item —
+    // not relevant for loan officers who are only tracking their own
+    // collections, so skip fetching it for them entirely.
+    let myQueue = [];
+    if(canPay){
+      const{data:mpesaQueue}=await sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false});
+      myQueue = (mpesaQueue||[]).filter(q => q.business_short_code === currentUser.business_id || !q.business_short_code);
+    }
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px">
