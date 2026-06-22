@@ -2790,7 +2790,7 @@ let repPage=1;
 async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
   try{
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
+    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,outstanding_balance,processing_fee,total_payable,disbursement_date,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
     let filteredReps = filterByDate(reps||[], 'payment_date', f);
@@ -2828,8 +2828,55 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Reference</th><th>Amount</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
-      ${p.items.map(r=>`<tr><td><strong>${r.receipt_no}</strong></td><td>${r.loans?.loan_clients?.full_name||'-'}</td><td>${r.loans?.loan_clients?.phone||'-'}</td><td>${r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-'}</td><td><span style="font-family:monospace">${r.payment_reference||'-'}</span></td><td><strong>${fmtMoney(r.amount)}</strong></td><td>${r.payment_method||'-'}</td><td>${fmtDateTime(r.payment_date||r.created_at)}</td><td><button class="btn btn-outline btn-sm" onclick="printReceipt('${r.id}')">Print</button></td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Proc. Fee</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
+      ${p.items.map(r=>{
+        const balRem   = Number(r.loans?.outstanding_balance ?? 0);
+        const procFee  = Number(r.loans?.processing_fee      ?? 0);
+        // Detect payment type from notes or penalty_portion
+        const notes    = (r.notes||'').toLowerCase();
+        const isProcFee= notes.includes('processing fee');
+        const isPenalty= Number(r.penalty_portion||0) > 0 || notes.includes('penalty') || notes.includes('rollover');
+        const isDisb   = notes.includes('disburs');
+        const payType  = isProcFee ? '<span class="badge badge-yellow">Processing Fee</span>'
+                       : isPenalty ? '<span class="badge badge-red">Penalty</span>'
+                       : isDisb    ? '<span class="badge badge-purple">Disbursement</span>'
+                       :             '<span class="badge badge-green">Repayment</span>';
+        // Balance remaining — color-coded: green=clear, yellow=partial, red=overdue
+        const balColor = balRem <= 0 ? 'var(--accent-green)'
+                       : balRem < Number(r.loans?.total_payable||0)*0.25 ? 'var(--accent-yellow)'
+                       : 'var(--accent-red)';
+        const balCell  = balRem <= 0
+          ? '<span style="color:var(--accent-green);font-weight:700">Cleared ✅</span>'
+          : '<strong style="color:'+balColor+'">'+fmtMoney(balRem)+'</strong>';
+        // Processing fee cell — shows the fee amount with "Paid Upfront" tag
+        const procCell = procFee > 0
+          ? '<span style="font-size:11px">'+fmtMoney(procFee)+'<br><span style="color:var(--accent-green);font-size:10px">✅ Paid Upfront</span></span>'
+          : '<span style="color:var(--text-secondary);font-size:11px">—</span>';
+        const rid = r.id;
+        const rclient = r.loans?.loan_clients?.full_name||'-';
+        const rphone  = r.loans?.loan_clients?.phone||'-';
+        const rloan   = r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-';
+        const rref    = r.payment_reference||'-';
+        const rmethod = r.payment_method||'-';
+        const rdate   = fmtDateTime(r.payment_date||r.created_at);
+        const ramt    = fmtMoney(r.amount);
+        return [
+          '<tr>',
+          '<td><strong>',r.receipt_no,'</strong></td>',
+          '<td>',rclient,'</td>',
+          '<td>',rphone,'</td>',
+          '<td>',rloan,'</td>',
+          '<td>',payType,'</td>',
+          '<td><span style="font-family:monospace">',rref,'</span></td>',
+          '<td><strong>',ramt,'</strong></td>',
+          '<td>',balCell,'</td>',
+          '<td>',procCell,'</td>',
+          '<td>',rmethod,'</td>',
+          '<td>',rdate,'</td>',
+          '<td><button class="btn btn-outline btn-sm" onclick="printReceipt(',JSON.stringify(rid),')">Print</button></td>',
+          '</tr>'
+        ].join('');
+      }).join('')||'<tr><td colspan="12" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -3244,8 +3291,33 @@ async function printReceipt(id){
 }
 
 function exportRepaymentsExcel(){
-  const data=(cachedData.repayments||[]).map(r=>({Receipt:r.receipt_no,Client:r.loans?.loan_clients?.full_name||'-',Phone:r.loans?.loan_clients?.phone||'-','Loan #':r.loans?.loan_no||'-',Reference:r.payment_reference||'-','Amount (KES)':Number(r.amount||0),Method:r.payment_method,'Date & Time':fmtDateTime(r.payment_date||r.created_at)}));
-  const ws=XLSX.utils.json_to_sheet(data);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Repayments');XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
+  const data=(cachedData.repayments||[]).map(r=>{
+    const notes=(r.notes||'').toLowerCase();
+    const isProcFee=notes.includes('processing fee');
+    const isPenalty=Number(r.penalty_portion||0)>0||notes.includes('penalty')||notes.includes('rollover');
+    const payType=isProcFee?'Processing Fee':isPenalty?'Penalty':'Repayment';
+    const balRem=Number(r.loans?.outstanding_balance??0);
+    const procFee=Number(r.loans?.processing_fee??0);
+    return {
+      'Receipt':           r.receipt_no,
+      'Client':            r.loans?.loan_clients?.full_name||'-',
+      'Phone':             r.loans?.loan_clients?.phone||'-',
+      'Loan #':            r.loans?.loan_no||'-',
+      'Payment Type':      payType,
+      'Reference':         r.payment_reference||'-',
+      'Amount (KES)':      Number(r.amount||0),
+      'Balance Remaining': balRem<=0?'Cleared':Number(balRem.toFixed(2)),
+      'Processing Fee (KES)': procFee>0?Number(procFee.toFixed(2)):'',
+      'Proc Fee Status':   procFee>0?'Paid Upfront':'',
+      'Method':            r.payment_method||'-',
+      'Date & Time':       fmtDateTime(r.payment_date||r.created_at)
+    };
+  });
+  const ws=XLSX.utils.json_to_sheet(data);
+  ws['!cols']=[{wch:14},{wch:22},{wch:14},{wch:12},{wch:16},{wch:16},{wch:12},{wch:16},{wch:16},{wch:14},{wch:12},{wch:20}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Repayments');
+  XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
   toast('Exported','success');
 }
 
