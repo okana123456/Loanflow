@@ -2657,6 +2657,7 @@ async function viewLoan(id){
       </tbody></table></div>
     </div>
     <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="viewClientPayments('${loan.id}')">💳 Payments</button>
       <button class="btn btn-outline btn-sm" onclick="exportLoanPDF('${loan.id}')">Export PDF</button>
       ${hasRole('admin','branch_manager')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-yellow);color:var(--accent-yellow)" onclick="openEditLoanModal('${loan.id}')">✏️ Edit Loan</button>`:''}
       ${hasRole('admin')?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="deleteLoanConfirm('${loan.id}','${loan.loan_no}')">🗑 Delete</button>`:''}
@@ -2762,6 +2763,90 @@ async function deleteLoanConfirm(id,loanNo){
   }catch(e){ toast(e.message,'error'); }
 }
 
+async function viewClientPayments(loanId){
+  const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',loanId).single();
+  if(!loan) return toast('Loan not found','error');
+
+  const{data:payments}=await sb('loan_repayments')
+    .select('*').eq('loan_id',loanId)
+    .order('payment_date',{ascending:true})
+    .order('created_at',{ascending:true});
+
+  const clientName = loan.loan_clients?.full_name||'Unknown';
+  const totalPayable = Number(loan.total_payable||0);
+  const procFee = Number(loan.processing_fee||0);
+
+  // Compute running balance after each payment
+  let runningPaid = 0;
+  const rows = (payments||[]).map(p=>{
+    runningPaid += Number(p.amount||0);
+    const balAfter = Math.max(0, totalPayable - runningPaid);
+    const isCleared = balAfter <= 0;
+    // Detect if processing fee is covered: totalPayable - balAfter >= (totalPayable - procFee)
+    // i.e. runningPaid >= principal+interest, meaning procFee portion is now covered
+    const principalAndInterest = totalPayable - procFee;
+    const procFeeCovered = procFee > 0 && runningPaid >= principalAndInterest;
+    const procFeeTag = procFee > 0
+      ? (procFeeCovered
+          ? '<span style="font-size:10px;color:var(--accent-green);margin-left:4px">✅ Fee Covered</span>'
+          : '<span style="font-size:10px;color:var(--accent-yellow);margin-left:4px">⏳ Fee Pending</span>')
+      : '';
+    const notes=(p.notes||'').toLowerCase();
+    const isPenalty=Number(p.penalty_portion||0)>0||notes.includes('penalty')||notes.includes('rollover');
+    const typeTag = isPenalty
+      ? '<span class="badge badge-red" style="font-size:9px">Penalty</span>'
+      : '<span class="badge badge-green" style="font-size:9px">Payment</span>';
+    return '<tr>'
+      +'<td>'+fmtDate(p.payment_date||p.created_at)+'</td>'
+      +'<td>'+typeTag+'</td>'
+      +'<td><strong>'+fmtMoney(p.amount)+'</strong></td>'
+      +'<td>'+(p.payment_method||'-')+'</td>'
+      +'<td>'+(p.receipt_no||'-')+'</td>'
+      +'<td>'
+        +(isCleared
+          ? '<span style="color:var(--accent-green);font-weight:700">Cleared ✅</span>'
+          : '<strong style="color:var(--accent-red)">'+fmtMoney(balAfter)+'</strong>')
+        +procFeeTag
+      +'</td>'
+      +'</tr>';
+  });
+
+  const totalPaid = runningPaid;
+  const finalBal = Math.max(0, totalPayable - totalPaid);
+
+  openModal(`
+    <h2>💳 Payment History — ${clientName}</h2>
+    <div class="card" style="margin-bottom:12px;font-size:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+      <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Loan #</div><strong>${loan.loan_no}</strong></div>
+      <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Total Payable</div><strong>${fmtMoney(totalPayable)}</strong></div>
+      <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Total Paid</div><strong style="color:var(--accent-green)">${fmtMoney(totalPaid)}</strong></div>
+      <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Balance</div><strong style="color:${finalBal<=0?'var(--accent-green)':'var(--accent-red)'}">${finalBal<=0?'Cleared ✅':fmtMoney(finalBal)}</strong></div>
+    </div>
+    ${procFee>0?`
+    <div class="card" style="margin-bottom:12px;font-size:12px;background:rgba(217,119,6,0.07);border-color:rgba(217,119,6,0.3)">
+      <span style="font-weight:700">Processing Fee: ${fmtMoney(procFee)}</span>
+      &nbsp;&nbsp;
+      ${totalPaid>=(totalPayable-procFee)
+        ? '<span style="color:var(--accent-green);font-weight:700">✅ Covered in payments</span>'
+        : '<span style="color:var(--accent-yellow);font-weight:700">⏳ Not yet fully covered — KES '+fmtMoney(Math.max(0,(totalPayable-procFee)-totalPaid))+' remaining</span>'}
+    </div>`:''}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Date</th><th>Type</th><th>Amount (KES)</th>
+          <th>Method</th><th>Receipt</th><th>Balance After</th>
+        </tr></thead>
+        <tbody>
+          ${rows.join('')||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No payments recorded yet</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Close</button>
+    </div>
+  `,true);
+}
+
 async function exportLoanPDF(id){
   const{data:loan}=await sb('loans').select('*').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
@@ -2796,9 +2881,32 @@ async function renderRepayments(page=1){
     let filteredReps = filterByDate(reps||[], 'payment_date', f);
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
     if (isOnlyOfficer) filteredReps = filteredReps.filter(r => r.loans?.loan_officer_id === currentUser.id);
+
+    // ── Compute running balance per payment row ──────────────────────────
+    // Group ALL repayments (not just filtered) by loan_id to get full
+    // running totals, then map each filtered row to its balance-after-payment.
+    const allRepsByLoan = {};
+    (reps||[]).forEach(r=>{
+      if(!allRepsByLoan[r.loan_id]) allRepsByLoan[r.loan_id]=[];
+      allRepsByLoan[r.loan_id].push(r);
+    });
+    // Sort each loan's repayments oldest-first to compute running paid
+    Object.values(allRepsByLoan).forEach(arr=>arr.sort((a,b)=>new Date(a.payment_date||a.created_at)-new Date(b.payment_date||b.created_at)));
+    // Build a map: repayment_id -> balance after that payment
+    const balAfterMap = {};
+    Object.values(allRepsByLoan).forEach(arr=>{
+      let runningPaid = 0;
+      arr.forEach(r=>{
+        runningPaid += Number(r.amount||0);
+        const totalPayable = Number(r.loans?.total_payable||0);
+        balAfterMap[r.id] = Math.max(0, totalPayable - runningPaid);
+      });
+    });
+
     // Store the OFFICER-SCOPED list so Export Excel never leaks other
     // officers' repayments to a loan_officer user.
     cachedData.repayments = filteredReps;
+    cachedData._balAfterMap = balAfterMap;
     const p = paginate(filteredReps, page);
     
     const periodTotal = filteredReps.reduce((s,r)=>s+Number(r.amount||0),0);
@@ -2828,10 +2936,11 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Proc. Fee</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
-        const balRem   = Number(r.loans?.outstanding_balance ?? 0);
-        const procFee  = Number(r.loans?.processing_fee      ?? 0);
+        // Balance AFTER this specific payment (running balance, not current balance)
+        const balRem   = cachedData._balAfterMap?.[r.id] ?? Number(r.loans?.outstanding_balance ?? 0);
+        const procFee  = Number(r.loans?.processing_fee ?? 0);
         // Detect payment type from notes or penalty_portion
         const notes    = (r.notes||'').toLowerCase();
         const isProcFee= notes.includes('processing fee');
@@ -2870,13 +2979,12 @@ async function renderRepayments(page=1){
           '<td><span style="font-family:monospace">',rref,'</span></td>',
           '<td><strong>',ramt,'</strong></td>',
           '<td>',balCell,'</td>',
-          '<td>',procCell,'</td>',
           '<td>',rmethod,'</td>',
           '<td>',rdate,'</td>',
           '<td><button class="btn btn-outline btn-sm" onclick="printReceipt(',JSON.stringify(rid),')">Print</button></td>',
           '</tr>'
         ].join('');
-      }).join('')||'<tr><td colspan="12" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      }).join('')||'<tr><td colspan="11" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
