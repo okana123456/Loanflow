@@ -147,6 +147,17 @@ tr:hover{background:rgba(37,99,235,.04)}
 .toggle input:checked+.toggle-slider{background:var(--accent-blue)}
 .toggle input:checked+.toggle-slider::before{transform:translateX(14px)}
 .hamburger{display:none;position:fixed;top:10px;left:10px;z-index:200;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:5px 8px;cursor:pointer;font-size:14px;color:var(--text-primary)}
+.service-billing-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.72);backdrop-filter:blur(2px);z-index:3000;display:flex;align-items:center;justify-content:center;padding:18px}
+.service-billing-box{width:min(520px,100%);background:var(--bg-card);border:1px solid var(--border);border-left:4px solid var(--accent-yellow);border-radius:12px;padding:18px;box-shadow:0 18px 50px rgba(0,0,0,.35)}
+.service-billing-box.locked{border-left-color:var(--accent-red)}
+.service-billing-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.service-billing-title{font-size:15px;font-weight:800;margin-bottom:4px}
+.service-billing-muted{font-size:12px;color:var(--text-secondary);line-height:1.5}
+.service-billing-amount{font-size:18px;font-weight:800;color:var(--accent-red);white-space:nowrap}
+.service-billing-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.service-billing-pill{position:fixed;right:16px;bottom:16px;z-index:3000;background:var(--bg-card);border:1px solid var(--accent-yellow);border-left:4px solid var(--accent-yellow);border-radius:10px;padding:10px 12px;box-shadow:0 10px 30px rgba(0,0,0,.25);cursor:pointer;max-width:280px}
+.service-billing-pill strong{display:block;font-size:12px;margin-bottom:2px}
+.service-billing-pill span{font-size:11px;color:var(--text-secondary)}
 /* Dashboard collection sub-grids — responsive */
 .dash-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
 .dash-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:6px}
@@ -319,6 +330,10 @@ let currentSection = 'dashboard';
 let cachedData = {};
 let charts = {};
 let appSettings = null; 
+let serviceBilling = { status:'unknown', paid:false, locked:false, reminder:false, pending:false, cycleMonth:null, checkedAt:null };
+const SERVICE_BILLING_AMOUNT = 2000;
+const SERVICE_BILLING_REMINDER_DAY = 2;
+const SERVICE_BILLING_LOCK_DAY = 4;
 
 // ═══ KEEP ALIVE PING ═══
 // Pings Supabase to reset the 7-day pause timer
@@ -500,6 +515,144 @@ function openModal(html,large){
   $('#modalOverlay').classList.add('open');
 }
 function closeModal(){$('#modalOverlay').classList.remove('open')}
+
+// SERVICE SUBSCRIPTION BILLING
+function localISODate(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function serviceBillingMonth(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+}
+function serviceBillingDueDate(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(SERVICE_BILLING_LOCK_DAY).padStart(2,'0')}`;
+}
+function isServiceBillingUser(){
+  return !!currentUser && hasRole('admin','branch_manager');
+}
+function serviceBillingCacheKey(){
+  return `loanflow_service_billing_${currentUser?.business_id || 'none'}_${serviceBillingMonth()}`;
+}
+function serviceBillingMinKey(){
+  return `loanflow_service_billing_minimized_${currentUser?.business_id || 'none'}_${serviceBillingMonth()}`;
+}
+function setServiceBillingState(next){
+  serviceBilling = { ...serviceBilling, ...next, checkedAt:new Date().toISOString() };
+  try{ localStorage.setItem(serviceBillingCacheKey(), JSON.stringify(serviceBilling)); }catch(e){}
+}
+function loadCachedServiceBilling(){
+  try{
+    const cached = JSON.parse(localStorage.getItem(serviceBillingCacheKey()) || 'null');
+    if(cached) serviceBilling = { ...serviceBilling, ...cached };
+  }catch(e){}
+}
+async function loadServiceBillingStatus({silent=false}={}){
+  if(!currentUser?.business_id || !isServiceBillingUser()) return;
+  const month = serviceBillingMonth();
+  const todayStr = localISODate();
+  const day = new Date().getDate();
+  try{
+    const { data, error } = await sb('loan_billing_cycles')
+      .select('status,paid_at,paid_until,receipt_number,phone')
+      .eq('business_id', currentUser.business_id)
+      .eq('billing_month', month)
+      .maybeSingle();
+    if(error) throw error;
+    const paid = !!data && data.status === 'paid' && (!data.paid_until || data.paid_until >= todayStr);
+    setServiceBillingState({
+      status: data?.status || 'pending',
+      paid,
+      locked: !paid && day >= SERVICE_BILLING_LOCK_DAY,
+      reminder: !paid && day >= SERVICE_BILLING_REMINDER_DAY,
+      pending: data?.status === 'initiated',
+      cycleMonth: month,
+      row: data || null
+    });
+  }catch(e){
+    loadCachedServiceBilling();
+    const dayNow = new Date().getDate();
+    if(!serviceBilling.paid){
+      serviceBilling.locked = dayNow >= SERVICE_BILLING_LOCK_DAY;
+      serviceBilling.reminder = dayNow >= SERVICE_BILLING_REMINDER_DAY;
+    }
+    if(!silent) toast('Could not check subscription status: '+e.message, 'warning');
+  }
+  renderServiceBillingOverlay();
+}
+function removeServiceBillingOverlay(){
+  document.getElementById('serviceBillingOverlay')?.remove();
+  document.getElementById('serviceBillingPill')?.remove();
+}
+function renderServiceBillingOverlay(){
+  removeServiceBillingOverlay();
+  if(!isServiceBillingUser() || serviceBilling.paid || (!serviceBilling.locked && !serviceBilling.reminder)) return;
+  const minimized = !serviceBilling.locked && localStorage.getItem(serviceBillingMinKey()) === '1';
+  const due = fmtDate(serviceBillingDueDate());
+  if(minimized){
+    const pill = document.createElement('div');
+    pill.id = 'serviceBillingPill';
+    pill.className = 'service-billing-pill';
+    pill.onclick = () => { localStorage.removeItem(serviceBillingMinKey()); renderServiceBillingOverlay(); };
+    pill.innerHTML = `<strong>Subscription payment reminder</strong><span>KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')} due before ${due}</span>`;
+    document.body.appendChild(pill);
+    return;
+  }
+  const overlay = document.createElement('div');
+  overlay.id = 'serviceBillingOverlay';
+  overlay.className = 'service-billing-backdrop';
+  overlay.innerHTML = `
+    <div class="service-billing-box ${serviceBilling.locked?'locked':''}">
+      <div class="service-billing-top">
+        <div>
+          <div class="service-billing-title">${serviceBilling.locked?'System locked until subscription is paid':'Subscription payment reminder'}</div>
+          <div class="service-billing-muted">${serviceBilling.locked?'Payment is overdue. Pay to reopen admin access.':'Subscription payment is due. Please pay before '+due+' to avoid admin lock.'}</div>
+        </div>
+        <div class="service-billing-amount">KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')}</div>
+      </div>
+      <div class="form-group">
+        <label>Phone number for payment prompt</label>
+        <input class="input" id="serviceBillingPhone" placeholder="07XXXXXXXX" value="${serviceBilling.row?.phone || ''}">
+        <div class="service-billing-muted" style="margin-top:4px">Enter the Safaricom number that should receive the payment prompt.</div>
+      </div>
+      <div class="service-billing-actions">
+        <button class="btn btn-primary" onclick="startServiceBillingPayment(this)">Pay KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')}</button>
+        <button class="btn btn-outline" onclick="checkServiceBillingPayment(this)">Check payment</button>
+        ${!serviceBilling.locked?`<button class="btn btn-outline" onclick="localStorage.setItem(serviceBillingMinKey(),'1');renderServiceBillingOverlay()">Minimize</button>`:''}
+        <button class="btn btn-outline" onclick="handleLogout()">Sign out</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+async function startServiceBillingPayment(btn){
+  const phone = (document.getElementById('serviceBillingPhone')?.value || '').trim();
+  if(!phone) return toast('Enter phone number first.', 'warning');
+  btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Sending prompt...';
+  try{
+    const { data, error } = await supabaseClient.functions.invoke('start-service-payment', { body:{ phone } });
+    if(error) throw error;
+    if(!data?.ok) throw new Error(data?.message || 'Payment prompt failed');
+    setServiceBillingState({ pending:true, status:'initiated', row:{ ...(serviceBilling.row||{}), phone } });
+    renderServiceBillingOverlay();
+    toast('Payment prompt sent. Complete it on the phone, then click Check payment.', 'success');
+  }catch(e){
+    toast(e.message || 'Could not start payment.', 'error');
+  }finally{
+    btn.disabled = false; btn.textContent = oldText;
+  }
+}
+async function checkServiceBillingPayment(btn){
+  if(btn){ btn.disabled = true; var oldText = btn.textContent; btn.textContent = 'Checking...'; }
+  await loadServiceBillingStatus({ silent:false });
+  if(serviceBilling.paid){
+    localStorage.removeItem(serviceBillingMinKey());
+    removeServiceBillingOverlay();
+    toast('Payment confirmed. System reopened.', 'success');
+  }else{
+    toast('Payment not confirmed yet. Try again after the phone payment completes.', 'warning');
+  }
+  if(btn){ btn.disabled = false; btn.textContent = oldText; }
+}
+setInterval(()=>{ if(currentUser && isServiceBillingUser()) loadServiceBillingStatus({silent:true}); }, 60000);
 
 // ═══ PAGINATION ═══
 function paginate(items,page,perPage=25){
@@ -843,6 +996,7 @@ async function checkAuthSession(){
 
 function handleLogout(){
   audit('logout','loan_staff',currentUser?.id,null,null);
+  removeServiceBillingOverlay();
   localStorage.removeItem('bripta_current_user');
   localStorage.removeItem('bripta_last_activity');
   supabaseClient.auth.signOut();
@@ -873,6 +1027,9 @@ function showApp(){
       else navigateTo('calculator');
   }
   
+  loadCachedServiceBilling();
+  renderServiceBillingOverlay();
+  loadServiceBillingStatus({ silent:true });
   setTimeout(applyRolloverPenalties,2000);
 }
 
