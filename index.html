@@ -332,6 +332,7 @@ let charts = {};
 let appSettings = null; 
 let serviceBilling = { status:'unknown', paid:false, locked:false, reminder:false, pending:false, cycleMonth:null, checkedAt:null };
 const SERVICE_BILLING_AMOUNT = 2000;
+const SERVICE_BILLING_FIRST_REMINDER_DATE = '2026-08-02';
 const SERVICE_BILLING_REMINDER_DAY = 2;
 const SERVICE_BILLING_LOCK_DAY = 4;
 
@@ -527,6 +528,9 @@ function serviceBillingDueDate(){
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(SERVICE_BILLING_LOCK_DAY).padStart(2,'0')}`;
 }
+function isBeforeServiceBillingStart(){
+  return localISODate() < SERVICE_BILLING_FIRST_REMINDER_DATE;
+}
 function isServiceBillingUser(){
   return !!currentUser && hasRole('admin','branch_manager');
 }
@@ -550,6 +554,19 @@ async function loadServiceBillingStatus({silent=false}={}){
   if(!currentUser?.business_id || !isServiceBillingUser()) return;
   const month = serviceBillingMonth();
   const todayStr = localISODate();
+  if(isBeforeServiceBillingStart()){
+    setServiceBillingState({
+      status:'paid',
+      paid:true,
+      locked:false,
+      reminder:false,
+      pending:false,
+      cycleMonth:month,
+      row:null
+    });
+    renderServiceBillingOverlay();
+    return;
+  }
   const day = new Date().getDate();
   try{
     const { data, error } = await sb('loan_billing_cycles')
@@ -585,6 +602,7 @@ function removeServiceBillingOverlay(){
 }
 function renderServiceBillingOverlay(){
   removeServiceBillingOverlay();
+  if(isBeforeServiceBillingStart()) return;
   if(!isServiceBillingUser() || serviceBilling.paid || (!serviceBilling.locked && !serviceBilling.reminder)) return;
   const minimized = !serviceBilling.locked && localStorage.getItem(serviceBillingMinKey()) === '1';
   const due = fmtDate(serviceBillingDueDate());
@@ -628,7 +646,18 @@ async function startServiceBillingPayment(btn){
   if(!phone) return toast('Enter phone number first.', 'warning');
   btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Sending prompt...';
   try{
-    const { data, error } = await supabaseClient.functions.invoke('start-service-payment', { body:{ phone } });
+    const { data: sessionData } = await supabaseClient.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    if(!accessToken){
+      localStorage.removeItem('bripta_current_user');
+      toast('Please sign in again before starting payment.', 'warning');
+      setTimeout(()=>handleLogout(), 800);
+      return;
+    }
+    const { data, error } = await supabaseClient.functions.invoke('start-service-payment', {
+      body:{ phone },
+      headers:{ Authorization:`Bearer ${accessToken}` }
+    });
     if(error) throw error;
     if(!data?.ok) throw new Error(data?.message || 'Payment prompt failed');
     setServiceBillingState({ pending:true, status:'initiated', row:{ ...(serviceBilling.row||{}), phone } });
