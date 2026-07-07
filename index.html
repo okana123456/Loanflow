@@ -2797,6 +2797,7 @@ async function viewLoan(id){
       <div><strong>Weekly:</strong> ${fmtMoney(loan.weekly_installment)}</div>
       <div><strong>Balance:</strong> <span style="color:var(--accent-yellow)">${fmtMoney(loan.outstanding_balance)}</span></div>
       <div><strong>Total Paid:</strong> <span style="color:var(--accent-green)">${fmtMoney(loan.total_paid)}</span></div>
+      <div><strong>Processing Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.processing_fee||0)} paid upfront</span></div>
       <div><strong>Disbursed:</strong> ${fmtDate(loan.disbursement_date)}</div>
       <div><strong>Maturity:</strong> ${fmtDate(loan.maturity_date)}</div>
       <div><strong>Method:</strong> ${loan.disbursement_method||'-'}</div>
@@ -3012,9 +3013,7 @@ async function viewClientPayments(loanId){
     <div class="card" style="margin-bottom:12px;font-size:12px;background:rgba(217,119,6,0.07);border-color:rgba(217,119,6,0.3)">
       <span style="font-weight:700">Processing Fee: ${fmtMoney(procFee)}</span>
       &nbsp;&nbsp;
-      ${totalPaid>=(totalPayable-procFee)
-        ? '<span style="color:var(--accent-green);font-weight:700">✅ Covered in payments</span>'
-        : '<span style="color:var(--accent-yellow);font-weight:700">⏳ Not yet fully covered — KES '+fmtMoney(Math.max(0,(totalPayable-procFee)-totalPaid))+' remaining</span>'}
+      <span style="color:var(--accent-green);font-weight:700">Paid upfront at disbursement</span>
     </div>`:''}
     <div class="table-wrap">
       <table>
@@ -3120,7 +3119,7 @@ async function renderRepayments(page=1){
       </div>
       ${myQueue.length>0?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow)"><h3 style="font-size:14px;margin-bottom:8px;color:var(--accent-yellow)">Pending M-Pesa Confirmations (${myQueue.length})</h3>
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
-        ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.bill_ref_number}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
+        ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
@@ -3181,19 +3180,23 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
   try{
     const refRaw = String(billRef||'').trim();
     if(!refRaw) return toast('M-Pesa account reference is empty','warning');
-    // Try exact match first; fall back to numeric-only normalized match (new short IDs are numeric)
-    let{data:loan}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('loan_no',refRaw).eq('status','active').maybeSingle();
-    if(!loan){
-      const numeric = refRaw.replace(/\D/g,'');
-      if(numeric){
-        const{data:byNumeric}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('loan_no',numeric).eq('status','active').maybeSingle();
-        loan = byNumeric;
+    const phoneRefs = _phoneVariants(refRaw);
+    let client = null;
+    for(const ph of phoneRefs){
+      const{data:byPhone}=await sb('loan_clients').select('id').eq('business_id', currentUser.business_id).eq('phone',ph).maybeSingle();
+      if(byPhone){ client = byPhone; break; }
+    }
+    if(!client && phoneRefs.length){
+      const tail = phoneRefs[0].replace(/\D/g,'').slice(-9);
+      if(tail){
+        const{data:fuzzyPhones}=await sb('loan_clients').select('id,phone').eq('business_id', currentUser.business_id).ilike('phone',`%${tail}`).limit(1);
+        if(fuzzyPhones && fuzzyPhones.length) client = fuzzyPhones[0];
       }
     }
-    if(!loan){
-      // last resort: case-insensitive contains
-      const{data:fuzzy}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active').ilike('loan_no',`%${refRaw}%`).limit(1);
-      if(fuzzy && fuzzy.length) loan = fuzzy[0];
+    let loan = null;
+    if(client?.id){
+      const{data:clientLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('client_id',client.id).eq('status','active').order('created_at',{ascending:false}).limit(1);
+      if(clientLoans && clientLoans.length) loan = clientLoans[0];
     }
     if(!loan)return toast('No matching active loan found for: '+refRaw,'warning');
     
@@ -5199,24 +5202,26 @@ async function renderAccounting() {
     }
     const qEndFull = qEnd + 'T23:59:59+00:00'; // inclusive end of day in UTC
 
-    const[loansR,repR,cliR,penR]=await Promise.all([
+    const[loansR,repR,cliR,penR,allLoansMapR]=await Promise.all([
       sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
       sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).gte('payment_date',qStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
       sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
-      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000)
+      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000),
+      sb('loans').select('id,client_id,total_interest,total_payable,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(100000)
     ]);
     if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
     if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
     if(cliR.error) throw new Error('Clients fetch error: '+cliR.error.message);
 
     const allLoans = loansR.data||[];
+    const allLoansForMapping = allLoansMapR.data||allLoans;
     const allReps = repR.data||[];
     const allClients = cliR.data||[];
     const allPenalties = penR.data||[];
 
     // Build loan lookup map for fast interest ratio calculation
     const loanMap = {};
-    allLoans.forEach(l=>{ loanMap[l.id]=l; });
+    allLoansForMapping.forEach(l=>{ loanMap[l.id]=l; });
 
     // JS-side filterByDate runs as a safety net for any edge-case drift
     // but the server has already done the heavy lifting above.
@@ -5272,7 +5277,7 @@ async function renderAccounting() {
 
     // Officer Revenue Breakdown — detailed by reg, proc, interest per officer
     const clientToOfficer = {};
-    allLoans.forEach(l => { if(l.loan_officer_id) clientToOfficer[l.client_id] = l.loan_officer_id; });
+    allLoansForMapping.forEach(l => { if(l.loan_officer_id && !clientToOfficer[l.client_id]) clientToOfficer[l.client_id] = l.loan_officer_id; });
 
     const officerStats = {};
     const { data: staffData } = await sb('loan_staff').select('id, name, role').eq('business_id', biz);
@@ -5955,7 +5960,32 @@ function _excelDateToISO(v){
 }
 function _num(v){ if(v===null||v===undefined||v==='')return 0; const n=Number(String(v).replace(/[, ]/g,'')); return isNaN(n)?0:n; }
 function _str(v){ return v===null||v===undefined?'':String(v).trim(); }
-function _normPhone(p){ return _str(p).replace(/\s+/g,'').replace(/^\+/,''); }
+function _normPhone(p){
+  const d=_str(p).replace(/\D/g,'');
+  if(!d)return '';
+  if(d.length===12&&d.startsWith('254'))return '0'+d.slice(3);
+  if(d.length===9&&/^[17]/.test(d))return '0'+d;
+  return d;
+}
+function _phoneVariants(p){
+  const d=_str(p).replace(/\D/g,'');
+  const out=new Set();
+  if(!d)return [];
+  out.add(d);
+  if(d.length===12&&d.startsWith('254'))out.add('0'+d.slice(3));
+  if(d.length===10&&d.startsWith('0'))out.add('254'+d.slice(1));
+  if(d.length===9&&/^[17]/.test(d)){out.add('0'+d);out.add('254'+d);}
+  return [...out];
+}
+function _headerKey(v){ return _str(v).toLowerCase().replace(/[^a-z0-9]/g,''); }
+function _rowVal(row, names){
+  const wanted = new Set(names.map(_headerKey));
+  for(const k of Object.keys(row||{})){
+    if(wanted.has(_headerKey(k))) return row[k];
+  }
+  return '';
+}
+function _normId(v){ return _str(v).replace(/\s+/g,'').toUpperCase(); }
 
 async function handleExcelImport(ev){
   const file=ev.target.files&&ev.target.files[0];
@@ -6011,57 +6041,63 @@ async function handleExcelImport(ev){
   // Group by client_name -> loan_number -> payments
   const clientsMap=new Map();
   for(const r of rows){
-    const name=_str(r.client_name);
+    const name=_str(_rowVal(r,['client_name','client name','name','full_name','full name']));
     if(!name)continue;
     if(!clientsMap.has(name)){
       clientsMap.set(name,{
         client_name:name,
-        contact_phone:_normPhone(r.contact_phone),
-        guarantor_name:_str(r.guarantor_name),
-        income_kes:_num(r.income_kes),
+        id_number:_normId(_rowVal(r,['id_number','id number','id_no','id no','national_id','national id','national_id_no','national id no','client_id_number','client id number'])),
+        contact_phone:_normPhone(_rowVal(r,['contact_phone','contact phone','phone','phone_number','phone number','mobile'])),
+        guarantor_name:_str(_rowVal(r,['guarantor_name','guarantor name','next_of_kin','next of kin'])),
+        income_kes:_num(_rowVal(r,['income_kes','income kes','income','daily_income','daily income'])),
         loans:new Map()
       });
     }
     const c=clientsMap.get(name);
-    if(!c.contact_phone && r.contact_phone) c.contact_phone=_normPhone(r.contact_phone);
-    if(!c.guarantor_name && r.guarantor_name) c.guarantor_name=_str(r.guarantor_name);
-    if(!c.income_kes && r.income_kes) c.income_kes=_num(r.income_kes);
+    if(!c.id_number) c.id_number=_normId(_rowVal(r,['id_number','id number','id_no','id no','national_id','national id','national_id_no','national id no','client_id_number','client id number']));
+    if(!c.contact_phone) c.contact_phone=_normPhone(_rowVal(r,['contact_phone','contact phone','phone','phone_number','phone number','mobile']));
+    if(!c.guarantor_name) c.guarantor_name=_str(_rowVal(r,['guarantor_name','guarantor name','next_of_kin','next of kin']));
+    if(!c.income_kes) c.income_kes=_num(_rowVal(r,['income_kes','income kes','income','daily_income','daily income']));
 
-    const loanNo=_str(r.loan_number);
+    const loanNo=_str(_rowVal(r,['loan_number','loan number','loan_no','loan no','account_number','account number']));
     if(!loanNo)continue;
     if(!c.loans.has(loanNo)){
       c.loans.set(loanNo,{
         loan_number:loanNo,
-        application_date:_excelDateToISO(r.application_date),
-        disbursement_date:_excelDateToISO(r.disbursement_date),
-        maturity_date:_excelDateToISO(r.maturity_date),
-        savings_kes:_num(r.savings_kes),
-        amount_disbursed_kes:_num(r.amount_disbursed_kes),
-        loan_amount_kes:_num(r.loan_amount_kes),
-        loan_product:_str(r.loan_product),
-        status:(_str(r.status)||'active').toLowerCase(),
+        application_date:_excelDateToISO(_rowVal(r,['application_date','application date'])),
+        disbursement_date:_excelDateToISO(_rowVal(r,['disbursement_date','disbursement date','date_disbursed','date disbursed'])),
+        maturity_date:_excelDateToISO(_rowVal(r,['maturity_date','maturity date'])),
+        savings_kes:_num(_rowVal(r,['savings_kes','savings kes','savings'])),
+        amount_disbursed_kes:_num(_rowVal(r,['amount_disbursed_kes','amount disbursed kes','amount_disbursed','amount disbursed','principal'])),
+        loan_amount_kes:_num(_rowVal(r,['loan_amount_kes','loan amount kes','loan_amount','loan amount','total_payable','total payable'])),
+        weekly_repayment_kes:_num(_rowVal(r,['weekly_repayment_kes','weekly repayment kes','weekly_repayment','weekly repayment','weekly_installment','weekly installment'])),
+        loan_term_weeks:_num(_rowVal(r,['loan_term_weeks','loan term weeks','term_weeks','term weeks','weeks'])),
+        loan_product:_str(_rowVal(r,['loan_product','loan product','product'])),
+        status:(_str(_rowVal(r,['status','loan_status','loan status']))||'active').toLowerCase(),
         payments:[]
       });
     }
     const ln=c.loans.get(loanNo);
     // Latest non-empty values win for loan-level fields
-    if(r.application_date) ln.application_date=_excelDateToISO(r.application_date)||ln.application_date;
-    if(r.disbursement_date) ln.disbursement_date=_excelDateToISO(r.disbursement_date)||ln.disbursement_date;
-    if(r.maturity_date) ln.maturity_date=_excelDateToISO(r.maturity_date)||ln.maturity_date;
-    if(r.status) ln.status=_str(r.status).toLowerCase();
-    if(r.loan_product) ln.loan_product=_str(r.loan_product);
-    if(r.amount_disbursed_kes) ln.amount_disbursed_kes=_num(r.amount_disbursed_kes);
-    if(r.loan_amount_kes) ln.loan_amount_kes=_num(r.loan_amount_kes);
-    if(r.savings_kes) ln.savings_kes=_num(r.savings_kes);
+    if(_rowVal(r,['application_date','application date'])) ln.application_date=_excelDateToISO(_rowVal(r,['application_date','application date']))||ln.application_date;
+    if(_rowVal(r,['disbursement_date','disbursement date','date_disbursed','date disbursed'])) ln.disbursement_date=_excelDateToISO(_rowVal(r,['disbursement_date','disbursement date','date_disbursed','date disbursed']))||ln.disbursement_date;
+    if(_rowVal(r,['maturity_date','maturity date'])) ln.maturity_date=_excelDateToISO(_rowVal(r,['maturity_date','maturity date']))||ln.maturity_date;
+    if(_rowVal(r,['status','loan_status','loan status'])) ln.status=_str(_rowVal(r,['status','loan_status','loan status'])).toLowerCase();
+    if(_rowVal(r,['loan_product','loan product','product'])) ln.loan_product=_str(_rowVal(r,['loan_product','loan product','product']));
+    if(_rowVal(r,['amount_disbursed_kes','amount disbursed kes','amount_disbursed','amount disbursed','principal'])) ln.amount_disbursed_kes=_num(_rowVal(r,['amount_disbursed_kes','amount disbursed kes','amount_disbursed','amount disbursed','principal']));
+    if(_rowVal(r,['loan_amount_kes','loan amount kes','loan_amount','loan amount','total_payable','total payable'])) ln.loan_amount_kes=_num(_rowVal(r,['loan_amount_kes','loan amount kes','loan_amount','loan amount','total_payable','total payable']));
+    if(_rowVal(r,['weekly_repayment_kes','weekly repayment kes','weekly_repayment','weekly repayment','weekly_installment','weekly installment'])) ln.weekly_repayment_kes=_num(_rowVal(r,['weekly_repayment_kes','weekly repayment kes','weekly_repayment','weekly repayment','weekly_installment','weekly installment']));
+    if(_rowVal(r,['loan_term_weeks','loan term weeks','term_weeks','term weeks','weeks'])) ln.loan_term_weeks=_num(_rowVal(r,['loan_term_weeks','loan term weeks','term_weeks','term weeks','weeks']));
+    if(_rowVal(r,['savings_kes','savings kes','savings'])) ln.savings_kes=_num(_rowVal(r,['savings_kes','savings kes','savings']));
 
-    const payDate=_excelDateToISO(r.payment_date);
-    const payAmt=_num(r.payment_amount_kes);
+    const payDate=_excelDateToISO(_rowVal(r,['payment_date','payment date','date_paid','date paid']));
+    const payAmt=_num(_rowVal(r,['payment_amount_kes','payment amount kes','payment_amount','payment amount','amount_paid','amount paid']));
     if(payDate && payAmt>0){
       ln.payments.push({
         payment_date:payDate,
         payment_amount_kes:payAmt,
-        balance_after_kes:_num(r.balance_after_kes),
-        payment_note:_str(r.payment_note)
+        balance_after_kes:_num(_rowVal(r,['balance_after_kes','balance after kes','balance_after','balance after','balance'])),
+        payment_note:_str(_rowVal(r,['payment_note','payment note','note','notes']))
       });
     }
   }
@@ -6079,14 +6115,19 @@ async function handleExcelImport(ev){
 
     let clientId=null;
     try{
-      // Match existing by contact_phone within this business
+      // Match existing by National ID first, then phone, within this business.
+      if(c.id_number){
+        const{data:existById}=await sb('loan_clients').select('id').eq('business_id',currentUser.business_id).eq('id_number',c.id_number).limit(1);
+        if(existById&&existById.length){ clientId=existById[0].id; stats.clientsExisting++; }
+      }
       if(c.contact_phone){
-        const{data:exist}=await sb('loan_clients').select('id').eq('business_id',currentUser.business_id).eq('phone',c.contact_phone).limit(1);
+        const{data:exist}=clientId ? {data:null} : await sb('loan_clients').select('id').eq('business_id',currentUser.business_id).eq('phone',c.contact_phone).limit(1);
         if(exist&&exist.length){ clientId=exist[0].id; stats.clientsExisting++; }
       }
       if(!clientId){
         const clientRec={
           full_name:c.client_name,
+          id_number:c.id_number||null,
           phone:c.contact_phone||null,
           monthly_income:c.income_kes||0,
           next_of_kin_name:c.guarantor_name||null,
@@ -6101,6 +6142,7 @@ async function handleExcelImport(ev){
       }else{
         // Update guarantor/income if previously empty
         const upd={};
+        if(c.id_number) upd.id_number=c.id_number;
         if(c.guarantor_name) upd.next_of_kin_name=c.guarantor_name;
         if(c.income_kes) upd.monthly_income=c.income_kes;
         if(Object.keys(upd).length){ try{ await sb('loan_clients').update(upd).eq('id',clientId);}catch(_){} }
@@ -6220,7 +6262,7 @@ async function handleExcelImport(ev){
         if(ln.disbursement_date) existQuery=existQuery.eq('disbursement_date',ln.disbursement_date);
         const{data:existLoan}=await existQuery.limit(1);
 
-        const loanNo=`${appSettings?.loan_no_prefix||'LN'}-IMP-${String(i+1).padStart(3,'0')}-${String(loanSeq).padStart(2,'0')}`;
+        const loanNo=ln.loan_number || `${appSettings?.loan_no_prefix||'LN'}-IMP-${String(i+1).padStart(3,'0')}-${String(loanSeq).padStart(2,'0')}`;
 
         const loanRec={
           loan_no:loanNo,

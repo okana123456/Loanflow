@@ -22,6 +22,37 @@ export default async function handler(req, res) {
 
   const SUPABASE_URL         = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
   const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+  const cleanRef = (v) => String(v || '').trim();
+  const refUpper = cleanRef(billRefNumber).toUpperCase();
+  const refDigits = refUpper.replace(/\D/g, '');
+  const phoneCandidates = (v) => {
+    const d = String(v || '').replace(/\D/g, '');
+    const out = new Set();
+    if (!d) return [];
+    out.add(d);
+    if (d.length === 9 && /^[17]/.test(d)) {
+      out.add('0' + d);
+      out.add('254' + d);
+    }
+    if (d.length === 10 && d.startsWith('0')) out.add('254' + d.slice(1));
+    if (d.length === 12 && d.startsWith('254')) out.add('0' + d.slice(3));
+    return [...out];
+  };
+  const mpesaPaymentDate = (v) => {
+    const s = String(v || '').trim();
+    if (/^\d{14}$/.test(s)) {
+      const d = new Date(
+        Number(s.slice(0, 4)),
+        Number(s.slice(4, 6)) - 1,
+        Number(s.slice(6, 8)),
+        Number(s.slice(8, 10)),
+        Number(s.slice(10, 12)),
+        Number(s.slice(12, 14))
+      );
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    return new Date().toISOString();
+  };
 
   if (!SUPABASE_SERVICE_KEY) {
     console.error('[Daraja] Missing SUPABASE_SERVICE_KEY');
@@ -78,27 +109,44 @@ export default async function handler(req, res) {
     const autoConfirm = !!settings.mpesa_auto_confirm;
 
     // 3. CLIENT MATCHING — BillRefNumber is the National ID ──────────────────
-    const clientRows = await db(
-      'loan_clients', 'GET', null,
-      `?id_number=eq.${encodeURIComponent(billRefNumber)}&business_id=eq.${businessId}&select=id&limit=1`
-    );
-    if (!clientRows || clientRows.length === 0) {
-      console.warn(`[Daraja] No client found for ID ${billRefNumber} in business ${businessId}`);
-      // Mark queue entry as unmatched and exit gracefully
+    let clientId = null;
+
+    const phoneRefs = [...new Set([
+      ...phoneCandidates(billRefNumber),
+      ...phoneCandidates(msisdn),
+    ])];
+    for (const ph of phoneRefs) {
+      const rows = await db(
+        'loan_clients', 'GET', null,
+        `?phone=eq.${encodeURIComponent(ph)}&business_id=eq.${businessId}&select=id&limit=1`
+      );
+      if (rows && rows.length) { clientId = rows[0].id; break; }
+    }
+
+    if (!clientId && phoneRefs.length) {
+      const tail = phoneRefs[0].replace(/\D/g, '').slice(-9);
+      const rows = await db(
+        'loan_clients', 'GET', null,
+        `?phone=ilike.*${encodeURIComponent(tail)}&business_id=eq.${businessId}&select=id,phone&limit=1`
+      );
+      if (rows && rows.length) clientId = rows[0].id;
+    }
+
+    if (!clientId) {
+      console.warn(`[Daraja] No client found for phone/account reference ${billRefNumber} in business ${businessId}`);
       if (queueId) {
         await db('mpesa_callback_queue', 'PATCH',
-          { unmatched: true, unmatched_reason: 'no_client_found' },
+          { unmatched: true, unmatched_reason: 'no_client_phone_found' },
           `?id=eq.${queueId}`
         ).catch(() => {});
       }
       return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
     }
-    const clientId = clientRows[0].id;
 
     // 4. ACTIVE LOANS — FIFO (oldest disbursement first) ─────────────────────
-    const activeLoans = await db(
+    let activeLoans = await db(
       'loans', 'GET', null,
-      `?client_id=eq.${clientId}&business_id=eq.${businessId}&status=eq.active&order=disbursement_date.asc&select=*`
+      `?client_id=eq.${clientId}&business_id=eq.${businessId}&status=eq.active&order=created_at.desc&select=*`
     );
     if (!activeLoans || activeLoans.length === 0) {
       console.warn(`[Daraja] No active loans for client ${clientId}`);
@@ -154,12 +202,12 @@ export default async function handler(req, res) {
           amount:            appliedAmount,
           payment_method:    'mpesa_c2b',
           payment_reference: transId,
-          payment_date:      new Date().toISOString().slice(0, 10),
+          payment_date:      mpesaPaymentDate(transTime),
           principal_portion: principalPortion,
           interest_portion:  interestPortion,
           penalty_portion:   0,
           mpesa_confirmed:   true,
-          notes:             `Auto Daraja C2B — National ID: ${billRefNumber} — TransID: ${transId}`,
+          notes:             `Auto Daraja C2B - Account Ref: ${billRefNumber} - TransID: ${transId}`,
         });
         const repId = repRows[0]?.id;
         if (repId) repaymentIds.push(repId);
@@ -176,13 +224,13 @@ export default async function handler(req, res) {
         //    Strategy: mark the earliest unpaid/partial instalment(s) as paid
         const scheduleRows = await db(
           'loan_schedules', 'GET', null,
-          `?loan_id=eq.${loan.id}&status=neq.paid&order=week_no.asc&select=*`
+          `?loan_id=eq.${loan.id}&status=neq.paid&order=installment_no.asc&select=*`
         );
         let schedRemainder = appliedAmount;
         for (const sched of (scheduleRows || [])) {
           if (schedRemainder <= 0) break;
-          const schedDue     = Number(sched.amount_due || sched.installment || 0);
-          const schedPaid    = Number(sched.amount_paid || 0);
+          const schedDue     = Number(sched.total_due || sched.amount_due || sched.installment || 0);
+          const schedPaid    = Number(sched.total_paid || sched.amount_paid || 0);
           const schedBalance = schedDue - schedPaid;
           if (schedBalance <= 0) continue;
 
@@ -192,9 +240,9 @@ export default async function handler(req, res) {
           const schedStatus  = newSchedPaid >= schedDue ? 'paid' : 'partial';
 
           await db('loan_schedules', 'PATCH', {
-            amount_paid:  newSchedPaid,
+            total_paid:   newSchedPaid,
             status:       schedStatus,
-            paid_date:    new Date().toISOString().slice(0, 10),
+            paid_at:      schedStatus === 'paid' ? mpesaPaymentDate(transTime) : null,
           }, `?id=eq.${sched.id}`);
         }
       }
