@@ -4748,9 +4748,10 @@ async function renderSuspense(){
     const queue=(queueR.data||[]);
     const activeLoans=loansR.data||[];
     const manualSuspense=(suspR.data||[]);
+    const pendingManualSuspense=(manualSuspense||[]).filter(r=>!r.resolved);
 
     const totalSuspense=queue.reduce((s,q)=>s+Number(q.trans_amount||0),0)
-      +(manualSuspense||[]).filter(r=>!r.resolved).reduce((s,r)=>s+Number(r.amount||0),0);
+      +pendingManualSuspense.reduce((s,r)=>s+Number(r.amount||0),0);
 
     main.innerHTML=`
       <div class="page-header">
@@ -4759,8 +4760,8 @@ async function renderSuspense(){
       </div>
       <div class="card" style="margin-bottom:14px;background:rgba(217,119,6,0.08);border-color:rgba(217,119,6,0.3)">
         <div style="display:flex;gap:24px;flex-wrap:wrap">
-          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Unmatched Payments</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${queue.length+(manualSuspense||[]).filter(r=>!r.resolved).length}</div></div>
-          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Total Suspense Amount</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">KES ${fmtMoney(totalSuspense)}</div></div>
+          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Unmatched Payments</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${queue.length+pendingManualSuspense.length}</div></div>
+          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Total Suspense Amount</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${fmtMoney(totalSuspense)}</div></div>
         </div>
         <p style="font-size:11px;color:var(--text-secondary);margin-top:6px">These are M-Pesa payments received that could not be automatically matched to a loan account. Match each payment to the correct client loan below.</p>
       </div>
@@ -4776,12 +4777,12 @@ async function renderSuspense(){
                 <td><strong>${q.trans_id||'-'}</strong></td>
                 <td>${q.msisdn||'-'}</td>
                 <td>${q.bill_ref_number||'-'}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
-                <td><strong style="color:var(--accent-green)">KES ${fmtMoney(q.trans_amount)}</strong></td>
+                <td><strong style="color:var(--accent-green)">${fmtMoney(q.trans_amount)}</strong></td>
                 <td style="display:flex;gap:4px;flex-wrap:wrap">
                   <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}','${q.loan_id||''}')">Match to Loan</button>
                   <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>
                 </td>
-              </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">✅ No unmatched M-Pesa payments</td></tr>'}
+              </tr>`).join(''):'<tr><td colspan="6"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No unmatched M-Pesa payments</div></td></tr>'}
           </tbody>
         </table>
       </div>
@@ -4791,15 +4792,15 @@ async function renderSuspense(){
         <table>
           <thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>
-            ${(manualSuspense||[]).length?(manualSuspense||[]).map(r=>`
+            ${pendingManualSuspense.length?pendingManualSuspense.map(r=>`
               <tr>
                 <td>${fmtDate(r.created_at)}</td>
                 <td>${r.mpesa_reference||r.invoice_id||'-'}</td>
                 <td>${r.payer_name||'-'} · ${r.payer_phone||'-'} · Acct: ${r.account_number||'-'}</td>
-                <td><strong style="color:var(--accent-green)">KES ${fmtMoney(r.amount)}</strong></td>
+                <td><strong style="color:var(--accent-green)">${fmtMoney(r.amount)}</strong></td>
                 <td>${!r.resolved?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
                 <td>${!r.resolved?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
-              </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No unmatched payments</td></tr>'}
+              </tr>`).join(''):'<tr><td colspan="6"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>'}
           </tbody>
         </table>
       </div>
