@@ -4739,7 +4739,7 @@ async function renderSuspense(){
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
     const[queueR,loansR,suspR]=await Promise.all([
-      sb('mpesa_callback_queue').select('*').eq('confirmed',false).is('loan_id',null).order('created_at',{ascending:false}),
+      sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false}),
       sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
         .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0),
       sb('unmatched_payments').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false})
@@ -4759,7 +4759,7 @@ async function renderSuspense(){
       </div>
       <div class="card" style="margin-bottom:14px;background:rgba(217,119,6,0.08);border-color:rgba(217,119,6,0.3)">
         <div style="display:flex;gap:24px;flex-wrap:wrap">
-          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Unmatched Payments</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${queue.length+(manualSuspense||[]).filter(r=>!r.matched).length}</div></div>
+          <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Unmatched Payments</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${queue.length+(manualSuspense||[]).filter(r=>!r.resolved).length}</div></div>
           <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Total Suspense Amount</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">KES ${fmtMoney(totalSuspense)}</div></div>
         </div>
         <p style="font-size:11px;color:var(--text-secondary);margin-top:6px">These are M-Pesa payments received that could not be automatically matched to a loan account. Match each payment to the correct client loan below.</p>
@@ -4775,10 +4775,10 @@ async function renderSuspense(){
                 <td>${fmtDateTime(q.created_at)}</td>
                 <td><strong>${q.trans_id||'-'}</strong></td>
                 <td>${q.msisdn||'-'}</td>
-                <td>${q.bill_ref_number||'-'}</td>
+                <td>${q.bill_ref_number||'-'}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
                 <td><strong style="color:var(--accent-green)">KES ${fmtMoney(q.trans_amount)}</strong></td>
                 <td style="display:flex;gap:4px;flex-wrap:wrap">
-                  <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}')">Match to Loan</button>
+                  <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}','${q.loan_id||''}')">Match to Loan</button>
                   <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>
                 </td>
               </tr>`).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">✅ No unmatched M-Pesa payments</td></tr>'}
@@ -4847,9 +4847,9 @@ async function saveSuspenseEntry(){
   }catch(e){toast(e.message,'error');}
 }
 
-async function openSuspenseMatchModal(entryId, entryType, amount, ref){
+async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){
   const{data:loans}=await sb('loans')
-    .select('id,loan_no,outstanding_balance,loan_clients(full_name,phone)')
+    .select('id,loan_no,outstanding_balance,loan_clients(full_name,phone,id_number)')
     .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
     .order('created_at',{ascending:false}).limit(500);
 
@@ -4860,10 +4860,11 @@ async function openSuspenseMatchModal(entryId, entryType, amount, ref){
     </div>
     <div class="form-group">
       <label>Select Loan to Apply Payment To</label>
-      <input class="input" id="suspMatchSearch" placeholder="Type client name, phone or loan no..." oninput="filterSuspenseLoans(this.value)" style="margin-bottom:8px">
-      <select class="select" id="suspMatchLoan" size="6" style="height:140px">
-        ${(loans||[]).map(l=>`<option value="${l.id}">${l.loan_no} — ${l.loan_clients?.full_name||'?'} (${l.loan_clients?.phone||''}) — Bal: KES ${fmtMoney(l.outstanding_balance)}</option>`).join('')}
+      <input class="input" id="suspMatchSearch" placeholder="Type client name, phone, ID or loan no..." oninput="filterSuspenseLoans(this.value)" style="margin-bottom:8px">
+      <select class="select" id="suspMatchLoan" size="7" style="height:170px" onchange="previewSuspenseMatch(${Number(amount)||0})">
+        ${(loans||[]).map(l=>suspenseLoanOption(l, suggestedLoanId)).join('')}
       </select>
+      <div id="suspMatchPreview" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
     </div>
     <div class="form-group"><label>Payment Method</label>
       <select class="select" id="suspMatchMethod">
@@ -4876,24 +4877,50 @@ async function openSuspenseMatchModal(entryId, entryType, amount, ref){
     </div>
   `);
   window._suspMatchLoans=loans||[];
+  setTimeout(()=>previewSuspenseMatch(Number(amount)||0), 50);
+}
+
+function suspenseLoanOption(l, selectedId=''){
+  const c = l.loan_clients || {};
+  const phone = c.phone || '';
+  const idNo = c.id_number ? ' - ID ' + c.id_number : '';
+  const selected = selectedId && l.id === selectedId ? ' selected' : '';
+  return `<option value="${l.id}"${selected}>${l.loan_no} - ${c.full_name||'?'} (${phone}${idNo}) - Bal: KES ${fmtMoney(l.outstanding_balance)}</option>`;
 }
 
 function filterSuspenseLoans(q){
   const sel=document.getElementById('suspMatchLoan');
   const loans=window._suspMatchLoans||[];
-  const ql=q.toLowerCase();
+  const ql=(q||'').toLowerCase();
   const filtered=ql.length<2?loans:loans.filter(l=>{
     const nm=(l.loan_clients?.full_name||'').toLowerCase();
     const ph=(l.loan_clients?.phone||'').toLowerCase();
+    const idn=(l.loan_clients?.id_number||'').toLowerCase();
     const ln=(l.loan_no||'').toLowerCase();
-    return nm.includes(ql)||ph.includes(ql)||ln.includes(ql);
+    return nm.includes(ql)||ph.includes(ql)||idn.includes(ql)||ln.includes(ql);
   });
-  if(sel) sel.innerHTML=filtered.map(l=>`<option value="${l.id}">${l.loan_no} — ${l.loan_clients?.full_name||'?'} (${l.loan_clients?.phone||''}) — Bal: KES ${fmtMoney(l.outstanding_balance)}</option>`).join('');
+  if(sel) sel.innerHTML=filtered.map(l=>suspenseLoanOption(l)).join('');
+  previewSuspenseMatch(Number(sel?.dataset?.amount||0));
+}
+
+function previewSuspenseMatch(amount){
+  const sel=document.getElementById('suspMatchLoan');
+  const out=document.getElementById('suspMatchPreview');
+  if(!sel||!out)return;
+  sel.dataset.amount=String(amount||0);
+  const loan=(window._suspMatchLoans||[]).find(l=>l.id===sel.value);
+  if(!loan){ out.textContent='Select a loan to preview the balance after matching.'; return; }
+  const bal=Number(loan.outstanding_balance||0);
+  const after=Math.max(0,bal-Number(amount||0));
+  const extra=Math.max(0,Number(amount||0)-bal);
+  out.innerHTML=`Selected balance: <b>KES ${fmtMoney(bal)}</b>. After match: <b style="color:var(--accent-green)">KES ${fmtMoney(after)}</b>${extra>0?` <span style="color:var(--accent-yellow)">Extra KES ${fmtMoney(extra)} is above current loan balance.</span>`:''}`;
 }
 
 async function confirmSuspenseMatch(entryId, entryType, amount, ref){
   const loanId=document.getElementById('suspMatchLoan')?.value;
   if(!loanId)return toast('Please select a loan','warning');
+  const btn=[...document.querySelectorAll('.modal-actions .btn-primary')].find(b=>/Confirm Match/i.test(b.textContent||''));
+  if(btn){ btn.disabled=true; btn.textContent='Matching...'; }
   try{
     const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
     if(!loan)throw new Error('Loan not found');
@@ -4906,36 +4933,76 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     const interestPortion=Number((amount*interestRatio).toFixed(2));
     const principalPortion=Number((amount-interestPortion).toFixed(2));
     const method=document.getElementById('suspMatchMethod')?.value||'mpesa';
+    const paymentDate=new Date().toISOString();
 
-    await sb('loan_repayments').insert({
+    const { data: repayment, error: repaymentErr } = await sb('loan_repayments').insert({
       loan_id:loanId,receipt_no:receiptNo,amount,payment_method:method,
-      payment_reference:ref,payment_date:new Date().toISOString(),
+      payment_reference:ref,payment_date:paymentDate,
       principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:0,
       mpesa_confirmed:true,collected_by:currentUser.id,
       business_id:currentUser.business_id,notes:'Matched from suspense account'
-    });
+    }).select('id').single();
+    if(repaymentErr) throw repaymentErr;
 
     // Cascade into schedules
     const{data:scheds}=await sb('loan_schedules').select('*').eq('loan_id',loanId)
-      .in('status',['pending','overdue','partial']).order('due_date',{ascending:true});
+      .in('status',['pending','overdue','partial']).order('due_date',{ascending:true}).order('installment_no',{ascending:true});
     let rem=amount;
     const upds=[];
+    const todayStr=new Date().toISOString().slice(0,10);
     for(const s of (scheds||[])){
       if(rem<=0)break;
       const due=Number(s.total_due||0),paid=Number(s.total_paid||0),owed=Math.max(0,due-paid);
       if(owed<=0)continue;
-      const apply=Math.min(rem,owed);const nTotal=paid+apply;const ss=nTotal>=due?'paid':'partial';
-      upds.push(sb('loan_schedules').update({total_paid:nTotal,status:ss,paid_at:ss==='paid'?new Date().toISOString():null}).eq('id',s.id));
+      const apply=Math.min(rem,owed);const nTotal=Number((paid+apply).toFixed(2));const ss=nTotal>=due?'paid':(s.due_date<todayStr?'overdue':'partial');
+      upds.push(sb('loan_schedules').update({total_paid:nTotal,status:ss,paid_at:ss==='paid'?paymentDate:null}).eq('id',s.id));
       rem-=apply;
     }
-    if(upds.length)await Promise.all(upds);
-    const newPaid=Number(loan.total_paid)+amount;
-    const newBal=Math.max(0,Number(loan.outstanding_balance)-amount);
-    await sb('loans').update({total_paid:newPaid,outstanding_balance:newBal,status:newBal<=0?'completed':loan.status}).eq('id',loanId);
+    if(upds.length)await Promise.allSettled(upds);
+
+    const minIntResult = await enforceMinimumWeekInterest(loan, amount);
+    const { data: loanAfterMinInt } = minIntResult.adjusted
+      ? await sb('loans').select('*').eq('id', loanId).single()
+      : { data: loan };
+    const loanRef = loanAfterMinInt || loan;
+
+    const{data:freshScheds}=await sb('loan_schedules')
+      .select('due_date,total_due,total_paid,status,installment_no')
+      .eq('loan_id',loanId)
+      .order('due_date',{ascending:true});
+    let newArrears=0,newOverdueDays=0;
+    const pastDueUnpaid=(freshScheds||[]).filter(s=>{
+      const unpaid=Number(s.total_due||0)-Number(s.total_paid||0);
+      return s.due_date<todayStr && unpaid>0.01 && s.status!=='paid';
+    });
+    if(pastDueUnpaid.length){
+      pastDueUnpaid.sort((a,b)=>a.due_date.localeCompare(b.due_date));
+      const oldestDue=new Date(pastDueUnpaid[0].due_date);oldestDue.setHours(0,0,0,0);
+      const nowD=new Date();nowD.setHours(0,0,0,0);
+      newOverdueDays=Math.max(0,Math.floor((nowD-oldestDue)/(1000*60*60*24)));
+      newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
+    }
+
+    const newPaid=Number(loanRef.total_paid||0)+amount;
+    const newBal=Math.max(0,Number(loanRef.outstanding_balance||0)-amount);
+    await sb('loans').update({
+      total_paid:newPaid,
+      outstanding_balance:newBal,
+      status:newBal<=0?'completed':loanRef.status,
+      overdue_days:newBal<=0?0:newOverdueDays,
+      arrears_amount:newBal<=0?0:Number(Math.max(0,newArrears).toFixed(2))
+    }).eq('id',loanId);
 
     // Mark suspense entry as matched
     if(entryType==='mpesa'){
-      await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loanId}).eq('id',entryId);
+      await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loanId,repayment_id:repayment?.id||null}).eq('id',entryId);
+      if(ref){
+        await sb('unmatched_payments').update({
+          resolved:true,
+          resolved_at:new Date().toISOString(),
+          resolved_by:currentUser.id
+        }).eq('business_id',currentUser.business_id).eq('mpesa_reference',ref);
+      }
     } else {
       // Mark unmatched_payments row as resolved
       await sb('unmatched_payments').update({
@@ -4959,10 +5026,17 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     }).catch(e=>console.warn('Journal entry failed:',e.message));
 
     await audit('suspense_matched','loan_repayments',loanId,null,{ref,amount,loan_no:loan.loan_no});
-    toast(`Payment KES ${fmtMoney(amount)} matched to ${loan.loan_no}!`,'success');
+    const msg = minIntResult.adjusted
+      ? `Payment KES ${fmtMoney(amount)} matched to ${loan.loan_no}. Minimum interest balance remains KES ${fmtMoney(minIntResult.shortfall)}.`
+      : `Payment KES ${fmtMoney(amount)} matched to ${loan.loan_no}!`;
+    toast(msg,minIntResult.adjusted?'warning':'success');
     closeModal();
+    cachedData.loans=null;cachedData.schedules=null;cachedData.repayments=null;
     renderSuspense();
-  }catch(e){toast(e.message,'error');}
+  }catch(e){
+    toast(e.message,'error');
+    if(btn){ btn.disabled=false; btn.textContent='Confirm Match & Apply Payment'; }
+  }
 }
 
 
