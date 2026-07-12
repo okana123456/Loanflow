@@ -473,6 +473,24 @@ function parseLocalDate(value){
 }
 const fmtDate = (d) => {if(!d)return '-';const dt=parseLocalDate(d);if(!dt)return '-';return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`};
 const fmtDateTime = (d) => {if(!d)return '-';const dt=new Date(d);return fmtDate(d)+' '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})};
+function localDateTime(d=new Date()){
+  return `${localISODate(d)}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+function fmtPaymentDateTime(value){
+  if(!value) return '-';
+  const raw=String(value);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return fmtDate(raw);
+  const dt=new Date(raw);
+  if(isNaN(dt)) return raw;
+  const now=new Date();
+  // Some imported/Daraja timestamps are already Kenya local time but marked like UTC.
+  // If converting them would show a future payment, display the stored clock instead.
+  const useStoredClock = /Z$/.test(raw) && dt.getTime() > now.getTime() + 5*60*1000;
+  if(useStoredClock){
+    return `${String(dt.getUTCDate()).padStart(2,'0')}/${String(dt.getUTCMonth()+1).padStart(2,'0')}/${dt.getUTCFullYear()} ${String(dt.getUTCHours()).padStart(2,'0')}:${String(dt.getUTCMinutes()).padStart(2,'0')}`;
+  }
+  return fmtDate(raw)+' '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
 const fmtLongDate = (d=new Date()) => {
   const dt=parseLocalDate(d);
   return dt ? dt.toLocaleDateString('en-KE',{day:'2-digit',month:'long',year:'numeric'}) : '-';
@@ -3168,7 +3186,7 @@ async function renderRepayments(page=1){
         const rloan   = r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-';
         const rref    = r.payment_reference||'-';
         const rmethod = r.payment_method||'-';
-        const rdate   = fmtDateTime(r.payment_date||r.created_at);
+        const rdate   = fmtPaymentDateTime(r.payment_date||r.created_at);
         const ramt    = fmtMoney(r.amount);
         return [
           '<tr>',
@@ -3239,7 +3257,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       mpPrincipalPortion = Number((amount - mpInterestPortion).toFixed(2));
     }
 
-    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:new Date().toISOString(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:mpPenaltyPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:mpPenaltyPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
     
@@ -3478,7 +3496,7 @@ async function savePayment(){
     const interestPortion = Number((corePayment * interestRatio).toFixed(2));
     const principalPortion = Number((corePayment - interestPortion).toFixed(2));
 
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:new Date().toISOString(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
 
@@ -3623,7 +3641,7 @@ function exportRepaymentsExcel(){
       'Processing Fee (KES)': procFee>0?Number(procFee.toFixed(2)):'',
       'Proc Fee Status':   procFee>0?'Paid Upfront':'',
       'Method':            r.payment_method||'-',
-      'Date & Time':       fmtDateTime(r.payment_date||r.created_at)
+  'Date & Time':       fmtPaymentDateTime(r.payment_date||r.created_at)
     };
   });
   const ws=XLSX.utils.json_to_sheet(data);

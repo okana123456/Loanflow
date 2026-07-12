@@ -23,17 +23,10 @@ function phoneVariants(value: unknown) {
 function mpesaDate(value: unknown) {
   const s = String(value || "").trim();
   if (/^\d{14}$/.test(s)) {
-    const d = new Date(
-      Number(s.slice(0, 4)),
-      Number(s.slice(4, 6)) - 1,
-      Number(s.slice(6, 8)),
-      Number(s.slice(8, 10)),
-      Number(s.slice(10, 12)),
-      Number(s.slice(12, 14)),
-    );
-    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
   }
-  return new Date().toISOString();
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
 serve(async (req) => {
