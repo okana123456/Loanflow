@@ -459,9 +459,25 @@ function filterByDate(data, dateField, filterState) {
 }
 const $$ = (sel) => document.querySelectorAll(sel);
 const fmtMoney = (n) => 'KES ' + Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtDate = (d) => {if(!d)return '-';const dt=new Date(d);return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`};
+function localISODate(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function parseLocalDate(value){
+  if(!value) return null;
+  if(value instanceof Date) return value;
+  const s=String(value);
+  const m=s.slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+  const d=new Date(value);
+  return isNaN(d) ? null : d;
+}
+const fmtDate = (d) => {if(!d)return '-';const dt=parseLocalDate(d);if(!dt)return '-';return `${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`};
 const fmtDateTime = (d) => {if(!d)return '-';const dt=new Date(d);return fmtDate(d)+' '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})};
-const today = () => new Date().toISOString().slice(0,10);
+const fmtLongDate = (d=new Date()) => {
+  const dt=parseLocalDate(d);
+  return dt ? dt.toLocaleDateString('en-KE',{day:'2-digit',month:'long',year:'numeric'}) : '-';
+};
+const today = () => localISODate();
 const genId = () => crypto.randomUUID();
 
 function generateUniqueNo(prefix) {
@@ -518,9 +534,6 @@ function openModal(html,large){
 function closeModal(){$('#modalOverlay').classList.remove('open')}
 
 // SERVICE SUBSCRIPTION BILLING
-function localISODate(d=new Date()){
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
 function serviceBillingMonth(d=new Date()){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
 }
@@ -1384,12 +1397,12 @@ async function loadDueByDate(dateStr){
   const paid   = scheds2.reduce((s,sc)=>s+Number(sc.total_paid||0),0);
   const unpaid = Math.max(0, dueAmt - paid);
 
-  const isToday = dateStr === new Date().toISOString().slice(0,10);
-  const isFuture = dateStr > new Date().toISOString().slice(0,10);
+const isToday = dateStr === today();
+const isFuture = dateStr > today();
 
   // Update label
-  const lbl = document.getElementById('dueDateLabel');
-  if(lbl) lbl.textContent = isToday ? '— Today' : isFuture ? '— Upcoming / Forecast' : '— Past date';
+const lbl = document.getElementById('dueDateLabel');
+if(lbl) lbl.textContent = isToday ? `— Today, ${fmtLongDate(dateStr)}` : isFuture ? `— Upcoming / Forecast, ${fmtLongDate(dateStr)}` : `— Past date, ${fmtLongDate(dateStr)}`;
 
   // Update summary cards
   const cards = document.getElementById('dueSummaryCards');
@@ -1419,7 +1432,7 @@ async function renderDashboard(){
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   try{
-    const todayFetch=new Date().toISOString().slice(0,10);
+    const todayFetch=today();
     const[loansR,schedR,todaySchedR,repR,appsR,clientsR]=await Promise.all([
       sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id),
       sb('loan_schedules').select('*').eq('business_id', currentUser.business_id).limit(50000),
@@ -1532,7 +1545,10 @@ async function renderDashboard(){
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
         <div style="display:flex; justify-content:space-between; width:100%; align-items:center; margin-bottom:12px">
-            <h1 style="margin:0">Dashboard</h1>
+            <div>
+              <h1 style="margin:0">Dashboard</h1>
+              <div style="font-size:13px;color:var(--text-secondary);margin-top:3px">${fmtLongDate(todayStr)}</div>
+            </div>
             <button class="btn btn-outline" onclick="navigateTo('dashboard')">Refresh</button>
         </div>
         ${getDateFilterHtml('dashboard')}
@@ -1551,7 +1567,7 @@ async function renderDashboard(){
         <span style="font-size:13px;font-weight:700;color:var(--text-primary)">📅 View Dues For:</span>
         <input type="date" id="dueDatePicker" class="input" style="width:160px;padding:5px 10px;font-size:13px;font-weight:600" value="${todayStr}"
           onchange="loadDueByDate(this.value)">
-        <span id="dueDateLabel" style="font-size:12px;color:var(--text-secondary)">${todayStr===todayStr?'Today':'Selected date'}</span>
+        <span id="dueDateLabel" style="font-size:12px;color:var(--text-secondary)">Today, ${fmtLongDate(todayStr)}</span>
       </div>
 
       <!-- Summary KPI cards for selected date -->
@@ -1656,7 +1672,7 @@ async function renderDashboard(){
     Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});
     const ctx1=document.getElementById('chartStatus');
     if(ctx1)charts.status=new Chart(ctx1,{type:'doughnut',data:{labels:Object.keys(statusCounts),datasets:[{data:Object.values(statusCounts),backgroundColor:['#059669','#2563eb','#dc2626','#94a3b8']}]},options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8'}}}}});
-    const months=[];for(let i=11;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months.push(d.toISOString().slice(0,7))}
+      const months=[];for(let i=11;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months.push(localISODate(d).slice(0,7))}
     const disbByMonth=months.map(m=>allLoans.filter(l=>l.disbursement_date&&l.disbursement_date.startsWith(m)).reduce((s,l)=>s+Number(l.disbursed_amount||0),0));
     const repByMonth=months.map(m=>allReps.filter(r=>r.payment_date&&r.payment_date.startsWith(m)).reduce((s,r)=>s+Number(r.amount||0),0));
     const ctx2=document.getElementById('chartMonthly');
@@ -1895,11 +1911,11 @@ async function saveClient(){
       return toast('A client with this ID or Phone already exists','error');
     }
 
-    const today=new Date().toISOString().slice(0,10);
+    const todayStr=today();
     const userNotes=($('#cNotes').value||'').trim();
     const assignedOfficerId = ($('#cAssignedOfficer')?.value || currentUser?.id || '').trim();
     const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
-    const taggedNotes=(userNotes?userNotes+' ':'')+regFeeTag(REGISTRATION_FEE, today)+officerTag;
+    const taggedNotes=(userNotes?userNotes+' ':'')+regFeeTag(REGISTRATION_FEE, todayStr)+officerTag;
     const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,business_id:currentUser?.business_id,created_by:currentUser?.id};
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
@@ -2108,7 +2124,7 @@ async function confirmTransferClient(clientId, clientName){
     const prevOfficerId=window._clientOffMap?.[clientId]||curClient?.loan_officer_id||null;
     const prevOfficerName=(window._staffMap&&prevOfficerId)?window._staffMap[prevOfficerId]:'Unknown';
     const newOfficerName=(window._staffMap&&officerId)?window._staffMap[officerId]:officerId;
-    const transferStamp=`[TRANSFER ${new Date().toISOString().slice(0,10)}: ${prevOfficerName} → ${newOfficerName}${reason?'. Reason: '+reason:''}]`;
+    const transferStamp=`[TRANSFER ${today()}: ${prevOfficerName} → ${newOfficerName}${reason?'. Reason: '+reason:''}]`;
     // Append transfer history to client notes so it is never lost
     const updatedNotes=((curClient?.notes||'')+' '+transferStamp).trim();
     await sb('loan_clients').update({notes:updatedNotes}).eq('id',clientId);
@@ -2187,7 +2203,7 @@ async function exportClientsExcel(){
     ws['!cols']=cols;
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,'Clients');
-    XLSX.writeFile(wb,'Bripta_Clients_'+new Date().toISOString().slice(0,10)+'.xlsx');
+    XLSX.writeFile(wb,'Bripta_Clients_'+today()+'.xlsx');
     toast('Client report exported with full details','success');
   }catch(e){toast(e.message,'error');}
 }
@@ -2572,7 +2588,7 @@ async function openDisburseModal(appId){
     </div>
     <div class="form-row"><div class="form-group"><label>Disbursed Amount</label><input class="input" type="number" id="dAmt" value="${amt}"></div><div class="form-group"><label>Disbursement Method</label><select class="select" id="dMethod"><option value="cash">Cash</option><option value="mpesa" selected>M-Pesa</option><option value="bank_transfer">Bank Transfer</option></select></div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="dRef"></div><div class="form-group"><label>Disbursement Date</label><input class="input" type="date" id="dDate" value="${today()}"></div></div>
-    <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${firstRep.toISOString().slice(0,10)}"></div>
+    <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${localISODate(firstRep)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
       <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>⚡ Processing Fee — Fees Paid Upfront (Not Deducted)</span><strong>${fmtMoney(procFee)}</strong></p>
@@ -2608,7 +2624,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const isReturningClient=(prevLoans&&prevLoans.length>0);
     const regFee=isReturningClient?0:REGISTRATION_FEE;
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
-    const maturity=new Date(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
+    const maturity=parseLocalDate(firstRep);maturity.setDate(maturity.getDate()+(term-1)*7);
 
     const loanNo = generateUniqueNo('LN');
 
@@ -2628,7 +2644,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
       disbOfficerId = prevLoans[0].loan_officer_id;
     }
     // Fees are collected upfront in cash — disbursed_amount equals the full principal
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:maturity.toISOString().slice(0,10),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
     // Guard: if loan_type column doesn't exist yet in DB, retry without it
     let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
@@ -2641,8 +2657,8 @@ async function confirmDisburse(appId,clientId,termWeeks){
     if(lErr)throw lErr;
 
     const schedules=c.schedule.map((s,i)=>{
-      const due=new Date(firstRep);due.setDate(due.getDate()+i*7);
-      return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:due.toISOString().slice(0,10),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
+      const due=parseLocalDate(firstRep);due.setDate(due.getDate()+i*7);
+      return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:localISODate(due),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
     
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
@@ -2896,7 +2912,7 @@ async function saveEditLoan(id){
   const totalPaid=Number($('#elTotalPaid')?.value||0);
   const waive=$('#elWaivePenalties')?.value==='yes';
   const reason=$('#elReason')?.value||'Admin adjustment';
-  const todayStr=new Date().toISOString().slice(0,10);
+  const todayStr=today();
   try{
     // 1. Update core loan fields
     const upd={outstanding_balance:balance,total_paid:totalPaid};
@@ -2917,9 +2933,9 @@ async function saveEditLoan(id){
       const{data:loan}=await sb('loans').select('disbursement_date,term_weeks').eq('id',id).single();
       const{data:scheds}=await sb('loan_schedules').select('id,installment_no').eq('loan_id',id).order('installment_no');
       for(const s of (scheds||[])){
-        const newDue=new Date(loan.disbursement_date);
+        const newDue=parseLocalDate(loan.disbursement_date);
         newDue.setDate(newDue.getDate()+s.installment_no*7);
-        await sb('loan_schedules').update({due_date:newDue.toISOString().slice(0,10)}).eq('id',s.id);
+        await sb('loan_schedules').update({due_date:localISODate(newDue)}).eq('id',s.id);
       }
     }
     await audit('loan_edited','loans',id,null,{...upd,reason,penalties_waived:waive});
@@ -3510,7 +3526,7 @@ async function savePayment(){
 
     // ── Recalculate arrears from a fresh DB read of schedules (ensures cascade
     //    writes are visible before we compute the new arrears figure) ──────────
-    const todayStr2=new Date().toISOString().slice(0,10);
+    const todayStr2=today();
     // Fetch ALL schedule rows for this loan — past and future — so we can
     // compute total_paid vs total_due correctly after the cascade
     const{data:freshScheds}=await sb('loan_schedules')
@@ -3553,7 +3569,7 @@ async function savePayment(){
     // Auto-refresh due list on dashboard if visible
     if(document.getElementById('dueClientTable')){
       const dp=document.getElementById('dueDatePicker');
-      loadDueByDate(dp?dp.value:new Date().toISOString().slice(0,10));
+      loadDueByDate(dp?dp.value:today());
     }
     // Refresh current section + always refresh dashboard in background
     if(currentSection==='repayments')renderRepayments();
@@ -3624,7 +3640,7 @@ async function renderOverdue(opts){
   let asOfDate, minDays=1;
   if(opts && typeof opts==='object'){ asOfDate=opts.asOfDate; minDays=parseInt(opts.minDays??1)||1; }
   else if(opts!==undefined){ minDays=parseInt(opts)||1; }
-  const todayStr=new Date().toISOString().slice(0,10);
+  const todayStr=today();
   asOfDate=asOfDate||todayStr;
 
   const main=$('#mainContent');
@@ -3983,7 +3999,7 @@ async function loadArrearsDues(startDate, endDate){
   const summary=document.getElementById('duesDateSummary');
   if(summary){
     const total=dueRows.reduce((s,r)=>s+Number(r.s.total_due||0),0);
-    const isFuture=startDate>new Date().toISOString().slice(0,10);
+    const isFuture=startDate>today();
     const unpaid=dueRows.filter(r=>r.remaining>0).length;
     const paid=dueRows.filter(r=>r.remaining===0).length;
     summary.textContent=dueRows.length+' client'+(dueRows.length!==1?'s':'')+' · KES '+fmtMoney(total)+' due'+(isFuture?' (forecast)':'')+' · '+unpaid+' unpaid · '+paid+' paid';
@@ -4195,10 +4211,10 @@ async function loadReportData(id){
     ],rows,cols:['Full Name','ID Number','Phone','Alt Phone','Email','Gender','DOB','Address / Location','Occupation','Employer','Daily Income','Guarantor','Guarantor Phone','Guarantor Relation','Date Onboarded','Loan Officer','Total Loans','Active Loans','Latest Loan #','Total Borrowed','Outstanding (KES)','Arrears (KES)','Status']};
   }
   if(id==='collection_daily'){
-    const today=new Date().toISOString().slice(0,10);
+    const todayStr=today();
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_date',today),
-      sb('loan_schedules').select('*').eq('business_id',biz).eq('due_date',today),
+      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_date',todayStr),
+      sb('loan_schedules').select('*').eq('business_id',biz).eq('due_date',todayStr),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -4214,10 +4230,10 @@ async function loadReportData(id){
     ],rows:filteredRepsDly.map(r=>({'Receipt':r.receipt_no,'Client':r.loans?.loan_clients?.full_name||'-','Loan #':r.loans?.loan_no||'-','Amount (KES)':Number(r.amount||0),'Method':r.payment_method,'Reference':r.payment_reference||'-','Date':r.payment_date,'Loan Officer':r.loans?.loan_officer_id?staffMap[r.loans.loan_officer_id]||'-':'-'})),cols:['Receipt','Client','Loan #','Amount (KES)','Method','Reference','Date','Loan Officer']};
   }
   if(id==='collection_monthly'){
-    const nowM=new Date().toISOString().slice(0,7);
+    const nowM=localISODate().slice(0,7);
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
       sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).gte('payment_date',nowM+'-01'),
-      sb('loan_schedules').select('*').eq('business_id',biz).gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=new Date(nowM+'-01');d.setMonth(d.getMonth()+1);return d.toISOString().slice(0,10)})()),
+      sb('loan_schedules').select('*').eq('business_id',biz).gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=parseLocalDate(nowM+'-01');d.setMonth(d.getMonth()+1);return localISODate(d)})()),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -4468,7 +4484,7 @@ async function downloadReport(id){
     if(!data)return toast('Report not available','warning');
     const ws=XLSX.utils.json_to_sheet(data.rows.map(r=>{const o={};data.cols.forEach(c=>{o[c]=r[c]??''});return o;}));
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Report');
-    XLSX.writeFile(wb,`Bripta_${id}_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb,`Bripta_${id}_${today()}.xlsx`);
     toast('Report downloaded!','success');
   }catch(e){toast(e.message,'error')}
 }
@@ -4490,8 +4506,8 @@ async function renderOfficerDashboard(){
   const main=$('#mainContent');
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
-    const todayStr=new Date().toISOString().slice(0,10);
-    const nowM=new Date().toISOString().slice(0,7);
+    const todayStr=today();
+    const nowM=localISODate().slice(0,7);
 
     // Admins can view any officer; others always see themselves
     const isAdmin=hasRole('admin','branch_manager');
@@ -4950,7 +4966,7 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       .in('status',['pending','overdue','partial']).order('due_date',{ascending:true}).order('installment_no',{ascending:true});
     let rem=amount;
     const upds=[];
-    const todayStr=new Date().toISOString().slice(0,10);
+    const todayStr=today();
     for(const s of (scheds||[])){
       if(rem<=0)break;
       const due=Number(s.total_due||0),paid=Number(s.total_paid||0),owed=Math.max(0,due-paid);
@@ -5017,7 +5033,7 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     await sb('journal_entries').insert({
       id: crypto.randomUUID(),
       business_id:currentUser.business_id,
-      date:new Date().toISOString().slice(0,10),
+      date:today(),
       ref:receiptNo,
       description:`Suspense match — ${loan.loan_no} | Ref: ${ref}`,
       debit:'Loan Repayments',
@@ -5044,7 +5060,7 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
 function downloadOfficerPerformanceReport(){
   const rows = window._perfRows || [];
   if(!rows.length) return toast('No data to download','warning');
-  const nowM = new Date().toISOString().slice(0,7);
+  const nowM = localISODate().slice(0,7);
   const data = rows.map(({o,oActive,oLoansMonth,outstanding,overdueLoans,collected})=>{
     const clientsInArr = new Set(overdueLoans.map(l=>l.client_id)).size;
     const totalArrAmt  = overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
@@ -5129,7 +5145,7 @@ async function renderOfficerPerformance(){
     const viewSelf = hasRole('loan_officer') && !hasRole('admin','branch_manager');
     const filteredOfficers = viewSelf ? officers.filter(o=>o.id===currentUser.id) : officers;
 
-    const nowM = new Date().toISOString().slice(0,7);
+    const nowM = localISODate().slice(0,7);
 
     window._perfRows = []; // reset
     const rows = filteredOfficers.map(o=>{
@@ -5898,7 +5914,7 @@ async function applyRolloverPenalties(){
     const penaltyPct = Number(settings.default_late_penalty_pct) || 5;
 
     const todayDate=new Date();todayDate.setHours(0,0,0,0);
-    const todayStr = todayDate.toISOString().slice(0,10);
+    const todayStr = localISODate(todayDate);
 
     // Special marker reason — presence of ANY penalty with this prefix on a
     // loan means it has already been rolled over once and must never be
@@ -5975,7 +5991,7 @@ async function applyRolloverPenalties(){
           total_payable: newTotalPayable,
           arrears_amount: 0,
           overdue_days: 0,
-          maturity_date: newMaturity.toISOString().slice(0,10)
+          maturity_date: localISODate(newMaturity)
         }).eq('id',loan.id);
 
         const newSchedules = [];
@@ -5989,7 +6005,7 @@ async function applyRolloverPenalties(){
             loan_id: loan.id,
             business_id: currentUser.business_id,
             installment_no: baseInstallmentNo + i,
-            due_date: due.toISOString().slice(0,10),
+            due_date: localISODate(due),
             principal_due: newWeeklyInstallment,
             interest_due: 0,
             total_due: newWeeklyInstallment,
@@ -6008,13 +6024,13 @@ async function applyRolloverPenalties(){
 // ═══ EXCEL IMPORT (IMPORT_TEMPLATE) ═══
 function _excelDateToISO(v){
   if(v===null||v===undefined||v==='')return null;
-  if(v instanceof Date && !isNaN(v))return v.toISOString().slice(0,10);
+  if(v instanceof Date && !isNaN(v))return localISODate(v);
   if(typeof v==='number'){
     // Excel serial date
     const utcDays=Math.floor(v-25569);
     const utcMs=utcDays*86400*1000;
     const d=new Date(utcMs);
-    if(!isNaN(d))return d.toISOString().slice(0,10);
+    if(!isNaN(d))return localISODate(d);
   }
   if(typeof v==='string'){
     const s=v.trim();
@@ -6029,7 +6045,7 @@ function _excelDateToISO(v){
       return `${yr}-${String(+m[2]).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}`;
     }
     const d=new Date(s);
-    if(!isNaN(d))return d.toISOString().slice(0,10);
+    if(!isNaN(d))return localISODate(d);
   }
   return null;
 }
@@ -6265,7 +6281,7 @@ async function handleExcelImport(ev){
       // making active loans appear overdue incorrectly.
       const firstPayDate=(()=>{
         if(ln.disbursement_date){
-          const d=new Date(ln.disbursement_date);d.setDate(d.getDate()+7);return d.toISOString().slice(0,10);
+          const d=parseLocalDate(ln.disbursement_date);d.setDate(d.getDate()+7);return localISODate(d);
         }
         return sortedPays.length>0 ? sortedPays[0].payment_date : null;
       })();
@@ -6386,9 +6402,9 @@ async function handleExcelImport(ev){
           if(!existSched||!existSched.length){
             const schedules=[];
             for(let w=0;w<termWeeksCalc;w++){
-              const due=new Date(firstPayDate);
+              const due=parseLocalDate(firstPayDate);
               due.setDate(due.getDate()+w*7);
-              const dueDateStr=due.toISOString().slice(0,10);
+              const dueDateStr=localISODate(due);
               const pPrincipal=Number((weeklyInstallment*principalRatio).toFixed(2));
               const pInterest =Number((weeklyInstallment*interestRatio ).toFixed(2));
               schedules.push({
