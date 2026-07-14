@@ -3094,7 +3094,7 @@ let repPage=1;
 async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
   try{
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,outstanding_balance,processing_fee,total_payable,disbursement_date,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
+    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,outstanding_balance,total_paid,status,processing_fee,total_payable,disbursement_date,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
     let filteredReps = filterByDate(reps||[], 'payment_date', f);
@@ -3120,6 +3120,12 @@ async function renderRepayments(page=1){
         const totalPayable = Number(r.loans?.total_payable||0);
         balAfterMap[r.id] = Math.max(0, totalPayable - runningPaid);
       });
+      const latest = arr[arr.length - 1];
+      if(latest?.id){
+        const currentBalance = Number(latest.loans?.outstanding_balance ?? balAfterMap[latest.id] ?? 0);
+        const loanIsClosed = currentBalance <= 0.01 || latest.loans?.status === 'completed';
+        balAfterMap[latest.id] = loanIsClosed ? 0 : Math.max(0, currentBalance);
+      }
     });
 
     // Store the OFFICER-SCOPED list so Export Excel never leaks other
@@ -3221,8 +3227,9 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       if(byPhone){ client = byPhone; break; }
     }
     if(!client && phoneRefs.length){
-      const tail = phoneRefs[0].replace(/\D/g,'').slice(-9);
-      if(tail){
+      const tails = [...new Set(phoneRefs.map(ph=>ph.replace(/\D/g,'').slice(-9)).filter(Boolean))];
+      for(const tail of tails){
+        if(client) break;
         const{data:fuzzyPhones}=await sb('loan_clients').select('id,phone').eq('business_id', currentUser.business_id).ilike('phone',`%${tail}`).limit(1);
         if(fuzzyPhones && fuzzyPhones.length) client = fuzzyPhones[0];
       }
@@ -6081,6 +6088,7 @@ function _phoneVariants(p){
   const out=new Set();
   if(!d)return [];
   out.add(d);
+  if(d.length>=9)out.add(d.slice(-9));
   if(d.length===12&&d.startsWith('254'))out.add('0'+d.slice(3));
   if(d.length===10&&d.startsWith('0'))out.add('254'+d.slice(1));
   if(d.length===9&&/^[17]/.test(d)){out.add('0'+d);out.add('254'+d);}

@@ -11,6 +11,7 @@ function phoneVariants(value: unknown) {
   const out = new Set<string>();
   if (!digits) return [];
   out.add(digits);
+  if (digits.length >= 9) out.add(digits.slice(-9));
   if (digits.length === 12 && digits.startsWith("254")) out.add("0" + digits.slice(3));
   if (digits.length === 10 && digits.startsWith("0")) out.add("254" + digits.slice(1));
   if (digits.length === 9 && /^[17]/.test(digits)) {
@@ -107,8 +108,10 @@ serve(async (req) => {
     }
 
     if (!client && candidates.length) {
-      const tail = candidates[0].replace(/\D/g, "").slice(-9);
-      if (tail) {
+      const tails = [...new Set(candidates.map((candidate) => candidate.replace(/\D/g, "").slice(-9)).filter(Boolean))];
+      for (const tail of tails) {
+        if (client) break;
+        if (!tail) continue;
         const { data } = await supabase
           .from("loan_clients")
           .select("id, business_id, full_name, phone")

@@ -30,6 +30,7 @@ export default async function handler(req, res) {
     const out = new Set();
     if (!d) return [];
     out.add(d);
+    if (d.length >= 9) out.add(d.slice(-9));
     if (d.length === 9 && /^[17]/.test(d)) {
       out.add('0' + d);
       out.add('254' + d);
@@ -124,12 +125,14 @@ export default async function handler(req, res) {
     }
 
     if (!clientId && phoneRefs.length) {
-      const tail = phoneRefs[0].replace(/\D/g, '').slice(-9);
-      const rows = await db(
-        'loan_clients', 'GET', null,
-        `?phone=ilike.*${encodeURIComponent(tail)}&business_id=eq.${businessId}&select=id,phone&limit=1`
-      );
-      if (rows && rows.length) clientId = rows[0].id;
+      const tails = [...new Set(phoneRefs.map((ph) => ph.replace(/\D/g, '').slice(-9)).filter(Boolean))];
+      for (const tail of tails) {
+        const rows = await db(
+          'loan_clients', 'GET', null,
+          `?phone=ilike.*${encodeURIComponent(tail)}&business_id=eq.${businessId}&select=id,phone&limit=1`
+        );
+        if (rows && rows.length) { clientId = rows[0].id; break; }
+      }
     }
 
     if (!clientId) {
