@@ -3123,7 +3123,7 @@ async function renderRepayments(page=1){
       const latest = arr[arr.length - 1];
       if(latest?.id){
         const currentBalance = Number(latest.loans?.outstanding_balance ?? balAfterMap[latest.id] ?? 0);
-        const loanIsClosed = currentBalance <= 0.01 || latest.loans?.status === 'completed';
+        const loanIsClosed = currentBalance <= 0.01;
         balAfterMap[latest.id] = loanIsClosed ? 0 : Math.max(0, currentBalance);
       }
     });
