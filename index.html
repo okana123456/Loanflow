@@ -165,6 +165,9 @@ tr:hover{background:rgba(37,99,235,.04)}
 .client-profile-head{display:flex;gap:14px;align-items:center;margin-bottom:16px;padding:12px;border:1px solid var(--border);border-radius:10px;background:rgba(37,99,235,.05)}
 .client-profile-head h2{margin:0 0 4px}
 .client-photo-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.photo-crop-wrap{display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start}
+.photo-crop-canvas{width:280px;height:280px;border-radius:50%;border:1px solid var(--border);background:var(--bg-dark);display:block}
+.photo-crop-help{font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px}
 .dash-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
 .dash-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:6px}
 .dash-section-label{font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
@@ -195,6 +198,8 @@ tr:hover{background:rgba(37,99,235,.04)}
 .card{padding:10px}
 .chart-card{padding:10px}
 .chart-card h3{font-size:10px}
+.photo-crop-wrap{grid-template-columns:1fr}
+.photo-crop-canvas{width:240px;height:240px;margin:0 auto}
 }
 @media(max-width:380px){
 .kpi-grid{grid-template-columns:1fr}
@@ -576,7 +581,8 @@ function updateCachedClientPhoto(clientId, photoPath){
     cachedData.clients = cachedData.clients.map(c => c.id === clientId ? {...c, photo_path: photoPath} : c);
   }
 }
-function compressClientPhoto(file){
+let clientPhotoCropState = null;
+function loadClientPhotoImage(file){
   return new Promise((resolve,reject)=>{
     if(!file) return reject(new Error('Please choose a photo first'));
     if(!/^image\/(jpeg|png|webp)$/i.test(file.type)) return reject(new Error('Use a JPG, PNG, or WEBP image'));
@@ -585,16 +591,7 @@ function compressClientPhoto(file){
     reader.onload = () => {
       const img = new Image();
       img.onerror = () => reject(new Error('Could not process the selected photo'));
-      img.onload = () => {
-        const maxSide = 420;
-        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(img.width * scale));
-        canvas.height = Math.max(1, Math.round(img.height * scale));
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not compress photo')), 'image/jpeg', 0.68);
-      };
+      img.onload = () => resolve(img);
       img.src = reader.result;
     };
     reader.readAsDataURL(file);
@@ -604,9 +601,82 @@ async function uploadClientPhoto(clientId, input){
   const file = input?.files?.[0];
   if(!file) return;
   try{
-    toast('Preparing client photo...', 'info');
-    const blob = await compressClientPhoto(file);
-    if(blob.size > 280000) throw new Error('Photo is still too large. Please choose a clearer but smaller photo.');
+    const img = await loadClientPhotoImage(file);
+    openClientPhotoCropper(clientId, img);
+  }catch(e){
+    toast(e.message || 'Could not open photo cropper', 'error');
+  }finally{
+    if(input) input.value = '';
+  }
+}
+function openClientPhotoCropper(clientId, img){
+  clientPhotoCropState = {clientId, img, zoom:1, x:0, y:0};
+  openModal(`
+    <h2>Crop Client Photo</h2>
+    <div class="photo-crop-wrap">
+      <canvas class="photo-crop-canvas" id="clientPhotoCropCanvas" width="420" height="420"></canvas>
+      <div>
+        <p class="photo-crop-help">Adjust the photo until the face appears well inside the circle. Bripta will save only this small cropped profile photo.</p>
+        <div class="form-group"><label>Zoom</label><input class="input" type="range" min="1" max="3" step="0.05" value="1" oninput="updateClientPhotoCrop('zoom',this.value)"></div>
+        <div class="form-group"><label>Move left / right</label><input class="input" type="range" min="-100" max="100" step="1" value="0" oninput="updateClientPhotoCrop('x',this.value)"></div>
+        <div class="form-group"><label>Move up / down</label><input class="input" type="range" min="-100" max="100" step="1" value="0" oninput="updateClientPhotoCrop('y',this.value)"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="viewClient('${clientId}')">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveCroppedClientPhoto" onclick="saveCroppedClientPhoto()">Save cropped photo</button>
+    </div>
+  `,true);
+  setTimeout(drawClientPhotoCrop, 30);
+}
+function updateClientPhotoCrop(key, value){
+  if(!clientPhotoCropState) return;
+  clientPhotoCropState[key] = Number(value);
+  drawClientPhotoCrop();
+}
+function drawClientPhotoCrop(){
+  const canvas = document.getElementById('clientPhotoCropCanvas');
+  if(!canvas || !clientPhotoCropState?.img) return;
+  const ctx = canvas.getContext('2d');
+  const img = clientPhotoCropState.img;
+  const size = canvas.width;
+  ctx.clearRect(0,0,size,size);
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-dark') || '#0f172a';
+  ctx.fillRect(0,0,size,size);
+  const cover = Math.max(size / img.width, size / img.height) * clientPhotoCropState.zoom;
+  const drawW = img.width * cover;
+  const drawH = img.height * cover;
+  const maxX = Math.max(0, (drawW - size) / 2);
+  const maxY = Math.max(0, (drawH - size) / 2);
+  const dx = (size - drawW) / 2 + (clientPhotoCropState.x / 100) * maxX;
+  const dy = (size - drawH) / 2 + (clientPhotoCropState.y / 100) * maxY;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(size/2,size/2,size/2 - 2,0,Math.PI*2);
+  ctx.clip();
+  ctx.drawImage(img, dx, dy, drawW, drawH);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.75)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(size/2,size/2,size/2 - 3,0,Math.PI*2);
+  ctx.stroke();
+}
+function croppedClientPhotoBlob(){
+  return new Promise((resolve,reject)=>{
+    const canvas = document.getElementById('clientPhotoCropCanvas');
+    if(!canvas) return reject(new Error('Crop preview is not ready'));
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not prepare cropped photo')), 'image/jpeg', 0.72);
+  });
+}
+async function saveCroppedClientPhoto(){
+  if(!clientPhotoCropState?.clientId) return;
+  const clientId = clientPhotoCropState.clientId;
+  const btn = document.getElementById('btnSaveCroppedClientPhoto');
+  if(btn){btn.disabled=true;btn.textContent='Saving...';}
+  try{
+    const blob = await croppedClientPhotoBlob();
+    if(blob.size > 280000) throw new Error('Photo is still too large. Reduce zoom or choose a smaller image.');
     const safeBiz = String(currentUser?.business_id || 'business').replace(/[^a-zA-Z0-9_-]/g,'');
     const path = `${safeBiz}/${clientId}.jpg`;
     const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:true, cacheControl:'3600'});
@@ -614,12 +684,12 @@ async function uploadClientPhoto(clientId, input){
     const {error:updateError} = await sb('loan_clients').update({photo_path:path}).eq('id',clientId).eq('business_id',currentUser.business_id);
     if(updateError) throw updateError;
     updateCachedClientPhoto(clientId, path);
-    toast('Client photo saved', 'success');
+    toast('Client photo saved','success');
+    clientPhotoCropState = null;
     viewClient(clientId);
   }catch(e){
-    toast(e.message || 'Photo upload failed', 'error');
-  }finally{
-    if(input) input.value = '';
+    if(btn){btn.disabled=false;btn.textContent='Save cropped photo';}
+    toast(e.message || 'Photo upload failed','error');
   }
 }
 async function removeClientPhoto(clientId, path){
