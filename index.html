@@ -597,20 +597,20 @@ function loadClientPhotoImage(file){
     reader.readAsDataURL(file);
   });
 }
-async function uploadClientPhoto(clientId, input){
+async function uploadClientPhoto(clientId, input, oldPath=''){
   const file = input?.files?.[0];
   if(!file) return;
   try{
     const img = await loadClientPhotoImage(file);
-    openClientPhotoCropper(clientId, img);
+    openClientPhotoCropper(clientId, img, oldPath);
   }catch(e){
     toast(e.message || 'Could not open photo cropper', 'error');
   }finally{
     if(input) input.value = '';
   }
 }
-function openClientPhotoCropper(clientId, img){
-  clientPhotoCropState = {clientId, img, zoom:1, x:0, y:0};
+function openClientPhotoCropper(clientId, img, oldPath=''){
+  clientPhotoCropState = {clientId, img, oldPath, zoom:1, x:0, y:0};
   openModal(`
     <h2>Crop Client Photo</h2>
     <div class="photo-crop-wrap">
@@ -664,6 +664,7 @@ function drawClientPhotoCrop(){
 }
 function croppedClientPhotoBlob(){
   return new Promise((resolve,reject)=>{
+    drawClientPhotoCrop();
     const canvas = document.getElementById('clientPhotoCropCanvas');
     if(!canvas) return reject(new Error('Crop preview is not ready'));
     canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not prepare cropped photo')), 'image/jpeg', 0.72);
@@ -678,11 +679,15 @@ async function saveCroppedClientPhoto(){
     const blob = await croppedClientPhotoBlob();
     if(blob.size > 280000) throw new Error('Photo is still too large. Reduce zoom or choose a smaller image.');
     const safeBiz = String(currentUser?.business_id || 'business').replace(/[^a-zA-Z0-9_-]/g,'');
-    const path = `${safeBiz}/${clientId}.jpg`;
-    const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:true, cacheControl:'3600'});
+    const path = `${safeBiz}/${clientId}-${Date.now()}.jpg`;
+    const oldPath = clientPhotoCropState.oldPath;
+    const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:false, cacheControl:'3600'});
     if(uploadError) throw uploadError;
     const {error:updateError} = await sb('loan_clients').update({photo_path:path}).eq('id',clientId).eq('business_id',currentUser.business_id);
     if(updateError) throw updateError;
+    if(oldPath && oldPath !== path){
+      try{ await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).remove([oldPath]); }catch(_){}
+    }
     updateCachedClientPhoto(clientId, path);
     toast('Client photo saved','success');
     clientPhotoCropState = null;
@@ -2132,7 +2137,7 @@ async function viewClient(id){
           <h2>${escapeHtml(c.full_name)}</h2>
           <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.phone||'-')} &nbsp;|&nbsp; ID: ${escapeHtml(c.id_number||'-')}</div>
           ${canShowPhotoUpload?`
-            <input id="${photoInputId}" type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadClientPhoto('${c.id}', this)">
+            <input id="${photoInputId}" type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadClientPhoto('${c.id}', this, '${escapeHtml(c.photo_path||'')}')">
             <div class="client-photo-actions">
               <button class="btn btn-outline btn-sm" onclick="document.getElementById('${photoInputId}').click()">${c.photo_path?'Change photo':'Upload photo'}</button>
               ${canManagePhoto && c.photo_path?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="removeClientPhoto('${c.id}','${escapeHtml(c.photo_path)}')">Remove photo</button>`:''}
