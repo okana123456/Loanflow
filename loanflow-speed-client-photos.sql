@@ -11,7 +11,7 @@ values (
   'client-photos',
   'client-photos',
   true,
-  307200,
+  524288,
   array['image/jpeg', 'image/png', 'image/webp']
 )
 on conflict (id) do update
@@ -52,6 +52,45 @@ begin
   create policy "client photos delete"
   on storage.objects for delete
   to authenticated
+  using (bucket_id = 'client-photos');
+exception when duplicate_object then null;
+end $$;
+
+-- Bripta uses the browser publishable key for logged-in app screens, so allow
+-- the anon browser role to manage these small profile files through the app UI.
+do $$
+begin
+  create policy "client photos app read"
+  on storage.objects for select
+  to anon
+  using (bucket_id = 'client-photos');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create policy "client photos app upload"
+  on storage.objects for insert
+  to anon
+  with check (bucket_id = 'client-photos');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create policy "client photos app update"
+  on storage.objects for update
+  to anon
+  using (bucket_id = 'client-photos')
+  with check (bucket_id = 'client-photos');
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  create policy "client photos app delete"
+  on storage.objects for delete
+  to anon
   using (bucket_id = 'client-photos');
 exception when duplicate_object then null;
 end $$;

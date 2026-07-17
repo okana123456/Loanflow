@@ -566,6 +566,11 @@ function clientAvatarHtml(client, large=false){
   const alt = escapeHtml(client?.full_name || 'Client photo');
   return url ? `<img class="${cls}" src="${url}" alt="${alt}" loading="lazy">` : `<span class="${cls}">${escapeHtml(clientInitials(client?.full_name))}</span>`;
 }
+function paymentPhoneHtml(row){
+  const phone = row?.msisdn || row?.payer_phone || row?.phone_number || row?.phone || '';
+  const clean = String(phone || '').trim();
+  return clean ? `<a href="tel:${escapeHtml(clean)}" style="color:var(--accent-blue);font-weight:700">${escapeHtml(clean)}</a>` : '<span style="color:var(--text-secondary)">No phone</span>';
+}
 function updateCachedClientPhoto(clientId, photoPath){
   if(Array.isArray(cachedData.clients)){
     cachedData.clients = cachedData.clients.map(c => c.id === clientId ? {...c, photo_path: photoPath} : c);
@@ -581,14 +586,14 @@ function compressClientPhoto(file){
       const img = new Image();
       img.onerror = () => reject(new Error('Could not process the selected photo'));
       img.onload = () => {
-        const maxSide = 520;
+        const maxSide = 420;
         const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(img.width * scale));
         canvas.height = Math.max(1, Math.round(img.height * scale));
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not compress photo')), 'image/jpeg', 0.72);
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not compress photo')), 'image/jpeg', 0.68);
       };
       img.src = reader.result;
     };
@@ -601,6 +606,7 @@ async function uploadClientPhoto(clientId, input){
   try{
     toast('Preparing client photo...', 'info');
     const blob = await compressClientPhoto(file);
+    if(blob.size > 280000) throw new Error('Photo is still too large. Please choose a clearer but smaller photo.');
     const safeBiz = String(currentUser?.business_id || 'business').replace(/[^a-zA-Z0-9_-]/g,'');
     const path = `${safeBiz}/${clientId}.jpg`;
     const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:true, cacheControl:'3600'});
@@ -2046,17 +2052,21 @@ async function viewClient(id){
     const{data:cLoans}=await sb('loans').select('*').eq('client_id',id);
     if(!c)return toast('Client not found','error');
     const photoInputId = `clientPhotoInput_${String(c.id).replace(/[^a-zA-Z0-9_-]/g,'')}`;
+    const canManagePhoto = hasRole('admin','branch_manager');
+    const canAddPhotoOnce = hasRole('loan_officer') && !canManagePhoto && !c.photo_path;
+    const canShowPhotoUpload = canManagePhoto || canAddPhotoOnce;
     openModal(`
       <div class="client-profile-head">
         ${clientAvatarHtml(c,true)}
         <div style="flex:1;min-width:0">
           <h2>${escapeHtml(c.full_name)}</h2>
           <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.phone||'-')} &nbsp;|&nbsp; ID: ${escapeHtml(c.id_number||'-')}</div>
-          ${hasRole('admin','branch_manager')?`
+          ${canShowPhotoUpload?`
             <input id="${photoInputId}" type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadClientPhoto('${c.id}', this)">
             <div class="client-photo-actions">
               <button class="btn btn-outline btn-sm" onclick="document.getElementById('${photoInputId}').click()">${c.photo_path?'Change photo':'Upload photo'}</button>
-              ${c.photo_path?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="removeClientPhoto('${c.id}','${escapeHtml(c.photo_path)}')">Remove photo</button>`:''}
+              ${canManagePhoto && c.photo_path?`<button class="btn btn-outline btn-sm" style="border-color:var(--accent-red);color:var(--accent-red)" onclick="removeClientPhoto('${c.id}','${escapeHtml(c.photo_path)}')">Remove photo</button>`:''}
+              ${canAddPhotoOnce?`<span style="font-size:11px;color:var(--text-secondary);align-self:center">One-time officer upload</span>`:''}
             </div>
           `:''}
         </div>
@@ -3261,7 +3271,7 @@ async function renderRepayments(page=1){
       </div>
       ${myQueue.length>0?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow)"><h3 style="font-size:14px;margin-bottom:8px;color:var(--accent-yellow)">Pending M-Pesa Confirmations (${myQueue.length})</h3>
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
-        ${myQueue.map(q=>`<tr><td>${q.trans_id}</td><td>${fmtMoney(q.trans_amount)}</td><td>${q.msisdn||'-'}</td><td>${q.bill_ref_number||'-'}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
+        ${myQueue.map(q=>`<tr><td>${escapeHtml(q.trans_id||'-')}</td><td>${fmtMoney(q.trans_amount)}</td><td>${paymentPhoneHtml(q)}</td><td>${escapeHtml(q.bill_ref_number||'-')}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
@@ -4917,9 +4927,9 @@ async function renderSuspense(){
             ${queue.length?queue.map(q=>`
               <tr>
                 <td>${fmtDateTime(q.created_at)}</td>
-                <td><strong>${q.trans_id||'-'}</strong></td>
-                <td>${q.msisdn||'-'}</td>
-                <td>${q.bill_ref_number||'-'}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
+                <td><strong>${escapeHtml(q.trans_id||'-')}</strong></td>
+                <td>${paymentPhoneHtml(q)}</td>
+                <td>${escapeHtml(q.bill_ref_number||'-')}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(q.trans_amount)}</strong></td>
                 <td style="display:flex;gap:4px;flex-wrap:wrap">
                   <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}','${q.loan_id||''}')">Match to Loan</button>
