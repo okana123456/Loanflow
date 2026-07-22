@@ -6134,19 +6134,37 @@ async function applyRolloverPenalties(){
     const ROLLOVER_MARKER_PREFIX = 'Rollover Penalty (';
     const penaltyReason = `${ROLLOVER_MARKER_PREFIX}${penaltyPct}%) - ${todayStr}`;
 
-    const{data:activeLoans}=await sb('loans').select('*').eq('business_id', currentUser.business_id).eq('status','active');
+    const{data:activeLoans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id).eq('status','active');
     if(!activeLoans?.length)return;
 
     const skippedClients = ["Judith Nyaranga", "Beatrice Akeyo", "Fredrick onyango", "Lensa Apiyo", "Irine Odinya", "Trizah Atieno"];
 
     for(const loan of activeLoans){
+      const currentBalance = Number(loan.outstanding_balance || 0);
+      if(currentBalance <= 0.01){
+        await sb('loans').update({
+          outstanding_balance: 0,
+          arrears_amount: 0,
+          overdue_days: 0,
+          status: 'completed'
+        }).eq('id',loan.id);
+        await sb('loan_schedules')
+          .update({
+            penalty_charged: 0,
+            status: 'paid'
+          })
+          .eq('loan_id', loan.id)
+          .in('status', ['pending', 'overdue', 'partial']);
+        continue;
+      }
+
       const clientName = loan.loan_clients?.full_name || "";
       if(skippedClients.some(name => clientName.toLowerCase().includes(name.toLowerCase()))) continue;
 
       const maturity=new Date(loan.maturity_date||'2099-01-01');maturity.setHours(0,0,0,0);
       const pastMaturity=Math.floor((todayDate-maturity)/(1000*60*60*24));
 
-      if(pastMaturity > 2 && Number(loan.outstanding_balance) > 0){
+      if(pastMaturity > 2 && currentBalance > 0.01){
 
         // ── Has this loan EVER been rolled over before? ──────────────────
         const{data:priorRollovers}=await sb('loan_penalties')
@@ -6162,7 +6180,7 @@ async function applyRolloverPenalties(){
           // The entire outstanding balance becomes arrears from here on.
           const newOverdueDays = Math.max(0, pastMaturity);
           await sb('loans').update({
-            arrears_amount: Number(loan.outstanding_balance) || 0,
+            arrears_amount: currentBalance,
             overdue_days: newOverdueDays
           }).eq('id',loan.id);
           continue;
@@ -6173,7 +6191,7 @@ async function applyRolloverPenalties(){
         const{data:existingToday}=await sb('loan_penalties').select('id').eq('loan_id',loan.id).eq('reason',penaltyReason).limit(1);
         if(existingToday?.length) continue;
 
-        const penaltyAmt = Number(loan.outstanding_balance) * penaltyRate;
+        const penaltyAmt = currentBalance * penaltyRate;
 
         await sb('loan_penalties').insert({
           loan_id:loan.id,
@@ -6191,7 +6209,7 @@ async function applyRolloverPenalties(){
           .in('status', ['pending', 'overdue', 'partial']);
 
         // Update total_payable to keep the accounting math completely balanced
-        const newBalance = Number(loan.outstanding_balance) + penaltyAmt;
+        const newBalance = currentBalance + penaltyAmt;
         const newTotalPayable = Number(loan.total_payable || 0) + penaltyAmt;
         const newWeeklyInstallment = newBalance / 3;
 
