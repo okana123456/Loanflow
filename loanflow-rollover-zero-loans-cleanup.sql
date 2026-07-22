@@ -4,7 +4,8 @@
 -- 2. Stop cleared loans from carrying balances, arrears, or overdue days.
 -- 3. Mark zero-balance active loans as completed.
 --
--- Run section 1 first. If the preview looks correct, run sections 2, 3, and 4.
+-- Run section 1 first. If the preview looks correct, run sections 2, 3, 4, 5, 6, and 7.
+-- Section 4 is Joseph-only because the client specifically named that account as already cleared.
 
 -- 1) Preview Joseph and similar loans where removing rollover penalties shows the loan was already cleared.
 with repayment_totals as (
@@ -133,7 +134,45 @@ where p.loan_id = a.id
   and coalesce(p.is_waived, false) = false
   and coalesce(p.reason, '') ilike 'Rollover Penalty (%';
 
--- 4) Close any active loan that already has zero or negative balance.
+-- 4) Joseph-only repair. The preview shows Joseph still has KES 250 after removing rollover.
+-- Run this because the client specifically confirmed Joseph Ochieng Siangla is already cleared.
+with joseph_loans as (
+  select
+    l.id,
+    coalesce(sum(r.amount), 0)::numeric as repayment_total
+  from public.loans l
+  join public.loan_clients c on c.id = l.client_id
+  left join public.loan_repayments r on r.loan_id = l.id
+  where c.full_name ilike '%Joseph Ochieng Siangla%'
+     or regexp_replace(coalesce(c.phone, ''), '\D', '', 'g') in ('0715549030', '715549030', '254715549030')
+  group by l.id
+)
+update public.loans l
+set
+  total_payable = round(j.repayment_total, 2),
+  total_paid = round(j.repayment_total, 2),
+  outstanding_balance = 0,
+  arrears_amount = 0,
+  overdue_days = 0,
+  status = 'completed'
+from joseph_loans j
+where l.id = j.id;
+
+with joseph_loans as (
+  select l.id
+  from public.loans l
+  join public.loan_clients c on c.id = l.client_id
+  where c.full_name ilike '%Joseph Ochieng Siangla%'
+     or regexp_replace(coalesce(c.phone, ''), '\D', '', 'g') in ('0715549030', '715549030', '254715549030')
+)
+update public.loan_penalties p
+set is_waived = true
+from joseph_loans j
+where p.loan_id = j.id
+  and coalesce(p.is_waived, false) = false
+  and coalesce(p.reason, '') ilike 'Rollover Penalty (%';
+
+-- 5) Close any active loan that already has zero or negative balance.
 update public.loans
 set
   outstanding_balance = 0,
@@ -143,7 +182,7 @@ set
 where status = 'active'
   and coalesce(outstanding_balance, 0) <= 0.01;
 
--- 5) Clear overdue flags on schedules for completed zero-balance loans.
+-- 6) Clear overdue flags on schedules for completed zero-balance loans.
 update public.loan_schedules s
 set
   penalty_charged = 0,
@@ -154,7 +193,20 @@ where s.loan_id = l.id
   and coalesce(l.outstanding_balance, 0) <= 0.01
   and s.status in ('pending', 'partial', 'overdue');
 
--- 6) Final check: this should return no rows after repair.
+-- 7) Final catch-all: completed zero-balance loans must not keep arrears or overdue days.
+update public.loans
+set
+  outstanding_balance = 0,
+  arrears_amount = 0,
+  overdue_days = 0
+where status = 'completed'
+  and coalesce(outstanding_balance, 0) <= 0.01
+  and (
+    coalesce(arrears_amount, 0) > 0.01
+    or coalesce(overdue_days, 0) > 0
+  );
+
+-- 8) Final check: this should return no rows after repair.
 with repayment_totals as (
   select loan_id, coalesce(sum(amount), 0)::numeric as repayment_total
   from public.loan_repayments
