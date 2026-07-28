@@ -21,6 +21,10 @@ function phoneVariants(value: unknown) {
   return [...out];
 }
 
+function digitsOnly(value: unknown) {
+  return String(value || "").replace(/\D/g, "");
+}
+
 function mpesaDate(value: unknown) {
   const s = String(value || "").trim();
   if (/^\d{14}$/.test(s)) {
@@ -68,6 +72,13 @@ serve(async (req) => {
     const businessId = settings?.business_id || null;
     const autoConfirm = !!settings?.mpesa_auto_confirm;
 
+    const { data: existingRepayment } = await supabase
+      .from("loan_repayments")
+      .select("id, loan_id, business_id")
+      .or(`payment_reference.eq.${transId},receipt_no.eq.${transId}`)
+      .limit(1)
+      .maybeSingle();
+
     const { data: queue } = await supabase
       .from("mpesa_callback_queue")
       .insert({
@@ -87,6 +98,21 @@ serve(async (req) => {
 
     const queueId = queue?.id;
     if (!businessId) return accepted;
+
+    if (existingRepayment) {
+      if (queueId) {
+        await supabase
+          .from("mpesa_callback_queue")
+          .update({
+            confirmed: true,
+            loan_id: existingRepayment.loan_id,
+            repayment_id: existingRepayment.id,
+            business_short_code: businessId,
+          })
+          .eq("id", queueId);
+      }
+      return accepted;
+    }
 
     const candidates = [...new Set([
       ...phoneVariants(accountNumber),
@@ -123,6 +149,18 @@ serve(async (req) => {
       }
     }
 
+    const accountDigits = digitsOnly(accountNumber);
+    if (!client && accountDigits) {
+      const { data } = await supabase
+        .from("loan_clients")
+        .select("id, business_id, full_name, phone, id_number")
+        .eq("business_id", businessId)
+        .eq("id_number", accountDigits)
+        .limit(1)
+        .maybeSingle();
+      if (data) client = data;
+    }
+
     if (!client) {
       await supabase.from("unmatched_payments").insert({
         amount,
@@ -148,7 +186,19 @@ serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    if (!loan) return accepted;
+    if (!loan) {
+      await supabase.from("unmatched_payments").insert({
+        amount,
+        account_number: accountNumber,
+        business_id: businessId,
+        mpesa_reference: transId,
+        payer_phone: payerPhone,
+        payer_name: payerName,
+        raw_payload: body,
+        resolved: false,
+      }).catch(() => {});
+      return accepted;
+    }
     if (!autoConfirm) {
       if (queueId) {
         await supabase

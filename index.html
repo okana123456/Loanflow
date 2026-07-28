@@ -3447,7 +3447,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     }
 
     const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:mpPenaltyPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
-    const{error}=await sb('loan_repayments').insert(rec);
+    const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
     if(error)throw error;
     
     const newPaid=Number(loan.total_paid)+amount;
@@ -3481,7 +3481,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       outstanding_balance: mpNewBalance,
       status: mpNewBalance <= 0 ? 'completed' : mpLoanRef.status
     }).eq('id', loan.id);
-    await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id}).eq('id',queueId);
+    await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id,repayment_id:repayment?.id||null}).eq('id',queueId);
     await audit('mpesa_payment_confirmed','loan_repayments',null,null,rec);
     const mpToastMsg = mpMinInt.adjusted
       ? `M-Pesa payment ${receiptNo} confirmed! Minimum interest applied — client still owes KES ${fmtMoney(mpMinInt.shortfall)}.`
@@ -4962,13 +4962,19 @@ async function renderSuspense(){
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
     const[queueR,loansR,suspR]=await Promise.all([
-      sb('mpesa_callback_queue').select('*').eq('confirmed',false).order('created_at',{ascending:false}),
+      sb('mpesa_callback_queue').select('*').order('created_at',{ascending:false}).limit(3000),
       sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
         .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0),
       sb('unmatched_payments').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false})
     ]);
 
-    const queue=(queueR.data||[]);
+    const shortcode = String(appSettings?.mpesa_shortcode || '').trim();
+    const queue=(queueR.data||[]).filter(q=>{
+      const queueBiz = String(q.business_short_code || '').trim();
+      const belongsHere = !queueBiz || queueBiz === currentUser.business_id || (shortcode && queueBiz === shortcode);
+      const needsAction = !q.confirmed || (!q.loan_id && !q.repayment_id);
+      return belongsHere && needsAction;
+    });
     const activeLoans=loansR.data||[];
     const manualSuspense=(suspR.data||[]);
     const pendingManualSuspense=(manualSuspense||[]).filter(r=>!r.resolved);
@@ -6165,7 +6171,7 @@ async function applyRolloverPenalties(){
         const{data:priorRollovers}=await sb('loan_penalties')
           .select('id')
           .eq('loan_id',loan.id)
-          .ilike('reason', `${ROLLOVER_MARKER_PREFIX}%`)
+          .ilike('reason', `%rollover%`)
           .limit(1);
         const alreadyRolledOver = !!(priorRollovers && priorRollovers.length);
 
