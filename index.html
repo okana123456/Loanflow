@@ -846,17 +846,12 @@ async function startServiceBillingPayment(btn){
   if(!phone) return toast('Enter phone number first.', 'warning');
   btn.disabled = true; const oldText = btn.textContent; btn.textContent = 'Sending prompt...';
   try{
-    const { data: sessionData } = await supabaseClient.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
-    if(!accessToken){
-      localStorage.removeItem('bripta_current_user');
-      toast('Please sign in again before starting payment.', 'warning');
-      setTimeout(()=>handleLogout(), 800);
-      return;
-    }
     const { data, error } = await supabaseClient.functions.invoke('start-service-payment', {
-      body:{ phone },
-      headers:{ Authorization:`Bearer ${accessToken}` }
+      body:{
+        phone,
+        business_id: currentUser.business_id,
+        staff_id: currentUser.id
+      }
     });
     if(error) throw error;
     if(!data?.ok) throw new Error(data?.message || 'Payment prompt failed');
