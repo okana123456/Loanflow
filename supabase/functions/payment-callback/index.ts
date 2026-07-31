@@ -119,11 +119,11 @@ serve(async (req) => {
       ...phoneVariants(payerPhone),
     ])];
 
-    let client: { id: string; business_id: string; full_name: string | null } | null = null;
+    let client: { id: string; business_id: string; full_name: string | null; account_credit?: number | null } | null = null;
     for (const phone of candidates) {
       const { data } = await supabase
         .from("loan_clients")
-        .select("id, business_id, full_name")
+        .select("id, business_id, full_name, account_credit")
         .eq("business_id", businessId)
         .eq("phone", phone)
         .maybeSingle();
@@ -140,7 +140,7 @@ serve(async (req) => {
         if (!tail) continue;
         const { data } = await supabase
           .from("loan_clients")
-          .select("id, business_id, full_name, phone")
+          .select("id, business_id, full_name, phone, account_credit")
           .eq("business_id", businessId)
           .ilike("phone", `%${tail}`)
           .limit(1)
@@ -153,7 +153,7 @@ serve(async (req) => {
     if (!client && accountDigits) {
       const { data } = await supabase
         .from("loan_clients")
-        .select("id, business_id, full_name, phone, id_number")
+        .select("id, business_id, full_name, phone, id_number, account_credit")
         .eq("business_id", businessId)
         .eq("id_number", accountDigits)
         .limit(1)
@@ -177,7 +177,7 @@ serve(async (req) => {
 
     const { data: loan } = await supabase
       .from("loans")
-      .select("id, loan_no, outstanding_balance, total_paid, total_payable, total_interest, status, business_id")
+      .select("id, loan_no, client_id, outstanding_balance, total_paid, total_payable, total_interest, status, business_id, registration_fee_due, registration_fee_paid, processing_fee, processing_fee_paid")
       .eq("business_id", businessId)
       .eq("client_id", client.id)
       .eq("status", "active")
@@ -209,18 +209,44 @@ serve(async (req) => {
       return accepted;
     }
 
-    const appliedAmount = Math.min(amount, Number(loan.outstanding_balance || 0));
+    // Allocate one phone payment in a fixed order. Fees are charged once per
+    // loan, only the loan portion reduces the repayment schedule, and any
+    // excess is retained as client credit instead of entering suspense.
+    let unallocated = Number(amount.toFixed(2));
+    const registrationOutstanding = Math.max(
+      0,
+      Number(loan.registration_fee_due || 0) - Number(loan.registration_fee_paid || 0),
+    );
+    const registrationFeePortion = Number(Math.min(unallocated, registrationOutstanding).toFixed(2));
+    unallocated = Number((unallocated - registrationFeePortion).toFixed(2));
+
+    const processingOutstanding = Math.max(
+      0,
+      Number(loan.processing_fee || 0) - Number(loan.processing_fee_paid || 0),
+    );
+    const processingFeePortion = Number(Math.min(unallocated, processingOutstanding).toFixed(2));
+    unallocated = Number((unallocated - processingFeePortion).toFixed(2));
+
+    const loanPortion = Number(Math.min(unallocated, Number(loan.outstanding_balance || 0)).toFixed(2));
+    unallocated = Number((unallocated - loanPortion).toFixed(2));
+    const creditPortion = Math.max(0, unallocated);
     const totalPayable = Number(loan.total_payable || 0);
     const totalInterest = Number(loan.total_interest || 0);
     const interestRatio = totalPayable > 0 && totalInterest > 0 ? totalInterest / totalPayable : 0;
-    const interestPortion = Number((appliedAmount * interestRatio).toFixed(2));
-    const principalPortion = Number((appliedAmount - interestPortion).toFixed(2));
+    const interestPortion = Number((loanPortion * interestRatio).toFixed(2));
+    const principalPortion = Number((loanPortion - interestPortion).toFixed(2));
     const receiptNo = transId;
+    const allocationNote = [
+      registrationFeePortion > 0 ? `registration KES ${registrationFeePortion.toFixed(2)}` : "",
+      processingFeePortion > 0 ? `processing KES ${processingFeePortion.toFixed(2)}` : "",
+      loanPortion > 0 ? `loan KES ${loanPortion.toFixed(2)}` : "",
+      creditPortion > 0 ? `credit KES ${creditPortion.toFixed(2)}` : "",
+    ].filter(Boolean).join(", ");
 
     const { data: repayment, error: repErr } = await supabase
       .from("loan_repayments")
       .insert({
-        amount: appliedAmount,
+        amount,
         business_id: businessId,
         loan_id: loan.id,
         payment_method: "M-Pesa",
@@ -231,7 +257,11 @@ serve(async (req) => {
         interest_portion: interestPortion,
         principal_portion: principalPortion,
         penalty_portion: 0,
-        notes: `Auto-confirmed via Daraja C2B. Matched by phone. Payer: ${payerName}`,
+        registration_fee_portion: registrationFeePortion,
+        processing_fee_portion: processingFeePortion,
+        loan_portion: loanPortion,
+        credit_portion: creditPortion,
+        notes: `Auto-confirmed via Daraja C2B. Matched by phone. Allocation: ${allocationNote || "none"}. Payer: ${payerName}`,
       })
       .select("id")
       .single();
@@ -245,7 +275,7 @@ serve(async (req) => {
       .in("status", ["pending", "partial", "overdue"])
       .order("due_date", { ascending: true });
 
-    let remaining = appliedAmount;
+    let remaining = loanPortion;
     const today = new Date().toISOString().slice(0, 10);
     for (const sched of schedules || []) {
       if (remaining <= 0) break;
@@ -290,7 +320,7 @@ serve(async (req) => {
     const overdueDays = oldestDueDate
       ? Math.max(0, Math.floor((Date.now() - new Date(oldestDueDate).getTime()) / 86400000))
       : 0;
-    const newTotalPaid = Number((Number(loan.total_paid || 0) + appliedAmount).toFixed(2));
+    const newTotalPaid = Number((Number(loan.total_paid || 0) + loanPortion).toFixed(2));
     const newBalance = Math.max(0, Number((totalPayable - newTotalPaid).toFixed(2)));
 
     await supabase
@@ -301,8 +331,17 @@ serve(async (req) => {
         status: newBalance <= 0 ? "completed" : loan.status,
         arrears_amount: newBalance <= 0 ? 0 : Number(arrears.toFixed(2)),
         overdue_days: newBalance <= 0 ? 0 : overdueDays,
+        registration_fee_paid: Number((Number(loan.registration_fee_paid || 0) + registrationFeePortion).toFixed(2)),
+        processing_fee_paid: Number((Number(loan.processing_fee_paid || 0) + processingFeePortion).toFixed(2)),
       })
       .eq("id", loan.id);
+
+    if (creditPortion > 0) {
+      await supabase
+        .from("loan_clients")
+        .update({ account_credit: Number((Number(client.account_credit || 0) + creditPortion).toFixed(2)) })
+        .eq("id", client.id);
+    }
 
     if (queueId) {
       await supabase

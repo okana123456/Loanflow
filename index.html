@@ -2064,10 +2064,10 @@ async function openAddClientModal(){
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
     ${officerDropdown}
     <div style="padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;align-items:center">
-      <span>A one-time <strong>Registration Fee</strong> will be charged on save and recorded as income.</span>
+      <span>The one-time <strong>Registration Fee</strong> will be collected automatically from this client's first loan payment.</span>
       <strong style="color:var(--accent-green)">KES \${REGISTRATION_FEE}</strong>
     </div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSaveClient" onclick="saveClient()">Save Client (incl. KES \${REGISTRATION_FEE} fee)</button></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSaveClient" onclick="saveClient()">Save Client</button></div>
   `,true);
 }
 
@@ -2097,7 +2097,7 @@ async function saveClient(){
     const userNotes=($('#cNotes').value||'').trim();
     const assignedOfficerId = ($('#cAssignedOfficer')?.value || currentUser?.id || '').trim();
     const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
-    const taggedNotes=(userNotes?userNotes+' ':'')+regFeeTag(REGISTRATION_FEE, todayStr)+officerTag;
+    const taggedNotes=(userNotes?userNotes+' ':'')+officerTag;
     const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,business_id:currentUser?.business_id,created_by:currentUser?.id};
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
@@ -2108,8 +2108,7 @@ async function saveClient(){
       if(window._clientOffMap) window._clientOffMap[data.id] = assignedOfficerId;
     }
     await audit('client_created','loan_clients',data.id,null,rec);
-    await recordRegistrationFeeIncome(data.id, name, today);
-    toast(`Client added. Registration fee of KES ${REGISTRATION_FEE} recorded as income.`,'success');closeModal();renderClients();
+    toast(`Client added. The KES ${REGISTRATION_FEE} registration fee will be collected from the first loan payment.`,'success');closeModal();renderClients();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Save Client'; }
     toast(e.message,'error');
@@ -2121,6 +2120,8 @@ async function viewClient(id){
     const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
     const{data:cLoans}=await sb('loans').select('*').eq('client_id',id);
     if(!c)return toast('Client not found','error');
+    const registrationDue=(cLoans||[]).reduce((sum,l)=>sum+Number(l.registration_fee_due||0),0);
+    const registrationPaid=(cLoans||[]).reduce((sum,l)=>sum+Number(l.registration_fee_paid||0),0);
     const photoInputId = `clientPhotoInput_${String(c.id).replace(/[^a-zA-Z0-9_-]/g,'')}`;
     const canManagePhoto = hasRole('admin','branch_manager');
     const canAddPhotoOnce = hasRole('loan_officer') && !canManagePhoto && !c.photo_path;
@@ -2149,9 +2150,10 @@ async function viewClient(id){
         <div><strong>Daily Income:</strong> ${fmtMoney(c.monthly_income)}</div>
         <div><strong>Next of Kin:</strong> ${c.next_of_kin_name||'-'} (${c.next_of_kin_relation||'-'}) ${c.next_of_kin_phone||''}</div>
         <div style="grid-column:1/-1;padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;display:flex;justify-content:space-between;align-items:center">
-          <span><strong style="color:var(--accent-green)">Registration Fee Paid</strong> <span style="color:var(--text-secondary);font-size:12px">(${(parseRegFeeFromNotes(c.notes)?.date)||fmtDate(c.created_at)||'on registration'})</span></span>
-          <strong style="color:var(--accent-green)">${fmtMoney((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE)}</strong>
+          <span><strong style="color:var(--accent-green)">Registration Fee</strong> <span style="color:var(--text-secondary);font-size:12px">(collected from first loan payment)</span></span>
+          <strong style="color:var(--accent-green)">${fmtMoney(registrationPaid)} of ${fmtMoney(registrationDue||REGISTRATION_FEE)}</strong>
         </div>
+        ${Number(c.account_credit||0)>0?`<div style="grid-column:1/-1"><strong>Available Client Credit:</strong> <span style="color:var(--accent-green);font-weight:700">${fmtMoney(c.account_credit)}</span></div>`:''}
       </div>
       <h3 style="margin:16px 0 8px;font-size:14px">Loan History <span style="font-size:11px;color:var(--text-secondary);font-weight:400">${(cLoans||[]).length} loan${(cLoans||[]).length!==1?'s':''}</span></h3>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
@@ -2776,7 +2778,7 @@ async function openDisburseModal(appId){
   const{data:prevLoans}=await sb('loans').select('id').eq('client_id',app.client_id).eq('business_id',currentUser?.business_id).limit(2);
   const isReturning=(prevLoans&&prevLoans.length>0);
   const regFee=isReturning?0:REGISTRATION_FEE;
-  // Net disbursement = full principal (fees are paid upfront in cash, not deducted)
+  // Full principal is disbursed. Fees are allocated from the next phone payment.
   const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   const clientName=app.loan_clients?.full_name||'Unknown Client';
   const clientPhone=app.loan_clients?.phone||'';
@@ -2791,13 +2793,13 @@ async function openDisburseModal(appId){
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${localISODate(firstRep)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
-      <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>⚡ Processing Fee — Fees Paid Upfront (Not Deducted)</span><strong>${fmtMoney(procFee)}</strong></p>
+      <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Processing Fee (collected from next phone payment)</span><strong>${fmtMoney(procFee)}</strong></p>
       ${regFee>0
-        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>⚡ Registration Fee <span style="font-size:10px">(new client, one-time) — Paid Upfront (Not Deducted)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
+        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Registration Fee <span style="font-size:10px">(new client, one-time; collected from next phone payment)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
         :`<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client (${(prevLoans||[]).length} previous loan${(prevLoans||[]).length!==1?'s':''})</p>`}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(amt)}</strong></p>
-      <p style="font-size:10px;color:var(--text-secondary);margin-top:4px">ℹ️ Fees (KES ${fmtMoney(procFee+regFee)} total) collected in cash upfront. Full principal disbursed to client.</p>
+      <p style="font-size:10px;color:var(--text-secondary);margin-top:4px">The registered phone remains the payment identifier. KES ${fmtMoney(procFee+regFee)} is allocated to fees once, then the remainder reduces the loan.</p>
     </div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnConfirmDisburse" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
   `,true);
@@ -2843,8 +2845,8 @@ async function confirmDisburse(appId,clientId,termWeeks){
     } else if(isReturningClient && prevLoans[0]?.loan_officer_id){
       disbOfficerId = prevLoans[0].loan_officer_id;
     }
-    // Fees are collected upfront in cash — disbursed_amount equals the full principal
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
+    // Full principal is disbursed; fees remain due until a phone payment arrives.
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:regFee,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
     // Guard: if loan_type column doesn't exist yet in DB, retry without it
     let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
@@ -2868,22 +2870,6 @@ async function confirmDisburse(appId,clientId,termWeeks){
     }
 
     await sb('loan_applications').update({status:'disbursed'}).eq('id',appId);
-
-    // Log processing fee as upfront cash income (mirrors recordRegistrationFeeIncome)
-    try{
-      const feeRcpt=(appSettings?.receipt_no_prefix||'RCP')+'-PF-'+Date.now().toString().slice(-8);
-      await sb('journal_entries').insert({
-        id:crypto.randomUUID(),
-        business_id:currentUser?.business_id,
-        date:disbDate,
-        ref:feeRcpt,
-        description:`Processing fee (upfront cash) — Loan ${loanNo}`,
-        debit:'Cash',
-        credit:'Processing Fee Income',
-        amount:procFee,
-        synced:false
-      });
-    }catch(feeErr){ console.warn('[Disburse] Processing fee income log failed:',feeErr?.message); }
 
     await audit('loan_disbursed','loans',loan.id,null,loanRec);
     toast(`Loan ${loanNo} disbursed successfully!`,'success');closeModal();renderDisbursement();
@@ -3003,7 +2989,7 @@ async function viewLoan(id){
   if(!loan)return toast('Loan not found','error');
   // The repayment ledger is the balance source of truth. Self-heal stale
   // imported or previously adjusted loan totals whenever a loan is opened.
-  const ledgerPaid=Number((payments||[]).reduce((sum,p)=>sum+Number(p.amount||0),0).toFixed(2));
+  const ledgerPaid=Number((payments||[]).reduce((sum,p)=>sum+Number(p.loan_portion??p.amount??0),0).toFixed(2));
   const ledgerBalance=Number(Math.max(0,Number(loan.total_payable||0)-ledgerPaid).toFixed(2));
   if(Math.abs(Number(loan.total_paid||0)-ledgerPaid)>0.01 || Math.abs(Number(loan.outstanding_balance||0)-ledgerBalance)>0.01){
     const correctedStatus=ledgerBalance<=0.01?'completed':(loan.status==='completed'?'active':loan.status);
@@ -3028,7 +3014,8 @@ async function viewLoan(id){
       <div><strong>Weekly:</strong> ${fmtMoney(loan.weekly_installment)}</div>
       <div><strong>Balance:</strong> <span style="color:var(--accent-yellow)">${fmtMoney(loan.outstanding_balance)}</span></div>
       <div><strong>Total Paid:</strong> <span style="color:var(--accent-green)">${fmtMoney(loan.total_paid)}</span></div>
-      <div><strong>Processing Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.processing_fee||0)} paid upfront</span></div>
+      <div><strong>Processing Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.processing_fee_paid||0)} of ${fmtMoney(loan.processing_fee||0)} collected</span></div>
+      ${Number(loan.registration_fee_due||0)>0?`<div><strong>Registration Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.registration_fee_paid||0)} of ${fmtMoney(loan.registration_fee_due||0)} collected</span></div>`:''}
       <div><strong>Disbursed:</strong> ${fmtDate(loan.disbursement_date)}</div>
       <div><strong>Maturity:</strong> ${fmtDate(loan.maturity_date)}</div>
       <div><strong>Method:</strong> ${loan.disbursement_method||'-'}</div>
@@ -3052,8 +3039,8 @@ async function viewLoan(id){
           date:p.payment_date||p.created_at,
           html:`<tr style="background:rgba(16,185,129,0.04)">
             <td style="white-space:nowrap">${fmtDate(p.payment_date||p.created_at)}</td>
-            <td>💳 <strong>Payment</strong> <span style="color:var(--text-secondary);font-size:10px">${p.receipt_no}</span></td>
-            <td style="color:var(--accent-green);font-weight:700">− ${fmtMoney(p.amount)}</td>
+            <td>💳 <strong>Payment</strong> <span style="color:var(--text-secondary);font-size:10px">${p.receipt_no}</span>${(Number(p.registration_fee_portion||0)>0||Number(p.processing_fee_portion||0)>0||Number(p.credit_portion||0)>0)?`<div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(paymentAllocationText({registrationFeePortion:Number(p.registration_fee_portion||0),processingFeePortion:Number(p.processing_fee_portion||0),loanPortion:Number(p.loan_portion??p.amount??0),creditPortion:Number(p.credit_portion||0)}))}</div>`:''}</td>
+            <td style="color:var(--accent-green);font-weight:700">${fmtMoney(p.amount)}<div style="font-size:10px;color:var(--text-secondary)">${fmtMoney(p.loan_portion??p.amount)} to loan</div></td>
             <td style="font-size:11px">${p.payment_method==='mpesa_c2b'?'📱 M-Pesa C2B (Auto)':p.payment_method==='mpesa'?'📱 M-Pesa':p.payment_method||'-'}${p.payment_reference&&p.payment_reference!=='IMPORT'?' · '+p.payment_reference:''}</td>
             <td><span class="badge badge-green">Received</span></td>
           </tr>`
@@ -3313,7 +3300,7 @@ async function renderRepayments(page=1){
     Object.values(allRepsByLoan).forEach(arr=>{
       let runningPaid = 0;
       arr.forEach(r=>{
-        runningPaid += Number(r.amount||0);
+        runningPaid += Number(r.loan_portion??r.amount??0);
         const totalPayable = Number(r.loans?.total_payable||0);
         balAfterMap[r.id] = Math.max(0, totalPayable - runningPaid);
       });
@@ -3362,13 +3349,13 @@ async function renderRepayments(page=1){
       ${p.items.map(r=>{
         // Balance AFTER this specific payment (running balance, not current balance)
         const balRem   = cachedData._balAfterMap?.[r.id] ?? Number(r.loans?.outstanding_balance ?? 0);
-        const procFee  = Number(r.loans?.processing_fee ?? 0);
         // Detect payment type from notes or penalty_portion
         const notes    = (r.notes||'').toLowerCase();
-        const isProcFee= notes.includes('processing fee');
+        const hasFees=Number(r.registration_fee_portion||0)>0||Number(r.processing_fee_portion||0)>0;
+        const isProcFee= notes.includes('processing fee')||hasFees;
         const isPenalty= Number(r.penalty_portion||0) > 0 || notes.includes('penalty') || notes.includes('rollover');
         const isDisb   = notes.includes('disburs');
-        const payType  = isProcFee ? '<span class="badge badge-yellow">Processing Fee</span>'
+        const payType  = isProcFee ? `<span class="badge badge-yellow">Split payment</span><div style="font-size:10px;margin-top:3px;color:var(--text-secondary)">${escapeHtml(paymentAllocationText({registrationFeePortion:Number(r.registration_fee_portion||0),processingFeePortion:Number(r.processing_fee_portion||0),loanPortion:Number(r.loan_portion??r.amount??0),creditPortion:Number(r.credit_portion||0)}))}</div>`
                        : isPenalty ? '<span class="badge badge-red">Penalty</span>'
                        : isDisb    ? '<span class="badge badge-purple">Disbursement</span>'
                        :             '<span class="badge badge-green">Repayment</span>';
@@ -3379,10 +3366,6 @@ async function renderRepayments(page=1){
         const balCell  = balRem <= 0
           ? '<span style="color:var(--accent-green);font-weight:700">Cleared ✅</span>'
           : '<strong style="color:'+balColor+'">'+fmtMoney(balRem)+'</strong>';
-        // Processing fee cell — shows the fee amount with "Paid Upfront" tag
-        const procCell = procFee > 0
-          ? '<span style="font-size:11px">'+fmtMoney(procFee)+'<br><span style="color:var(--accent-green);font-size:10px">✅ Paid Upfront</span></span>'
-          : '<span style="color:var(--text-secondary);font-size:11px">—</span>';
         const rid = r.id;
         const rclient = r.loans?.loan_clients?.full_name||'-';
         const rphone  = r.loans?.loan_clients?.phone||'-';
@@ -3443,33 +3426,18 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const mpTp = Number(loan.total_payable||0);
     const mpTi = Number(loan.total_interest||0);
     const mpInterestRatio = (mpTp > 0 && mpTi > 0) ? (mpTi / mpTp) : 0;
-    const mpPreviouslyPaid = Number(loan.total_paid||0);
+    const allocation=calculatePaymentAllocation(loan,amount);
+    const mpInterestPortion=Number((allocation.loanPortion*mpInterestRatio).toFixed(2));
+    const mpPrincipalPortion=Number((allocation.loanPortion-mpInterestPortion).toFixed(2));
+    const allocationText=paymentAllocationText(allocation);
 
-    // Calculate penalty_portion: any amount paid beyond total_payable is penalty revenue
-    let mpPenaltyPortion = 0, mpInterestPortion, mpPrincipalPortion;
-    if(mpTp > 0 && mpPreviouslyPaid >= mpTp){
-      mpPenaltyPortion = amount;
-      mpInterestPortion = 0;
-      mpPrincipalPortion = 0;
-    } else if(mpTp > 0 && mpPreviouslyPaid + amount > mpTp){
-      mpPenaltyPortion = Number(((mpPreviouslyPaid + amount) - mpTp).toFixed(2));
-      const mpCorePortion = amount - mpPenaltyPortion;
-      mpInterestPortion = Number((mpCorePortion * mpInterestRatio).toFixed(2));
-      mpPrincipalPortion = Number((mpCorePortion - mpInterestPortion).toFixed(2));
-    } else {
-      mpInterestPortion = Number((amount * mpInterestRatio).toFixed(2));
-      mpPrincipalPortion = Number((amount - mpInterestPortion).toFixed(2));
-    }
-
-    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:mpPenaltyPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:'M-Pesa C2B confirmed by cashier'};
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:0,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:`M-Pesa C2B confirmed by cashier. Allocation: ${allocationText||'none'}`};
     const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
     if(error)throw error;
-    
-    const newPaid=Number(loan.total_paid)+amount;
-    const newBalance=Number(loan.outstanding_balance)-amount;
+    await persistPaymentAllocation(loan,allocation);
     // Cascade into schedules
     const{data:mpesaScheds}=await sb('loan_schedules').select('*').eq('loan_id',loan.id).in('status',['pending','overdue','partial']).order('due_date',{ascending:true}).order('installment_no',{ascending:true});
-    let mpesaRem=amount;
+    let mpesaRem=allocation.loanPortion;
     const mpesaUpdates=[];
     for(const s of (mpesaScheds||[])){
       if(mpesaRem<=0)break;
@@ -3481,7 +3449,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     if(mpesaUpdates.length)await Promise.allSettled(mpesaUpdates);
 
     // ── Enforce minimum 1-week interest on early full payoff ──────────────────
-    const mpMinInt = await enforceMinimumWeekInterest(loan, amount);
+    const mpMinInt = await enforceMinimumWeekInterest(loan, allocation.loanPortion);
     // Re-read loan balances in case the helper adjusted them
     const { data: loanAfterMpMinInt } = mpMinInt.adjusted
       ? await sb('loans').select('*').eq('id', loan.id).single()
@@ -3528,14 +3496,57 @@ async function dismissMpesaPayment(queueId){
 async function getLoanLedgerBalance(loanId, fallbackTotalPayable=0){
   const[{data:loanRow},{data:rows}]=await Promise.all([
     sb('loans').select('total_payable').eq('id',loanId).single(),
-    sb('loan_repayments').select('amount').eq('loan_id',loanId)
+    sb('loan_repayments').select('amount,loan_portion').eq('loan_id',loanId)
   ]);
   const totalPayable=Number(loanRow?.total_payable??fallbackTotalPayable??0);
-  const totalPaid=Number((rows||[]).reduce((sum,row)=>sum+Number(row.amount||0),0).toFixed(2));
+  const totalPaid=Number((rows||[]).reduce((sum,row)=>sum+Number(row.loan_portion??row.amount??0),0).toFixed(2));
   return{
     totalPaid,
     balance:Number(Math.max(0,totalPayable-totalPaid).toFixed(2))
   };
+}
+
+function calculatePaymentAllocation(loan,grossAmount){
+  let remaining=Number(Number(grossAmount||0).toFixed(2));
+  const registrationOutstanding=Math.max(0,Number(loan.registration_fee_due||0)-Number(loan.registration_fee_paid||0));
+  const registrationFeePortion=Number(Math.min(remaining,registrationOutstanding).toFixed(2));
+  remaining=Number((remaining-registrationFeePortion).toFixed(2));
+  const processingOutstanding=Math.max(0,Number(loan.processing_fee||0)-Number(loan.processing_fee_paid||0));
+  const processingFeePortion=Number(Math.min(remaining,processingOutstanding).toFixed(2));
+  remaining=Number((remaining-processingFeePortion).toFixed(2));
+  const loanPortion=Number(Math.min(remaining,Number(loan.outstanding_balance||0)).toFixed(2));
+  remaining=Number((remaining-loanPortion).toFixed(2));
+  return{
+    registrationFeePortion,
+    processingFeePortion,
+    loanPortion,
+    creditPortion:Math.max(0,remaining)
+  };
+}
+
+async function persistPaymentAllocation(loan,allocation){
+  const loanUpdate={
+    registration_fee_paid:Number((Number(loan.registration_fee_paid||0)+allocation.registrationFeePortion).toFixed(2)),
+    processing_fee_paid:Number((Number(loan.processing_fee_paid||0)+allocation.processingFeePortion).toFixed(2))
+  };
+  const{error:loanError}=await sb('loans').update(loanUpdate).eq('id',loan.id);
+  if(loanError)throw loanError;
+  if(allocation.creditPortion>0&&loan.client_id){
+    const{data:client}=await sb('loan_clients').select('account_credit').eq('id',loan.client_id).single();
+    const{error:creditError}=await sb('loan_clients').update({
+      account_credit:Number((Number(client?.account_credit||0)+allocation.creditPortion).toFixed(2))
+    }).eq('id',loan.client_id);
+    if(creditError)throw creditError;
+  }
+}
+
+function paymentAllocationText(a){
+  return [
+    a.registrationFeePortion>0?`registration KES ${fmtMoney(a.registrationFeePortion)}`:'',
+    a.processingFeePortion>0?`processing KES ${fmtMoney(a.processingFeePortion)}`:'',
+    a.loanPortion>0?`loan KES ${fmtMoney(a.loanPortion)}`:'',
+    a.creditPortion>0?`client credit KES ${fmtMoney(a.creditPortion)}`:''
+  ].filter(Boolean).join(', ');
 }
 
 async function openPaymentModal(loanId){
@@ -3722,14 +3733,18 @@ async function savePayment(){
     // Read explicit penalty amount entered by the cashier
     const explicitPenalty = Number($('#payPenaltyAmt').value) || 0;
     const corePayment = Math.max(0, amount - explicitPenalty);
+    const allocation = calculatePaymentAllocation(loan,corePayment);
 
     const penaltyPortion = explicitPenalty;
-    const interestPortion = Number((corePayment * interestRatio).toFixed(2));
-    const principalPortion = Number((corePayment - interestPortion).toFixed(2));
+    const interestPortion = Number((allocation.loanPortion * interestRatio).toFixed(2));
+    const principalPortion = Number((allocation.loanPortion - interestPortion).toFixed(2));
 
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,collected_by:currentUser?.id,notes:$('#payNotes').value,business_id:currentUser?.business_id};
+    const allocationText=paymentAllocationText(allocation);
+    const userNote=($('#payNotes').value||'').trim();
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
+    await persistPaymentAllocation(loan,allocation);
 
     // ── Cascade payment across schedules (oldest first by due_date) ──
     const{data:allScheds}=await sb('loan_schedules')
@@ -3737,7 +3752,7 @@ async function savePayment(){
       .in('status',['pending','overdue','partial'])
       .order('due_date',{ascending:true})
       .order('installment_no',{ascending:true});
-    let remaining=amount;
+    let remaining=allocation.loanPortion;
     const schedUpdates=[];
     for(const s of (allScheds||[])){
       if(remaining<=0)break;
@@ -3758,7 +3773,7 @@ async function savePayment(){
     if(schedUpdates.length)await Promise.allSettled(schedUpdates);
 
     // ── Enforce minimum 1-week interest on early full payoff ──────────────────
-    const minIntResult = await enforceMinimumWeekInterest(loan, amount);
+    const minIntResult = await enforceMinimumWeekInterest(loan, allocation.loanPortion);
     if(minIntResult.adjusted){
       toast(
         `Minimum 1-week interest applied: KES ${fmtMoney(minIntResult.shortfall)} added. ` +
@@ -3845,6 +3860,10 @@ async function printReceipt(id){
   let y=24;
   doc.text(`Receipt: ${rep.receipt_no}`,5,y);y+=5;
   doc.text(`Amount: ${fmtMoney(rep.amount)}`,5,y);y+=5;
+  if(Number(rep.registration_fee_portion||0)>0){doc.text(`Registration fee: ${fmtMoney(rep.registration_fee_portion)}`,5,y);y+=5;}
+  if(Number(rep.processing_fee_portion||0)>0){doc.text(`Processing fee: ${fmtMoney(rep.processing_fee_portion)}`,5,y);y+=5;}
+  if(rep.loan_portion!=null){doc.text(`Loan repayment: ${fmtMoney(rep.loan_portion)}`,5,y);y+=5;}
+  if(Number(rep.credit_portion||0)>0){doc.text(`Client credit: ${fmtMoney(rep.credit_portion)}`,5,y);y+=5;}
   doc.text(`Method: ${rep.payment_method}`,5,y);y+=5;
   doc.text(`Reference: ${rep.payment_reference||'-'}`,5,y);y+=5;
   doc.text(`Date: ${rep.payment_date}`,5,y);y+=5;
@@ -3856,7 +3875,7 @@ async function printReceipt(id){
 function exportRepaymentsExcel(){
   const data=(cachedData.repayments||[]).map(r=>{
     const notes=(r.notes||'').toLowerCase();
-    const isProcFee=notes.includes('processing fee');
+    const isProcFee=notes.includes('processing fee')||Number(r.registration_fee_portion||0)>0||Number(r.processing_fee_portion||0)>0;
     const isPenalty=Number(r.penalty_portion||0)>0||notes.includes('penalty')||notes.includes('rollover');
     const payType=isProcFee?'Processing Fee':isPenalty?'Penalty':'Repayment';
     const balRem=Number(r.loans?.outstanding_balance??0);
@@ -3869,9 +3888,12 @@ function exportRepaymentsExcel(){
       'Payment Type':      payType,
       'Reference':         r.payment_reference||'-',
       'Amount (KES)':      Number(r.amount||0),
+      'Registration Fee':  Number(r.registration_fee_portion||0),
+      'Processing Fee':    Number(r.processing_fee_portion||0),
+      'Loan Repayment':    Number(r.loan_portion??r.amount??0),
+      'Client Credit':     Number(r.credit_portion||0),
       'Balance Remaining': balRem<=0?'Cleared':Number(balRem.toFixed(2)),
-      'Processing Fee (KES)': procFee>0?Number(procFee.toFixed(2)):'',
-      'Proc Fee Status':   procFee>0?'Paid Upfront':'',
+      'Processing Fee Due':procFee>0?Number(procFee.toFixed(2)):'',
       'Method':            r.payment_method||'-',
   'Date & Time':       fmtPaymentDateTime(r.payment_date||r.created_at)
     };
@@ -4646,25 +4668,23 @@ async function loadReportData(id){
       const ti=Number(loan.total_interest||0);
       if(tp<=0) return 0;
       const ratio=ti/tp;
-      return Number((Number(r.amount||0)*ratio).toFixed(2));
+      return Number((Number(r.loan_portion??r.amount??0)*ratio).toFixed(2));
     };
     const totalInterest=(reps||[]).reduce((s,r)=>s+calcInterestPortion(r),0);
     const totalPenalties=(reps||[]).reduce((s,r)=>s+Number(r.penalty_portion||0),0);
-    // Registration fees — only count clients who actually paid (have notes tag or created before import)
-    const regClients=(clients||[]).filter(c=>!(c.notes||'').includes('Imported')||(c.notes||'').includes('reg_fee_paid'));
-    const totalReg=regClients.length*REGISTRATION_FEE;
-    const totalProc=(cachedData.loans||[]).reduce((s,l)=>s+Number(l.processing_fee||0),0);
+    const totalReg=(reps||[]).reduce((s,r)=>s+Number(r.registration_fee_portion||0),0);
+    const totalProc=(reps||[]).reduce((s,r)=>s+Number(r.processing_fee_portion||0),0);
     const rows=[];
     (reps||[]).forEach(r=>{
       const iPortion=calcInterestPortion(r);
-      rows.push({'Source':'Repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest (KES)':Number(iPortion.toFixed(2)),'Penalty (KES)':Number(r.penalty_portion||0),'Total (KES)':Number(r.amount||0),'Client':r.loans?.loan_no||'-'});
+      const revenue=Number(iPortion||0)+Number(r.penalty_portion||0)+Number(r.registration_fee_portion||0)+Number(r.processing_fee_portion||0);
+      rows.push({'Source':'Payment allocation','Receipt':r.receipt_no,'Date':r.payment_date,'Interest (KES)':Number(iPortion.toFixed(2)),'Penalty (KES)':Number(r.penalty_portion||0),'Registration Fee (KES)':Number(r.registration_fee_portion||0),'Processing Fee (KES)':Number(r.processing_fee_portion||0),'Total (KES)':Number(revenue.toFixed(2)),'Client':r.loans?.loan_no||'-'});
     });
-    (clients||[]).forEach(c=>{const tag=parseRegFeeFromNotes(c.notes);const amt=tag?.amount??REGISTRATION_FEE;const date=tag?.date||(c.created_at?String(c.created_at).slice(0,10):'');rows.push({'Source':'Registration Fee','Receipt':'REG-'+String(c.id).slice(0,8),'Date':date,'Interest (KES)':0,'Penalty (KES)':0,'Total (KES)':Number(amt||0),'Client':c.full_name});});
     return{title:'Income Report',summary:[
       {label:'Interest Collected',value:fmtMoney(totalInterest)},{label:'Penalties Collected',value:fmtMoney(totalPenalties)},
       {label:'Registration Fees',value:fmtMoney(totalReg)},{label:'Processing Fees',value:fmtMoney(totalProc)},
       {label:'Grand Total Revenue',value:fmtMoney(totalInterest+totalPenalties+totalReg+totalProc)}
-    ],rows,cols:['Source','Receipt','Client','Date','Interest (KES)','Penalty (KES)','Total (KES)']};
+    ],rows,cols:['Source','Receipt','Client','Date','Interest (KES)','Penalty (KES)','Registration Fee (KES)','Processing Fee (KES)','Total (KES)']};
   }
   if(id==='portfolio_summary'){
     const[{data:loans},{data:clients}]=await Promise.all([
@@ -5243,7 +5263,7 @@ async function dismissManualSuspense(entryId){
 
 async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){
   const{data:loans}=await sb('loans')
-    .select('id,loan_no,outstanding_balance,loan_clients(full_name,phone,id_number)')
+    .select('id,loan_no,client_id,outstanding_balance,registration_fee_due,registration_fee_paid,processing_fee,processing_fee_paid,loan_clients(full_name,phone,id_number)')
     .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
     .order('created_at',{ascending:false}).limit(500);
 
@@ -5305,9 +5325,9 @@ function previewSuspenseMatch(amount){
   const loan=(window._suspMatchLoans||[]).find(l=>l.id===sel.value);
   if(!loan){ out.textContent='Select a loan to preview the balance after matching.'; return; }
   const bal=Number(loan.outstanding_balance||0);
-  const after=Math.max(0,bal-Number(amount||0));
-  const extra=Math.max(0,Number(amount||0)-bal);
-  out.innerHTML=`Selected balance: <b>KES ${fmtMoney(bal)}</b>. After match: <b style="color:var(--accent-green)">KES ${fmtMoney(after)}</b>${extra>0?` <span style="color:var(--accent-yellow)">Extra KES ${fmtMoney(extra)} is above current loan balance.</span>`:''}`;
+  const allocation=calculatePaymentAllocation(loan,Number(amount||0));
+  const after=Math.max(0,bal-allocation.loanPortion);
+  out.innerHTML=`Selected balance: <b>KES ${fmtMoney(bal)}</b>. After match: <b style="color:var(--accent-green)">KES ${fmtMoney(after)}</b><div style="margin-top:4px">${escapeHtml(paymentAllocationText(allocation)||'No allocation')}</div>`;
 }
 
 async function confirmSuspenseMatch(entryId, entryType, amount, ref){
@@ -5324,8 +5344,9 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     const tp=Number(loan.total_payable||0);
     const ti=Number(loan.total_interest||0);
     const interestRatio=(tp>0&&ti>0)?(ti/tp):0;
-    const interestPortion=Number((amount*interestRatio).toFixed(2));
-    const principalPortion=Number((amount-interestPortion).toFixed(2));
+    const allocation=calculatePaymentAllocation(loan,amount);
+    const interestPortion=Number((allocation.loanPortion*interestRatio).toFixed(2));
+    const principalPortion=Number((allocation.loanPortion-interestPortion).toFixed(2));
     const method=document.getElementById('suspMatchMethod')?.value||'mpesa';
     const paymentDate=new Date().toISOString();
 
@@ -5333,15 +5354,19 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       loan_id:loanId,receipt_no:receiptNo,amount,payment_method:method,
       payment_reference:ref,payment_date:paymentDate,
       principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:0,
+      registration_fee_portion:allocation.registrationFeePortion,
+      processing_fee_portion:allocation.processingFeePortion,
+      loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,
       mpesa_confirmed:true,collected_by:currentUser.id,
-      business_id:currentUser.business_id,notes:'Matched from suspense account'
+      business_id:currentUser.business_id,notes:`Matched from suspense account. Allocation: ${paymentAllocationText(allocation)||'none'}`
     }).select('id').single();
     if(repaymentErr) throw repaymentErr;
+    await persistPaymentAllocation(loan,allocation);
 
     // Cascade into schedules
     const{data:scheds}=await sb('loan_schedules').select('*').eq('loan_id',loanId)
       .in('status',['pending','overdue','partial']).order('due_date',{ascending:true}).order('installment_no',{ascending:true});
-    let rem=amount;
+    let rem=allocation.loanPortion;
     const upds=[];
     const todayStr=today();
     for(const s of (scheds||[])){
@@ -5354,7 +5379,7 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     }
     if(upds.length)await Promise.allSettled(upds);
 
-    const minIntResult = await enforceMinimumWeekInterest(loan, amount);
+    const minIntResult = await enforceMinimumWeekInterest(loan, allocation.loanPortion);
     const { data: loanAfterMinInt } = minIntResult.adjusted
       ? await sb('loans').select('*').eq('id', loanId).single()
       : { data: loan };
@@ -5673,7 +5698,7 @@ async function renderAccounting() {
 
     const[loansR,repR,cliR,penR,allLoansMapR]=await Promise.all([
       sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
-      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,payment_date,payment_method').eq('business_id',biz).gte('payment_date',qStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
+      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,registration_fee_portion,processing_fee_portion,loan_portion,credit_portion,payment_date,payment_method').eq('business_id',biz).gte('payment_date',qStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
       sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
       sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000),
       sb('loans').select('id,client_id,total_interest,total_payable,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(100000)
@@ -5701,13 +5726,9 @@ async function renderAccounting() {
 
     // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
-    // Processing fees
-    const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
-    // Registration fees — safely handle null notes
-    const registrationFees = filteredClients.reduce((s,c)=>{
-      try{ return s+Number((parseRegFeeFromNotes(c.notes)?.amount)||REGISTRATION_FEE); }
-      catch(e){ return s+REGISTRATION_FEE; }
-    },0);
+    // Cash-basis fees: count them only when received in an actual payment.
+    const processingFees = filteredReps.reduce((s,r)=>s+Number(r.processing_fee_portion||0),0);
+    const registrationFees = filteredReps.reduce((s,r)=>s+Number(r.registration_fee_portion||0),0);
 
     // ── CASH-BASIS ACCOUNTING (fixed) ────────────────────────────────────────
     // Primary: read interest_portion / penalty_portion stored at payment time.
@@ -5726,7 +5747,7 @@ async function renderAccounting() {
         if(tp <= 0 || ti <= 0) return 0;
         // Only apply ratio to the non-penalty portion of the payment
         const pen = Number(r.penalty_portion||0);
-        const core = Math.max(0, Number(r.amount||0) - pen);
+        const core = Math.max(0, Number(r.loan_portion??r.amount??0) - pen);
         return Number((core * (ti / tp)).toFixed(2));
       }catch(e){ return 0; }
     };
@@ -5735,7 +5756,7 @@ async function renderAccounting() {
     const principalRecovered = filteredReps.reduce((s,r) => {
       const pen = Number(r.penalty_portion||0);
       const intAmt = calcInterestPortionAcct(r);
-      return s + Math.max(0, Number(r.amount||0) - intAmt - pen);
+      return s + Math.max(0, Number(r.loan_portion??r.amount??0) - intAmt - pen);
     }, 0);
     // Penalties KPI: cash basis — sum what was actually collected at payment time,
     // NOT when the system charged them (which was the old broken behaviour).
