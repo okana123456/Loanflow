@@ -3001,6 +3001,21 @@ async function viewLoan(id){
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true}).order('created_at',{ascending:true});
   const{data:loanPenalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
   if(!loan)return toast('Loan not found','error');
+  // The repayment ledger is the balance source of truth. Self-heal stale
+  // imported or previously adjusted loan totals whenever a loan is opened.
+  const ledgerPaid=Number((payments||[]).reduce((sum,p)=>sum+Number(p.amount||0),0).toFixed(2));
+  const ledgerBalance=Number(Math.max(0,Number(loan.total_payable||0)-ledgerPaid).toFixed(2));
+  if(Math.abs(Number(loan.total_paid||0)-ledgerPaid)>0.01 || Math.abs(Number(loan.outstanding_balance||0)-ledgerBalance)>0.01){
+    const correctedStatus=ledgerBalance<=0.01?'completed':(loan.status==='completed'?'active':loan.status);
+    const correction={
+      total_paid:ledgerPaid,
+      outstanding_balance:ledgerBalance,
+      status:correctedStatus,
+      ...(ledgerBalance<=0.01?{arrears_amount:0,overdue_days:0}:{})
+    };
+    const{error:balanceFixError}=await sb('loans').update(correction).eq('id',id);
+    if(!balanceFixError)Object.assign(loan,correction);
+  }
   const canPay = hasRole('admin','branch_manager','cashier');
   openModal(`
     <h2>Loan ${loan.loan_no}</h2>
@@ -3474,8 +3489,9 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const mpLoanRef = loanAfterMpMinInt || loan;
     // ─────────────────────────────────────────────────────────────────────────
 
-    const mpNewPaid    = Number(mpLoanRef.total_paid||0) + amount;
-    const mpNewBalance = Math.max(0, Number(mpLoanRef.outstanding_balance) - amount);
+    const mpLedger = await getLoanLedgerBalance(loan.id, mpLoanRef.total_payable);
+    const mpNewPaid    = mpLedger.totalPaid;
+    const mpNewBalance = mpLedger.balance;
     await sb('loans').update({
       total_paid: mpNewPaid,
       outstanding_balance: mpNewBalance,
@@ -3491,9 +3507,35 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
 }
 
 async function dismissMpesaPayment(queueId){
-  if(!await confirm_('Dismiss this M-Pesa payment? It will be marked as confirmed without recording a repayment.'))return;
-  await sb('mpesa_callback_queue').update({confirmed:true}).eq('id',queueId);
-  toast('Payment dismissed','info');renderRepayments();
+  if(!await confirm_('Dismiss this M-Pesa payment? It will be removed from suspense without recording a repayment.'))return;
+  try{
+    const dismissedAt=new Date().toISOString();
+    const{error}=await sb('mpesa_callback_queue').update({
+      confirmed:true,
+      dismissed:true,
+      dismissed_at:dismissedAt,
+      dismissed_by:String(currentUser.id||'')
+    }).eq('id',queueId);
+    if(error)throw error;
+    await audit('suspense_dismissed','mpesa_callback_queue',queueId,null,{reason:'Dismissed by authorized user'});
+    toast('Payment dismissed','info');
+    if(currentSection==='suspense')renderSuspense();else renderRepayments();
+  }catch(e){
+    toast(/dismissed/i.test(e.message||'')?'Run the Bripta balance and suspense SQL setup, then try again.':e.message,'error');
+  }
+}
+
+async function getLoanLedgerBalance(loanId, fallbackTotalPayable=0){
+  const[{data:loanRow},{data:rows}]=await Promise.all([
+    sb('loans').select('total_payable').eq('id',loanId).single(),
+    sb('loan_repayments').select('amount').eq('loan_id',loanId)
+  ]);
+  const totalPayable=Number(loanRow?.total_payable??fallbackTotalPayable??0);
+  const totalPaid=Number((rows||[]).reduce((sum,row)=>sum+Number(row.amount||0),0).toFixed(2));
+  return{
+    totalPaid,
+    balance:Number(Math.max(0,totalPayable-totalPaid).toFixed(2))
+  };
 }
 
 async function openPaymentModal(loanId){
@@ -3756,8 +3798,9 @@ async function savePayment(){
         newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
       }
     }
-    const newPaid=Number(loanRef.total_paid)+amount;
-    const newBalance=Math.max(0,Number(loanRef.outstanding_balance)-amount);
+    const ledgerTotals=await getLoanLedgerBalance(loanId,loanRef.total_payable);
+    const newPaid=ledgerTotals.totalPaid;
+    const newBalance=ledgerTotals.balance;
     await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBalance,
@@ -4972,12 +5015,12 @@ async function renderSuspense(){
     const queue=(queueR.data||[]).filter(q=>{
       const queueBiz = String(q.business_short_code || '').trim();
       const belongsHere = !queueBiz || queueBiz === currentUser.business_id || (shortcode && queueBiz === shortcode);
-      const needsAction = !q.confirmed || (!q.loan_id && !q.repayment_id);
+      const needsAction = !q.dismissed && (!q.confirmed || (!q.loan_id && !q.repayment_id));
       return belongsHere && needsAction;
     });
     const activeLoans=loansR.data||[];
     const manualSuspense=(suspR.data||[]);
-    const pendingManualSuspense=(manualSuspense||[]).filter(r=>!r.resolved);
+    const pendingManualSuspense=(manualSuspense||[]).filter(r=>!r.resolved && !r.dismissed);
 
     const totalSuspense=queue.reduce((s,q)=>s+Number(q.trans_amount||0),0)
       +pendingManualSuspense.reduce((s,r)=>s+Number(r.amount||0),0);
@@ -5028,7 +5071,7 @@ async function renderSuspense(){
                 <td>${r.payer_name||'-'} · ${r.payer_phone||'-'} · Acct: ${r.account_number||'-'}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(r.amount)}</strong></td>
                 <td>${!r.resolved?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
-                <td>${!r.resolved?`<button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
+                <td>${!r.resolved?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button><button class="btn btn-outline btn-sm" onclick="dismissManualSuspense('${r.id}')">Dismiss</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
               </tr>`).join(''):'<tr><td colspan="6"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>'}
           </tbody>
         </table>
@@ -5075,6 +5118,27 @@ async function saveSuspenseEntry(){
     closeModal();
     renderSuspense();
   }catch(e){toast(e.message,'error');}
+}
+
+async function dismissManualSuspense(entryId){
+  if(!await confirm_('Dismiss this suspense amount? It will be removed from the pending suspense total without creating a repayment.'))return;
+  try{
+    const dismissedAt=new Date().toISOString();
+    const{error}=await sb('unmatched_payments').update({
+      resolved:true,
+      resolved_at:dismissedAt,
+      resolved_by:currentUser.id,
+      dismissed:true,
+      dismissed_at:dismissedAt,
+      dismissed_by:String(currentUser.id||'')
+    }).eq('id',entryId).eq('business_id',currentUser.business_id);
+    if(error)throw error;
+    await audit('suspense_dismissed','unmatched_payments',entryId,null,{reason:'Dismissed by authorized user'});
+    toast('Suspense amount dismissed','info');
+    renderSuspense();
+  }catch(e){
+    toast(/dismissed/i.test(e.message||'')?'Run the Bripta balance and suspense SQL setup, then try again.':e.message,'error');
+  }
 }
 
 async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){
@@ -5213,8 +5277,9 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
     }
 
-    const newPaid=Number(loanRef.total_paid||0)+amount;
-    const newBal=Math.max(0,Number(loanRef.outstanding_balance||0)-amount);
+    const ledgerTotals=await getLoanLedgerBalance(loanId,loanRef.total_payable);
+    const newPaid=ledgerTotals.totalPaid;
+    const newBal=ledgerTotals.balance;
     await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBal,
