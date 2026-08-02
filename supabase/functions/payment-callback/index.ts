@@ -209,27 +209,12 @@ serve(async (req) => {
       return accepted;
     }
 
-    // Allocate one phone payment in a fixed order. Fees are charged once per
-    // loan, only the loan portion reduces the repayment schedule, and any
-    // excess is retained as client credit instead of entering suspense.
-    let unallocated = Number(amount.toFixed(2));
-    const registrationOutstanding = Math.max(
-      0,
-      Number(loan.registration_fee_due || 0) - Number(loan.registration_fee_paid || 0),
-    );
-    const registrationFeePortion = Number(Math.min(unallocated, registrationOutstanding).toFixed(2));
-    unallocated = Number((unallocated - registrationFeePortion).toFixed(2));
-
-    const processingOutstanding = Math.max(
-      0,
-      Number(loan.processing_fee || 0) - Number(loan.processing_fee_paid || 0),
-    );
-    const processingFeePortion = Number(Math.min(unallocated, processingOutstanding).toFixed(2));
-    unallocated = Number((unallocated - processingFeePortion).toFixed(2));
-
-    const loanPortion = Number(Math.min(unallocated, Number(loan.outstanding_balance || 0)).toFixed(2));
-    unallocated = Number((unallocated - loanPortion).toFixed(2));
-    const creditPortion = Math.max(0, unallocated);
+    // Every payment made using the client's registered phone reduces the loan
+    // in full. Registration and processing fees are never diverted here.
+    const registrationFeePortion = 0;
+    const processingFeePortion = 0;
+    const loanPortion = Number(amount.toFixed(2));
+    const creditPortion = 0;
     const totalPayable = Number(loan.total_payable || 0);
     const totalInterest = Number(loan.total_interest || 0);
     const interestRatio = totalPayable > 0 && totalInterest > 0 ? totalInterest / totalPayable : 0;
@@ -237,10 +222,7 @@ serve(async (req) => {
     const principalPortion = Number((loanPortion - interestPortion).toFixed(2));
     const receiptNo = transId;
     const allocationNote = [
-      registrationFeePortion > 0 ? `registration KES ${registrationFeePortion.toFixed(2)}` : "",
-      processingFeePortion > 0 ? `processing KES ${processingFeePortion.toFixed(2)}` : "",
       loanPortion > 0 ? `loan KES ${loanPortion.toFixed(2)}` : "",
-      creditPortion > 0 ? `credit KES ${creditPortion.toFixed(2)}` : "",
     ].filter(Boolean).join(", ");
 
     const { data: repayment, error: repErr } = await supabase
@@ -321,7 +303,7 @@ serve(async (req) => {
       ? Math.max(0, Math.floor((Date.now() - new Date(oldestDueDate).getTime()) / 86400000))
       : 0;
     const newTotalPaid = Number((Number(loan.total_paid || 0) + loanPortion).toFixed(2));
-    const newBalance = Math.max(0, Number((totalPayable - newTotalPaid).toFixed(2)));
+    const newBalance = Math.max(0, Number((Number(loan.outstanding_balance || 0) - loanPortion).toFixed(2)));
 
     await supabase
       .from("loans")
@@ -331,17 +313,8 @@ serve(async (req) => {
         status: newBalance <= 0 ? "completed" : loan.status,
         arrears_amount: newBalance <= 0 ? 0 : Number(arrears.toFixed(2)),
         overdue_days: newBalance <= 0 ? 0 : overdueDays,
-        registration_fee_paid: Number((Number(loan.registration_fee_paid || 0) + registrationFeePortion).toFixed(2)),
-        processing_fee_paid: Number((Number(loan.processing_fee_paid || 0) + processingFeePortion).toFixed(2)),
       })
       .eq("id", loan.id);
-
-    if (creditPortion > 0) {
-      await supabase
-        .from("loan_clients")
-        .update({ account_credit: Number((Number(client.account_credit || 0) + creditPortion).toFixed(2)) })
-        .eq("id", client.id);
-    }
 
     if (queueId) {
       await supabase

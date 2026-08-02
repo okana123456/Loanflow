@@ -2064,7 +2064,7 @@ async function openAddClientModal(){
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
     ${officerDropdown}
     <div style="padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;align-items:center">
-      <span>The one-time <strong>Registration Fee</strong> will be collected automatically from this client's first loan payment.</span>
+      <span>The one-time <strong>Registration Fee</strong> is tracked separately and will not be deducted from loan repayments.</span>
       <strong style="color:var(--accent-green)">KES \${REGISTRATION_FEE}</strong>
     </div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSaveClient" onclick="saveClient()">Save Client</button></div>
@@ -2108,7 +2108,7 @@ async function saveClient(){
       if(window._clientOffMap) window._clientOffMap[data.id] = assignedOfficerId;
     }
     await audit('client_created','loan_clients',data.id,null,rec);
-    toast(`Client added. The KES ${REGISTRATION_FEE} registration fee will be collected from the first loan payment.`,'success');closeModal();renderClients();
+    toast(`Client added. Loan repayments will reduce the loan balance in full.`,'success');closeModal();renderClients();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Save Client'; }
     toast(e.message,'error');
@@ -2120,8 +2120,6 @@ async function viewClient(id){
     const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
     const{data:cLoans}=await sb('loans').select('*').eq('client_id',id);
     if(!c)return toast('Client not found','error');
-    const registrationDue=(cLoans||[]).reduce((sum,l)=>sum+Number(l.registration_fee_due||0),0);
-    const registrationPaid=(cLoans||[]).reduce((sum,l)=>sum+Number(l.registration_fee_paid||0),0);
     const photoInputId = `clientPhotoInput_${String(c.id).replace(/[^a-zA-Z0-9_-]/g,'')}`;
     const canManagePhoto = hasRole('admin','branch_manager');
     const canAddPhotoOnce = hasRole('loan_officer') && !canManagePhoto && !c.photo_path;
@@ -2150,8 +2148,8 @@ async function viewClient(id){
         <div><strong>Daily Income:</strong> ${fmtMoney(c.monthly_income)}</div>
         <div><strong>Next of Kin:</strong> ${c.next_of_kin_name||'-'} (${c.next_of_kin_relation||'-'}) ${c.next_of_kin_phone||''}</div>
         <div style="grid-column:1/-1;padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;display:flex;justify-content:space-between;align-items:center">
-          <span><strong style="color:var(--accent-green)">Registration Fee</strong> <span style="color:var(--text-secondary);font-size:12px">(collected from first loan payment)</span></span>
-          <strong style="color:var(--accent-green)">${fmtMoney(registrationPaid)} of ${fmtMoney(registrationDue||REGISTRATION_FEE)}</strong>
+          <span><strong style="color:var(--accent-green)">Registration Fee Policy</strong> <span style="color:var(--text-secondary);font-size:12px">(tracked separately; not deducted from repayments)</span></span>
+          <strong style="color:var(--accent-green)">${fmtMoney(REGISTRATION_FEE)}</strong>
         </div>
         ${Number(c.account_credit||0)>0?`<div style="grid-column:1/-1"><strong>Available Client Credit:</strong> <span style="color:var(--accent-green);font-weight:700">${fmtMoney(c.account_credit)}</span></div>`:''}
       </div>
@@ -2778,7 +2776,8 @@ async function openDisburseModal(appId){
   const{data:prevLoans}=await sb('loans').select('id').eq('client_id',app.client_id).eq('business_id',currentUser?.business_id).limit(2);
   const isReturning=(prevLoans&&prevLoans.length>0);
   const regFee=isReturning?0:REGISTRATION_FEE;
-  // Full principal is disbursed. Fees are allocated from the next phone payment.
+  // Full principal is disbursed. Fees are displayed separately and never
+  // diverted from a client's loan repayment.
   const firstRep=new Date();firstRep.setDate(firstRep.getDate()+7);
   const clientName=app.loan_clients?.full_name||'Unknown Client';
   const clientPhone=app.loan_clients?.phone||'';
@@ -2793,13 +2792,13 @@ async function openDisburseModal(appId){
     <div class="form-group"><label>First Repayment Date</label><input class="input" type="date" id="dFirstRep" value="${localISODate(firstRep)}"></div>
     <div class="card" style="margin-top:12px;font-size:13px">
       <p style="display:flex;justify-content:space-between"><span>Gross Amount</span><strong>${fmtMoney(amt)}</strong></p>
-      <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Processing Fee (collected from next phone payment)</span><strong>${fmtMoney(procFee)}</strong></p>
+      <p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Processing Fee (tracked separately)</span><strong>${fmtMoney(procFee)}</strong></p>
       ${regFee>0
-        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Registration Fee <span style="font-size:10px">(new client, one-time; collected from next phone payment)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
+        ?`<p style="display:flex;justify-content:space-between;color:var(--accent-yellow)"><span>Registration Fee <span style="font-size:10px">(new client, tracked separately)</span></span><strong>${fmtMoney(regFee)}</strong></p>`
         :`<p style="font-size:11px;color:var(--accent-green)">✅ No registration fee — returning client (${(prevLoans||[]).length} previous loan${(prevLoans||[]).length!==1?'s':''})</p>`}
       <hr style="border:none;border-top:1px solid var(--border);margin:6px 0">
       <p style="display:flex;justify-content:space-between;font-size:15px"><span><strong>Net Disbursement</strong></span><strong style="color:var(--accent-green)">${fmtMoney(amt)}</strong></p>
-      <p style="font-size:10px;color:var(--text-secondary);margin-top:4px">The registered phone remains the payment identifier. KES ${fmtMoney(procFee+regFee)} is allocated to fees once, then the remainder reduces the loan.</p>
+      <p style="font-size:10px;color:var(--text-secondary);margin-top:4px">Every repayment made using the registered phone number reduces the loan balance in full. Fees are not deducted from repayments.</p>
     </div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnConfirmDisburse" onclick="confirmDisburse('${appId}','${app.client_id}','${app.applied_term_weeks}')">Confirm & Disburse</button></div>
   `,true);
@@ -2845,8 +2844,8 @@ async function confirmDisburse(appId,clientId,termWeeks){
     } else if(isReturningClient && prevLoans[0]?.loan_officer_id){
       disbOfficerId = prevLoans[0].loan_officer_id;
     }
-    // Full principal is disbursed; fees remain due until a phone payment arrives.
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:regFee,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
+    // Full principal is disbursed; automatic fee diversion is disabled.
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:0,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
     // Guard: if loan_type column doesn't exist yet in DB, retry without it
     let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
@@ -2987,21 +2986,8 @@ async function viewLoan(id){
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true}).order('created_at',{ascending:true});
   const{data:loanPenalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
   if(!loan)return toast('Loan not found','error');
-  // The repayment ledger is the balance source of truth. Self-heal stale
-  // imported or previously adjusted loan totals whenever a loan is opened.
-  const ledgerPaid=Number((payments||[]).reduce((sum,p)=>sum+Number(p.loan_portion??p.amount??0),0).toFixed(2));
-  const ledgerBalance=Number(Math.max(0,Number(loan.total_payable||0)-ledgerPaid).toFixed(2));
-  if(Math.abs(Number(loan.total_paid||0)-ledgerPaid)>0.01 || Math.abs(Number(loan.outstanding_balance||0)-ledgerBalance)>0.01){
-    const correctedStatus=ledgerBalance<=0.01?'completed':(loan.status==='completed'?'active':loan.status);
-    const correction={
-      total_paid:ledgerPaid,
-      outstanding_balance:ledgerBalance,
-      status:correctedStatus,
-      ...(ledgerBalance<=0.01?{arrears_amount:0,overdue_days:0}:{})
-    };
-    const{error:balanceFixError}=await sb('loans').update(correction).eq('id',id);
-    if(!balanceFixError)Object.assign(loan,correction);
-  }
+  // Stored balances remain authoritative because imported and restructured
+  // loans can legitimately differ from a simple full-ledger recalculation.
   const canPay = hasRole('admin','branch_manager','cashier');
   openModal(`
     <h2>Loan ${loan.loan_no}</h2>
@@ -3293,22 +3279,18 @@ async function renderRepayments(page=1){
       if(!allRepsByLoan[r.loan_id]) allRepsByLoan[r.loan_id]=[];
       allRepsByLoan[r.loan_id].push(r);
     });
-    // Sort each loan's repayments oldest-first to compute running paid
+    // Sort oldest-first, then work backwards from the accepted current stored
+    // balance. This preserves imported/restructured opening balances.
     Object.values(allRepsByLoan).forEach(arr=>arr.sort((a,b)=>new Date(a.payment_date||a.created_at)-new Date(b.payment_date||b.created_at)));
     // Build a map: repayment_id -> balance after that payment
     const balAfterMap = {};
     Object.values(allRepsByLoan).forEach(arr=>{
-      let runningPaid = 0;
-      arr.forEach(r=>{
-        runningPaid += Number(r.loan_portion??r.amount??0);
-        const totalPayable = Number(r.loans?.total_payable||0);
-        balAfterMap[r.id] = Math.max(0, totalPayable - runningPaid);
-      });
       const latest = arr[arr.length - 1];
-      if(latest?.id){
-        const currentBalance = Number(latest.loans?.outstanding_balance ?? balAfterMap[latest.id] ?? 0);
-        const loanIsClosed = currentBalance <= 0.01;
-        balAfterMap[latest.id] = loanIsClosed ? 0 : Math.max(0, currentBalance);
+      let balanceAfter=Number(latest?.loans?.outstanding_balance||0);
+      for(let i=arr.length-1;i>=0;i--){
+        const r=arr[i];
+        balAfterMap[r.id]=Math.max(0,balanceAfter);
+        balanceAfter+=Number(r.amount||0);
       }
     });
 
@@ -3457,9 +3439,10 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const mpLoanRef = loanAfterMpMinInt || loan;
     // ─────────────────────────────────────────────────────────────────────────
 
-    const mpLedger = await getLoanLedgerBalance(loan.id, mpLoanRef.total_payable);
-    const mpNewPaid    = mpLedger.totalPaid;
-    const mpNewBalance = mpLedger.balance;
+    const mpNewPaid=Number((Number(loan.total_paid||0)+allocation.loanPortion).toFixed(2));
+    const mpNewBalance=mpMinInt.adjusted
+      ? Number(mpLoanRef.outstanding_balance||0)
+      : Number(Math.max(0,Number(loan.outstanding_balance||0)-allocation.loanPortion).toFixed(2));
     await sb('loans').update({
       total_paid: mpNewPaid,
       outstanding_balance: mpNewBalance,
@@ -3493,51 +3476,18 @@ async function dismissMpesaPayment(queueId){
   }
 }
 
-async function getLoanLedgerBalance(loanId, fallbackTotalPayable=0){
-  const[{data:loanRow},{data:rows}]=await Promise.all([
-    sb('loans').select('total_payable').eq('id',loanId).single(),
-    sb('loan_repayments').select('amount,loan_portion').eq('loan_id',loanId)
-  ]);
-  const totalPayable=Number(loanRow?.total_payable??fallbackTotalPayable??0);
-  const totalPaid=Number((rows||[]).reduce((sum,row)=>sum+Number(row.loan_portion??row.amount??0),0).toFixed(2));
-  return{
-    totalPaid,
-    balance:Number(Math.max(0,totalPayable-totalPaid).toFixed(2))
-  };
-}
-
 function calculatePaymentAllocation(loan,grossAmount){
-  let remaining=Number(Number(grossAmount||0).toFixed(2));
-  const registrationOutstanding=Math.max(0,Number(loan.registration_fee_due||0)-Number(loan.registration_fee_paid||0));
-  const registrationFeePortion=Number(Math.min(remaining,registrationOutstanding).toFixed(2));
-  remaining=Number((remaining-registrationFeePortion).toFixed(2));
-  const processingOutstanding=Math.max(0,Number(loan.processing_fee||0)-Number(loan.processing_fee_paid||0));
-  const processingFeePortion=Number(Math.min(remaining,processingOutstanding).toFixed(2));
-  remaining=Number((remaining-processingFeePortion).toFixed(2));
-  const loanPortion=Number(Math.min(remaining,Number(loan.outstanding_balance||0)).toFixed(2));
-  remaining=Number((remaining-loanPortion).toFixed(2));
+  const loanPortion=Number(Number(grossAmount||0).toFixed(2));
   return{
-    registrationFeePortion,
-    processingFeePortion,
+    registrationFeePortion:0,
+    processingFeePortion:0,
     loanPortion,
-    creditPortion:Math.max(0,remaining)
+    creditPortion:0
   };
 }
 
 async function persistPaymentAllocation(loan,allocation){
-  const loanUpdate={
-    registration_fee_paid:Number((Number(loan.registration_fee_paid||0)+allocation.registrationFeePortion).toFixed(2)),
-    processing_fee_paid:Number((Number(loan.processing_fee_paid||0)+allocation.processingFeePortion).toFixed(2))
-  };
-  const{error:loanError}=await sb('loans').update(loanUpdate).eq('id',loan.id);
-  if(loanError)throw loanError;
-  if(allocation.creditPortion>0&&loan.client_id){
-    const{data:client}=await sb('loan_clients').select('account_credit').eq('id',loan.client_id).single();
-    const{error:creditError}=await sb('loan_clients').update({
-      account_credit:Number((Number(client?.account_credit||0)+allocation.creditPortion).toFixed(2))
-    }).eq('id',loan.client_id);
-    if(creditError)throw creditError;
-  }
+  return true;
 }
 
 function paymentAllocationText(a){
@@ -3813,9 +3763,10 @@ async function savePayment(){
         newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
       }
     }
-    const ledgerTotals=await getLoanLedgerBalance(loanId,loanRef.total_payable);
-    const newPaid=ledgerTotals.totalPaid;
-    const newBalance=ledgerTotals.balance;
+    const newPaid=Number((Number(loan.total_paid||0)+allocation.loanPortion).toFixed(2));
+    const newBalance=minIntResult.adjusted
+      ? Number(loanRef.outstanding_balance||0)
+      : Number(Math.max(0,Number(loan.outstanding_balance||0)-allocation.loanPortion).toFixed(2));
     await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBalance,
@@ -5402,9 +5353,10 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       newArrears=pastDueUnpaid.reduce((s,s2)=>s+(Number(s2.total_due||0)-Number(s2.total_paid||0)),0);
     }
 
-    const ledgerTotals=await getLoanLedgerBalance(loanId,loanRef.total_payable);
-    const newPaid=ledgerTotals.totalPaid;
-    const newBal=ledgerTotals.balance;
+    const newPaid=Number((Number(loan.total_paid||0)+allocation.loanPortion).toFixed(2));
+    const newBal=minIntResult.adjusted
+      ? Number(loanRef.outstanding_balance||0)
+      : Number(Math.max(0,Number(loan.outstanding_balance||0)-allocation.loanPortion).toFixed(2));
     await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBal,

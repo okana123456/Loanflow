@@ -1,3 +1,6 @@
+-- RETIRED ON 02 AUG 2026: DO NOT RUN THIS FILE AGAIN.
+-- It was replaced by bripta-safe-allocation-rollback-20260802.sql because
+-- automatic fee allocation changed accepted client balances.
 -- Bripta / Loanflow: phone-payment fee allocation setup
 -- Run once in the Bripta Supabase SQL Editor before deploying the updated files.
 -- Existing loans keep fee dues at zero, so historical clients are not charged again.
