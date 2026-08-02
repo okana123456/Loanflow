@@ -990,23 +990,11 @@ async function handleEmailLogin(){
       }
   } catch(e) {}
 
-  // 1. Check Offline Cache First
-  try {
-      const cachedAuthStr = localStorage.getItem('bripta_offline_auth');
-      if (cachedAuthStr) {
-          const cachedAuth = JSON.parse(cachedAuthStr);
-          if (cachedAuth[email] && cachedAuth[email].passwordHash === btoa(pwd)) {
-              await resolveUserRole(null, cachedAuth[email].staffObj, pwd); 
-              if(btn){btn.disabled=false;btn.textContent='Sign In';}
-              return;
-          }
-      }
-  } catch(e) {}
-
   try{
-    // 2. Supabase Login with Promise.race Timeout (8s)
+    // Always authenticate with Supabase so database access and billing checks use a real session.
+    localStorage.removeItem('bripta_offline_auth');
     const authPromise = supabaseClient.auth.signInWithPassword({email,password:pwd});
-    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000));
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000));
     
     const { data, error } = await Promise.race([authPromise, timeoutPromise]);
     
@@ -1020,10 +1008,11 @@ async function handleEmailLogin(){
       }
       return;
     }
+    if(!data?.session?.access_token) throw new Error('A secure login session was not created. Please try again.');
     await resolveUserRole(data.user, null, pwd);
   }catch(e){
     if (e.message === 'timeout') {
-        toast("Network timeout: Could not reach authentication servers. Offline cache unavailable for this user.", "error");
+        toast("Network timeout: Could not reach the secure login service. Check your connection and try again.", "error");
     } else {
         toast(e.message,'error');
     }
@@ -1174,18 +1163,6 @@ async function resolveUserRole(authUser, staffCache = null, pwd = null){
     currentUser=staff;
     localStorage.setItem('bripta_current_user', JSON.stringify(staff));
 
-    // Cache offline auth if pwd provided
-    if (pwd && staff.email) {
-        try {
-            const currentCache = JSON.parse(localStorage.getItem('bripta_offline_auth') || '{}');
-            currentCache[staff.email] = {
-                staffObj: staff,
-                passwordHash: btoa(pwd)
-            };
-            localStorage.setItem('bripta_offline_auth', JSON.stringify(currentCache));
-        } catch(e){}
-    }
-
     if (!staffCache) { 
         try{ await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id); }catch(_){}
         // Attempt to load settings silently
@@ -1206,6 +1183,7 @@ async function resolveUserRole(authUser, staffCache = null, pwd = null){
 async function checkAuthSession(){
   // Honor session timeout up-front
   if(checkSessionTimeout()) return false;
+  localStorage.removeItem('bripta_offline_auth');
   const{data:{session}}=await supabaseClient.auth.getSession();
   const cachedUserStr = localStorage.getItem('bripta_current_user');
   if (cachedUserStr && session?.user) {
@@ -1242,12 +1220,13 @@ async function checkAuthSession(){
   return false;
 }
 
-function handleLogout(){
+async function handleLogout(){
   audit('logout','loan_staff',currentUser?.id,null,null);
   removeServiceBillingOverlay();
   localStorage.removeItem('bripta_current_user');
   localStorage.removeItem('bripta_last_activity');
-  supabaseClient.auth.signOut();
+  localStorage.removeItem('bripta_offline_auth');
+  try{ await supabaseClient.auth.signOut(); }catch(e){}
   currentUser=null;
   $('#appShell').style.display='none';$('#loginScreen').style.display='flex';
 }
@@ -1368,27 +1347,12 @@ async function executeSwitchUser(email) {
     const btn = document.querySelector('.modal-actions .btn-primary');
     if(btn) { btn.disabled=true; btn.textContent='Switching...'; }
 
-    // 1. Check Offline Cache First
+    // Switching users must also establish a genuine Supabase session.
     try {
-        const cachedAuthStr = localStorage.getItem('bripta_offline_auth');
-        if (cachedAuthStr) {
-            const cachedAuth = JSON.parse(cachedAuthStr);
-            if (cachedAuth[email] && cachedAuth[email].passwordHash === btoa(pwd)) {
-                currentUser = cachedAuth[email].staffObj;
-                localStorage.setItem('bripta_current_user', JSON.stringify(currentUser));
-                closeModal();
-                showApp();
-                toast(`Switched to ${email} (Offline Mode)`, 'success');
-                if(btn) { btn.disabled=false; btn.textContent='Sign In'; }
-                return;
-            }
-        }
-    } catch(e) {}
-
-    // 2. Fallback to standard Supabase re-auth
-    try {
+        localStorage.removeItem('bripta_offline_auth');
         const { data, error } = await supabaseClient.auth.signInWithPassword({email, password: pwd});
         if(error) throw error;
+        if(!data?.session?.access_token) throw new Error('A secure login session was not created.');
         closeModal();
         await resolveUserRole(data.user, null, pwd);
         toast(`Switched to ${email}`, 'success');
