@@ -128,7 +128,9 @@ serve(async (req) => {
     }
 
     const ts = timestamp();
-    const callbackUrl = Deno.env.get("SERVICE_CALLBACK_URL") || `${supabaseUrl}/functions/v1/service-payment-callback`;
+    // Keep the callback tied to this Supabase project. An old URL stored in a
+    // secret must never send a successful payment to another project.
+    const callbackUrl = `${supabaseUrl}/functions/v1/service-payment-callback`;
     const accountReference = `BRIPTA${String(staff.business_id).replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase()}`.slice(0, 12);
     const payload = {
       BusinessShortCode: Number(shortcode),

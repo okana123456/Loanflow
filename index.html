@@ -769,12 +769,19 @@ async function loadServiceBillingStatus({silent=false}={}){
   }
   const day = new Date().getDate();
   try{
-    const { data, error } = await sb('loan_billing_cycles')
+    const { data:{ session } } = await supabaseClient.auth.getSession();
+    if(!session?.access_token) throw new Error('Your secure session has expired. Please sign in again.');
+
+    const { data: rows, error } = await sb('loan_billing_cycles')
       .select('status,paid_at,paid_until,receipt_number,phone')
       .eq('business_id', currentUser.business_id)
       .eq('billing_month', month)
-      .maybeSingle();
+      .order('paid_at', { ascending:false, nullsFirst:false })
+      .limit(5);
     if(error) throw error;
+    const data = (rows || []).find(row => row.status === 'paid' && (!row.paid_until || row.paid_until >= todayStr))
+      || (rows || [])[0]
+      || null;
     const paid = !!data && data.status === 'paid' && (!data.paid_until || data.paid_until >= todayStr);
     setServiceBillingState({
       status: data?.status || 'pending',
@@ -785,6 +792,10 @@ async function loadServiceBillingStatus({silent=false}={}){
       cycleMonth: month,
       row: data || null
     });
+    if(paid){
+      localStorage.removeItem(serviceBillingMinKey());
+      removeServiceBillingOverlay();
+    }
   }catch(e){
     loadCachedServiceBilling();
     const dayNow = new Date().getDate();
@@ -792,7 +803,9 @@ async function loadServiceBillingStatus({silent=false}={}){
       serviceBilling.locked = dayNow >= SERVICE_BILLING_LOCK_DAY;
       serviceBilling.reminder = dayNow >= SERVICE_BILLING_REMINDER_DAY;
     }
-    if(!silent) toast('Could not check subscription status: '+e.message, 'warning');
+    if(!silent || /session has expired/i.test(e.message || '')){
+      toast('Could not check subscription status: '+e.message, 'warning');
+    }
   }
   renderServiceBillingOverlay();
 }
@@ -1193,10 +1206,18 @@ async function resolveUserRole(authUser, staffCache = null, pwd = null){
 async function checkAuthSession(){
   // Honor session timeout up-front
   if(checkSessionTimeout()) return false;
+  const{data:{session}}=await supabaseClient.auth.getSession();
   const cachedUserStr = localStorage.getItem('bripta_current_user');
-  if (cachedUserStr) {
+  if (cachedUserStr && session?.user) {
       try {
-          currentUser = JSON.parse(cachedUserStr);
+          const cachedUser = JSON.parse(cachedUserStr);
+          const { data: freshStaff } = await sb('loan_staff')
+            .select('*')
+            .eq('email', session.user.email)
+            .eq('is_active', true)
+            .maybeSingle();
+          currentUser = freshStaff || cachedUser;
+          localStorage.setItem('bripta_current_user', JSON.stringify(currentUser));
           touchSession();
           showApp();
           // Run background tasks silently
@@ -1206,7 +1227,10 @@ async function checkAuthSession(){
       } catch(e) {}
   }
 
-  const{data:{session}}=await supabaseClient.auth.getSession();
+  if(cachedUserStr && !session?.user){
+    localStorage.removeItem('bripta_current_user');
+    localStorage.removeItem('bripta_last_activity');
+  }
   if(session?.user){
     // DO NOT resolve roles and log them in if doing password recovery
     if (window.location.hash.includes('type=recovery')) {
