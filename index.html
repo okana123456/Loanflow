@@ -2988,7 +2988,7 @@ async function viewLoan(id){
       <div><strong>Weekly:</strong> ${fmtMoney(loan.weekly_installment)}</div>
       <div><strong>Balance:</strong> <span style="color:var(--accent-yellow)">${fmtMoney(loan.outstanding_balance)}</span></div>
       <div><strong>Total Paid:</strong> <span style="color:var(--accent-green)">${fmtMoney(loan.total_paid)}</span></div>
-      <div><strong>Processing Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.processing_fee_paid||0)} of ${fmtMoney(loan.processing_fee||0)} collected</span></div>
+      <div><strong>Processing Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.processing_fee||0)} charged separately at disbursement</span></div>
       ${Number(loan.registration_fee_due||0)>0?`<div><strong>Registration Fee:</strong> <span style="color:var(--accent-blue)">${fmtMoney(loan.registration_fee_paid||0)} of ${fmtMoney(loan.registration_fee_due||0)} collected</span></div>`:''}
       <div><strong>Disbursed:</strong> ${fmtDate(loan.disbursement_date)}</div>
       <div><strong>Maturity:</strong> ${fmtDate(loan.maturity_date)}</div>
@@ -4593,10 +4593,10 @@ async function loadReportData(id){
     })),cols:['Loan #','Client','ID Number','Phone','Location','Loan Officer','Principal (KES)','Interest (KES)','Total P+I (KES)','Outstanding (KES)','Arrears (KES)','Overdue Days','Bucket','Disburse Date','Maturity Date']};
   }
   if(id==='income'){
-    const[{data:reps},{data:clients},{data:activeLoans}]=await Promise.all([
+    const[{data:reps},{data:clients},{data:feeLoans}]=await Promise.all([
       sb('loan_repayments').select('*,loans(principal_amount,total_interest,total_payable,loan_no)').eq('business_id',biz),
       sb('loan_clients').select('id,full_name,created_at,notes').eq('business_id',biz),
-      sb('loans').select('id,principal_amount,total_interest,total_payable,loan_no').eq('business_id',biz).eq('status','active')
+      sb('loans').select('id,principal_amount,total_interest,total_payable,processing_fee,disbursement_date,loan_no,loan_clients(full_name)').eq('business_id',biz)
     ]);
     // For repayments missing interest_portion, derive it from the loan's interest ratio
     const calcInterestPortion=(r)=>{
@@ -4611,13 +4611,22 @@ async function loadReportData(id){
     };
     const totalInterest=(reps||[]).reduce((s,r)=>s+calcInterestPortion(r),0);
     const totalPenalties=(reps||[]).reduce((s,r)=>s+Number(r.penalty_portion||0),0);
-    const totalReg=(reps||[]).reduce((s,r)=>s+Number(r.registration_fee_portion||0),0);
-    const totalProc=(reps||[]).reduce((s,r)=>s+Number(r.processing_fee_portion||0),0);
+    const totalReg=(clients||[]).reduce((s,c)=>s+Number(parseRegFeeFromNotes(c.notes)?.amount||REGISTRATION_FEE),0);
+    const totalProc=(feeLoans||[]).reduce((s,l)=>s+Number(l.processing_fee||0),0);
     const rows=[];
     (reps||[]).forEach(r=>{
       const iPortion=calcInterestPortion(r);
-      const revenue=Number(iPortion||0)+Number(r.penalty_portion||0)+Number(r.registration_fee_portion||0)+Number(r.processing_fee_portion||0);
-      rows.push({'Source':'Payment allocation','Receipt':r.receipt_no,'Date':r.payment_date,'Interest (KES)':Number(iPortion.toFixed(2)),'Penalty (KES)':Number(r.penalty_portion||0),'Registration Fee (KES)':Number(r.registration_fee_portion||0),'Processing Fee (KES)':Number(r.processing_fee_portion||0),'Total (KES)':Number(revenue.toFixed(2)),'Client':r.loans?.loan_no||'-'});
+      const revenue=Number(iPortion||0)+Number(r.penalty_portion||0);
+      rows.push({'Source':'Loan repayment','Receipt':r.receipt_no,'Date':r.payment_date,'Interest (KES)':Number(iPortion.toFixed(2)),'Penalty (KES)':Number(r.penalty_portion||0),'Registration Fee (KES)':0,'Processing Fee (KES)':0,'Total (KES)':Number(revenue.toFixed(2)),'Client':r.loans?.loan_no||'-'});
+    });
+    (clients||[]).forEach(c=>{
+      const amount=Number(parseRegFeeFromNotes(c.notes)?.amount||REGISTRATION_FEE);
+      rows.push({'Source':'Client registration','Receipt':'REG-'+String(c.id).slice(0,8).toUpperCase(),'Date':c.created_at,'Interest (KES)':0,'Penalty (KES)':0,'Registration Fee (KES)':amount,'Processing Fee (KES)':0,'Total (KES)':amount,'Client':c.full_name||'-'});
+    });
+    (feeLoans||[]).forEach(l=>{
+      const amount=Number(l.processing_fee||0);
+      if(amount<=0)return;
+      rows.push({'Source':'Loan processing','Receipt':'PROC-'+String(l.loan_no||l.id),'Date':l.disbursement_date,'Interest (KES)':0,'Penalty (KES)':0,'Registration Fee (KES)':0,'Processing Fee (KES)':amount,'Total (KES)':amount,'Client':l.loan_clients?.full_name||l.loan_no||'-'});
     });
     return{title:'Income Report',summary:[
       {label:'Interest Collected',value:fmtMoney(totalInterest)},{label:'Penalties Collected',value:fmtMoney(totalPenalties)},
@@ -5666,9 +5675,10 @@ async function renderAccounting() {
 
     // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
-    // Cash-basis fees: count them only when received in an actual payment.
-    const processingFees = filteredReps.reduce((s,r)=>s+Number(r.processing_fee_portion||0),0);
-    const registrationFees = filteredReps.reduce((s,r)=>s+Number(r.registration_fee_portion||0),0);
+    // Bripta collects these charges separately from loan repayments. Recognize
+    // processing at disbursement and registration at client onboarding.
+    const processingFees = filteredLoans.reduce((s,l)=>s+Number(l.processing_fee||0),0);
+    const registrationFees = filteredClients.reduce((s,c)=>s+Number(parseRegFeeFromNotes(c.notes)?.amount||REGISTRATION_FEE),0);
 
     // ── CASH-BASIS ACCOUNTING (fixed) ────────────────────────────────────────
     // Primary: read interest_portion / penalty_portion stored at payment time.
