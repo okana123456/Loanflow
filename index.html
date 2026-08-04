@@ -490,16 +490,23 @@ function fmtPaymentDateTime(value){
   if(!value) return '-';
   const raw=String(value);
   if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return fmtDate(raw);
+  const naive=raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if(naive&&!/(Z|[+-]\d{2}:?\d{2})$/.test(raw)){
+    return `${naive[3]}/${naive[2]}/${naive[1]} ${naive[4]}:${naive[5]}`;
+  }
   const dt=new Date(raw);
   if(isNaN(dt)) return raw;
-  const now=new Date();
-  // Some imported/Daraja timestamps are already Kenya local time but marked like UTC.
-  // If converting them would show a future payment, display the stored clock instead.
-  const useStoredClock = /Z$/.test(raw) && dt.getTime() > now.getTime() + 5*60*1000;
-  if(useStoredClock){
-    return `${String(dt.getUTCDate()).padStart(2,'0')}/${String(dt.getUTCMonth()+1).padStart(2,'0')}/${dt.getUTCFullYear()} ${String(dt.getUTCHours()).padStart(2,'0')}:${String(dt.getUTCMinutes()).padStart(2,'0')}`;
-  }
-  return fmtDate(raw)+' '+dt.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  return new Intl.DateTimeFormat('en-GB',{
+    timeZone:'Africa/Nairobi',day:'2-digit',month:'2-digit',year:'numeric',
+    hour:'2-digit',minute:'2-digit',hour12:false
+  }).format(dt).replace(',', '');
+}
+function repaymentDisplayDateTime(repayment){
+  const method=String(repayment?.payment_method||'').toLowerCase();
+  const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
+  return fmtPaymentDateTime(isMpesa&&repayment?.created_at
+    ? repayment.created_at
+    : repayment?.payment_date||repayment?.created_at);
 }
 const fmtLongDate = (d=new Date()) => {
   const dt=parseLocalDate(d);
@@ -3354,7 +3361,7 @@ async function renderRepayments(page=1){
         const rloan   = r.loans?.loan_no||(r.loan_id?.toString().slice(0,8))||'-';
         const rref    = r.payment_reference||'-';
         const rmethod = r.payment_method||'-';
-        const rdate   = fmtPaymentDateTime(r.payment_date||r.created_at);
+        const rdate   = repaymentDisplayDateTime(r);
         const ramt    = fmtMoney(r.amount);
         return [
           '<tr>',
@@ -3368,7 +3375,7 @@ async function renderRepayments(page=1){
           '<td>',balCell,'</td>',
           '<td>',rmethod,'</td>',
           '<td>',rdate,'</td>',
-          '<td><button class="btn btn-outline btn-sm" onclick="printReceipt(',JSON.stringify(rid),')">Print</button></td>',
+          '<td><button class="btn btn-outline btn-sm" onclick="printReceipt(\'',rid,'\')">Print</button></td>',
           '</tr>'
         ].join('');
       }).join('')||'<tr><td colspan="11" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
@@ -3819,7 +3826,7 @@ async function printReceipt(id){
   if(Number(rep.credit_portion||0)>0){doc.text(`Client credit: ${fmtMoney(rep.credit_portion)}`,5,y);y+=5;}
   doc.text(`Method: ${rep.payment_method}`,5,y);y+=5;
   doc.text(`Reference: ${rep.payment_reference||'-'}`,5,y);y+=5;
-  doc.text(`Date: ${rep.payment_date}`,5,y);y+=5;
+  doc.text(`Date: ${repaymentDisplayDateTime(rep)}`,5,y);y+=5;
   doc.text(`Balance after payment: ${balanceAfter<=0?'Cleared':fmtMoney(balanceAfter)}`,5,y);y+=5;
   doc.line(5,y,75,y);y+=5;
   doc.text('Thank you for your payment',40,y,{align:'center'});
@@ -3849,7 +3856,7 @@ function exportRepaymentsExcel(){
       'Balance After Payment': balRem<=0?'Cleared':Number(balRem.toFixed(2)),
       'Processing Fee Due':procFee>0?Number(procFee.toFixed(2)):'',
       'Method':            r.payment_method||'-',
-  'Date & Time':       fmtPaymentDateTime(r.payment_date||r.created_at)
+  'Date & Time':       repaymentDisplayDateTime(r)
     };
   });
   const ws=XLSX.utils.json_to_sheet(data);
