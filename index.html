@@ -3142,6 +3142,36 @@ async function deleteLoanConfirm(id,loanNo){
   }catch(e){ toast(e.message,'error'); }
 }
 
+function repaymentChronology(a,b){
+  const paymentTimeA=Date.parse(a?.payment_date||'')||0;
+  const paymentTimeB=Date.parse(b?.payment_date||'')||0;
+  if(paymentTimeA!==paymentTimeB) return paymentTimeA-paymentTimeB;
+  const createdTimeA=Date.parse(a?.created_at||'')||0;
+  const createdTimeB=Date.parse(b?.created_at||'')||0;
+  if(createdTimeA!==createdTimeB) return createdTimeA-createdTimeB;
+  return String(a?.id||'').localeCompare(String(b?.id||''));
+}
+
+function buildRepaymentBalanceMap(repayments,currentBalances={}){
+  const grouped={};
+  (repayments||[]).forEach(payment=>{
+    if(!payment?.loan_id) return;
+    (grouped[payment.loan_id]||(grouped[payment.loan_id]=[])).push(payment);
+  });
+  const balances={};
+  Object.entries(grouped).forEach(([loanId,loanPayments])=>{
+    loanPayments.sort(repaymentChronology);
+    const latest=loanPayments[loanPayments.length-1];
+    let balance=Number(currentBalances[loanId]??latest?.loans?.outstanding_balance??0);
+    for(let i=loanPayments.length-1;i>=0;i--){
+      const payment=loanPayments[i];
+      balances[payment.id]=Number(Math.max(0,balance).toFixed(2));
+      balance+=Number(payment.amount||0);
+    }
+  });
+  return balances;
+}
+
 async function viewClientPayments(loanId){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',loanId).single();
   if(!loan) return toast('Loan not found','error');
@@ -3155,11 +3185,11 @@ async function viewClientPayments(loanId){
   const totalPayable = Number(loan.total_payable||0);
   const procFee = Number(loan.processing_fee||0);
 
-  // Compute running balance after each payment
+  const paymentBalanceMap=buildRepaymentBalanceMap(payments||[],{[loanId]:Number(loan.outstanding_balance||0)});
   let runningPaid = 0;
   const rows = (payments||[]).map(p=>{
     runningPaid += Number(p.amount||0);
-    const balAfter = Math.max(0, totalPayable - runningPaid);
+    const balAfter = paymentBalanceMap[p.id]??Number(loan.outstanding_balance||0);
     const isCleared = balAfter <= 0;
     // Detect if processing fee is covered: totalPayable - balAfter >= (totalPayable - procFee)
     // i.e. runningPaid >= principal+interest, meaning procFee portion is now covered
@@ -3191,7 +3221,7 @@ async function viewClientPayments(loanId){
   });
 
   const totalPaid = runningPaid;
-  const finalBal = Math.max(0, totalPayable - totalPaid);
+  const finalBal = Number(loan.outstanding_balance||0);
 
   openModal(`
     <h2>💳 Payment History — ${clientName}</h2>
@@ -3262,25 +3292,7 @@ async function renderRepayments(page=1){
     // ── Compute running balance per payment row ──────────────────────────
     // Group ALL repayments (not just filtered) by loan_id to get full
     // running totals, then map each filtered row to its balance-after-payment.
-    const allRepsByLoan = {};
-    (reps||[]).forEach(r=>{
-      if(!allRepsByLoan[r.loan_id]) allRepsByLoan[r.loan_id]=[];
-      allRepsByLoan[r.loan_id].push(r);
-    });
-    // Sort oldest-first, then work backwards from the accepted current stored
-    // balance. This preserves imported/restructured opening balances.
-    Object.values(allRepsByLoan).forEach(arr=>arr.sort((a,b)=>new Date(a.payment_date||a.created_at)-new Date(b.payment_date||b.created_at)));
-    // Build a map: repayment_id -> balance after that payment
-    const balAfterMap = {};
-    Object.values(allRepsByLoan).forEach(arr=>{
-      const latest = arr[arr.length - 1];
-      let balanceAfter=Number(latest?.loans?.outstanding_balance||0);
-      for(let i=arr.length-1;i>=0;i--){
-        const r=arr[i];
-        balAfterMap[r.id]=Math.max(0,balanceAfter);
-        balanceAfter+=Number(r.amount||0);
-      }
-    });
+    const balAfterMap=buildRepaymentBalanceMap(reps||[]);
 
     // Store the OFFICER-SCOPED list so Export Excel never leaks other
     // officers' repayments to a loan_officer user.
@@ -3315,7 +3327,7 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${escapeHtml(q.trans_id||'-')}</td><td>${fmtMoney(q.trans_amount)}</td><td>${paymentPhoneHtml(q)}</td><td>${escapeHtml(q.bill_ref_number||'-')}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th>Balance Remaining</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th title="Loan balance immediately after this payment">Balance After</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
         // Balance AFTER this specific payment (running balance, not current balance)
         const balRem   = cachedData._balAfterMap?.[r.id] ?? Number(r.loans?.outstanding_balance ?? 0);
@@ -3789,8 +3801,10 @@ async function savePayment(){
 }
 
 async function printReceipt(id){
-  const{data:rep}=await sb('loan_repayments').select('*').eq('id',id).single();
+  const{data:rep}=await sb('loan_repayments').select('*,loans(outstanding_balance)').eq('id',id).single();
   if(!rep)return;
+  const{data:loanPayments}=await sb('loan_repayments').select('id,loan_id,amount,payment_date,created_at').eq('loan_id',rep.loan_id);
+  const balanceAfter=buildRepaymentBalanceMap(loanPayments||[],{[rep.loan_id]:Number(rep.loans?.outstanding_balance||0)})[rep.id];
   const{jsPDF}=window.jspdf;const doc=new jsPDF({format:[80,140],unit:'mm'});
   doc.setFontSize(14);doc.text('Bripta',40,10,{align:'center'});
   doc.setFontSize(8);doc.text('Payment Receipt',40,16,{align:'center'});
@@ -3806,6 +3820,7 @@ async function printReceipt(id){
   doc.text(`Method: ${rep.payment_method}`,5,y);y+=5;
   doc.text(`Reference: ${rep.payment_reference||'-'}`,5,y);y+=5;
   doc.text(`Date: ${rep.payment_date}`,5,y);y+=5;
+  doc.text(`Balance after payment: ${balanceAfter<=0?'Cleared':fmtMoney(balanceAfter)}`,5,y);y+=5;
   doc.line(5,y,75,y);y+=5;
   doc.text('Thank you for your payment',40,y,{align:'center'});
   doc.save(`Receipt_${rep.receipt_no}.pdf`);toast('Receipt downloaded','success');
@@ -3817,7 +3832,7 @@ function exportRepaymentsExcel(){
     const isProcFee=notes.includes('processing fee')||Number(r.registration_fee_portion||0)>0||Number(r.processing_fee_portion||0)>0;
     const isPenalty=Number(r.penalty_portion||0)>0||notes.includes('penalty')||notes.includes('rollover');
     const payType=isProcFee?'Processing Fee':isPenalty?'Penalty':'Repayment';
-    const balRem=Number(r.loans?.outstanding_balance??0);
+    const balRem=Number(cachedData._balAfterMap?.[r.id]??r.loans?.outstanding_balance??0);
     const procFee=Number(r.loans?.processing_fee??0);
     return {
       'Receipt':           r.receipt_no,
@@ -3831,7 +3846,7 @@ function exportRepaymentsExcel(){
       'Processing Fee':    Number(r.processing_fee_portion||0),
       'Loan Repayment':    Number(r.loan_portion??r.amount??0),
       'Client Credit':     Number(r.credit_portion||0),
-      'Balance Remaining': balRem<=0?'Cleared':Number(balRem.toFixed(2)),
+      'Balance After Payment': balRem<=0?'Cleared':Number(balRem.toFixed(2)),
       'Processing Fee Due':procFee>0?Number(procFee.toFixed(2)):'',
       'Method':            r.payment_method||'-',
   'Date & Time':       fmtPaymentDateTime(r.payment_date||r.created_at)
