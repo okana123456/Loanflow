@@ -3194,7 +3194,7 @@ async function viewClientPayments(loanId){
 
   const paymentBalanceMap=buildRepaymentBalanceMap(payments||[],{[loanId]:Number(loan.outstanding_balance||0)});
   let runningPaid = 0;
-  const rows = (payments||[]).map(p=>{
+  const rows = (payments||[]).map((p,index)=>{
     runningPaid += Number(p.amount||0);
     const balAfter = paymentBalanceMap[p.id]??Number(loan.outstanding_balance||0);
     const isCleared = balAfter <= 0;
@@ -3215,6 +3215,7 @@ async function viewClientPayments(loanId){
     return '<tr>'
       +'<td>'+fmtDate(p.payment_date||p.created_at)+'</td>'
       +'<td>'+typeTag+'</td>'
+      +'<td>'+(index===0?'<strong>'+fmtMoney(totalPayable)+'</strong>':'<span style="color:var(--text-secondary)">-</span>')+'</td>'
       +'<td><strong>'+fmtMoney(p.amount)+'</strong></td>'
       +'<td>'+(p.payment_method||'-')+'</td>'
       +'<td>'+(p.receipt_no||'-')+'</td>'
@@ -3247,11 +3248,11 @@ async function viewClientPayments(loanId){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Date</th><th>Type</th><th>Amount (KES)</th>
+          <th>Date</th><th>Type</th><th>Total Loan</th><th>Repayment</th>
           <th>Method</th><th>Receipt</th><th>Balance After</th>
         </tr></thead>
         <tbody>
-          ${rows.join('')||'<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">No payments recorded yet</td></tr>'}
+          ${rows.join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No payments recorded yet</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -3334,7 +3335,7 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${escapeHtml(q.trans_id||'-')}</td><td>${fmtMoney(q.trans_amount)}</td><td>${paymentPhoneHtml(q)}</td><td>${escapeHtml(q.bill_ref_number||'-')}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Amount (KES)</th><th title="Loan balance immediately after this payment">Balance After</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Loan Total</th><th>Repayment</th><th title="Loan balance immediately after this payment">Balance After</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
         // Balance AFTER this specific payment (running balance, not current balance)
         const balRem   = cachedData._balAfterMap?.[r.id] ?? Number(r.loans?.outstanding_balance ?? 0);
@@ -3363,6 +3364,7 @@ async function renderRepayments(page=1){
         const rmethod = r.payment_method||'-';
         const rdate   = repaymentDisplayDateTime(r);
         const ramt    = fmtMoney(r.amount);
+        const rtotal  = fmtMoney(r.loans?.total_payable||0);
         return [
           '<tr>',
           '<td><strong>',r.receipt_no,'</strong></td>',
@@ -3371,14 +3373,15 @@ async function renderRepayments(page=1){
           '<td>',rloan,'</td>',
           '<td>',payType,'</td>',
           '<td><span style="font-family:monospace">',rref,'</span></td>',
+          '<td><strong>',rtotal,'</strong></td>',
           '<td><strong>',ramt,'</strong></td>',
           '<td>',balCell,'</td>',
           '<td>',rmethod,'</td>',
           '<td>',rdate,'</td>',
-          '<td><button class="btn btn-outline btn-sm" onclick="printReceipt(\'',rid,'\')">Print</button></td>',
+          '<td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="viewClientPayments(\'',r.loan_id,'\')">Statement</button> <button class="btn btn-outline btn-sm" onclick="printReceipt(\'',rid,'\')">Print</button></td>',
           '</tr>'
         ].join('');
-      }).join('')||'<tr><td colspan="11" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      }).join('')||'<tr><td colspan="12" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -3848,7 +3851,8 @@ function exportRepaymentsExcel(){
       'Loan #':            r.loans?.loan_no||'-',
       'Payment Type':      payType,
       'Reference':         r.payment_reference||'-',
-      'Amount (KES)':      Number(r.amount||0),
+      'Loan Total (KES)':  Number(r.loans?.total_payable||0),
+      'Repayment (KES)':   Number(r.amount||0),
       'Registration Fee':  Number(r.registration_fee_portion||0),
       'Processing Fee':    Number(r.processing_fee_portion||0),
       'Loan Repayment':    Number(r.loan_portion??r.amount??0),
@@ -3860,7 +3864,7 @@ function exportRepaymentsExcel(){
     };
   });
   const ws=XLSX.utils.json_to_sheet(data);
-  ws['!cols']=[{wch:14},{wch:22},{wch:14},{wch:12},{wch:16},{wch:16},{wch:12},{wch:16},{wch:16},{wch:14},{wch:12},{wch:20}];
+  ws['!cols']=[{wch:14},{wch:22},{wch:14},{wch:12},{wch:16},{wch:16},{wch:16},{wch:14},{wch:16},{wch:16},{wch:14},{wch:12},{wch:20}];
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Repayments');
   XLSX.writeFile(wb,'Bripta_Repayments.xlsx');
