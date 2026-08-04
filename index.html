@@ -430,40 +430,58 @@ function applyCustomDate(section) {
     if(section==='repayments') renderRepayments(1);
 }
 
+function kenyaDateISO(value=new Date()){
+    if(!value) return '';
+    const raw=String(value);
+    if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    // Values without a timezone were entered as Kenya-local business dates.
+    if(/^\d{4}-\d{2}-\d{2}[T ]/.test(raw)&&!/(Z|[+-]\d{2}:?\d{2})$/.test(raw)) return raw.slice(0,10);
+    const dt=value instanceof Date?value:new Date(value);
+    if(isNaN(dt)) return raw.slice(0,10);
+    const parts=new Intl.DateTimeFormat('en-CA',{
+      timeZone:'Africa/Nairobi',year:'numeric',month:'2-digit',day:'2-digit'
+    }).formatToParts(dt);
+    const pick=type=>parts.find(part=>part.type===type)?.value;
+    return `${pick('year')}-${pick('month')}-${pick('day')}`;
+}
+
+function shiftISODate(isoDate,days){
+    const match=String(isoDate||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if(!match) return isoDate;
+    const dt=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])+days));
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,'0')}-${String(dt.getUTCDate()).padStart(2,'0')}`;
+}
+
 function filterByDate(data, dateField, filterState) {
     if (filterState.type === 'all') return data;
-    const now = new Date();
+    const todayISO=kenyaDateISO(new Date());
     let sDate, eDate;
-    // Helper: build a YYYY-MM-DD string from a Date using LOCAL time (no UTC drift)
-    const localDateStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
     if (filterState.type === 'today') {
-        sDate = localDateStr(now);
+        sDate = todayISO;
         eDate = sDate;
     } else if (filterState.type === 'yesterday') {
-        const y = new Date(now); y.setDate(y.getDate()-1);
-        sDate = localDateStr(y);
+        sDate = shiftISODate(todayISO,-1);
         eDate = sDate;
     } else if (filterState.type === 'this_week') {
-        const w = new Date(now); w.setDate(w.getDate() - w.getDay() + 1);
-        sDate = localDateStr(w);
-        eDate = localDateStr(now);
+        const todayUtc=new Date(`${todayISO}T00:00:00Z`);
+        const mondayOffset=(todayUtc.getUTCDay()+6)%7;
+        sDate = shiftISODate(todayISO,-mondayOffset);
+        eDate = todayISO;
     } else if (filterState.type === 'this_month') {
-        // Lock start date to exactly YYYY-MM-01 based on local time
-        const startObj = new Date(now.getFullYear(), now.getMonth(), 1);
-        sDate = `${startObj.getFullYear()}-${String(startObj.getMonth()+1).padStart(2,'0')}-01`;
-        // Lock end date to the last day of the current month based on local time
-        const endObj = new Date(now.getFullYear(), now.getMonth()+1, 0);
-        eDate = `${endObj.getFullYear()}-${String(endObj.getMonth()+1).padStart(2,'0')}-${String(endObj.getDate()).padStart(2,'0')}`;
+        sDate = `${todayISO.slice(0,7)}-01`;
+        const nextMonth=new Date(`${sDate}T00:00:00Z`);
+        nextMonth.setUTCMonth(nextMonth.getUTCMonth()+1);
+        eDate=shiftISODate(kenyaDateISO(nextMonth),-1);
     } else if (filterState.type === 'custom') {
         sDate = filterState.start; eDate = filterState.end;
         if(!sDate || !eDate) return data; 
     }
 
     return data.filter(item => {
-        const d = item[dateField];
+        const d = typeof dateField==='function'?dateField(item):item[dateField];
         if (!d) return false;
-        const ds = d.split('T')[0];
+        const ds = kenyaDateISO(d);
         return ds >= sDate && ds <= eDate;
     });
 }
@@ -1630,7 +1648,10 @@ async function renderDashboard(){
 
     // Dynamically filter EVERYTHING based on the date picker
     const filteredDisbursed = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
-    const filteredReps = filterByDate(allReps, 'payment_date', f);
+    const filteredReps = filterByDate(allReps, r=>{
+      const method=String(r.payment_method||'').toLowerCase();
+      return (method.includes('mpesa')||method.includes('m-pesa'))&&r.created_at?r.created_at:r.payment_date;
+    }, f);
     const filteredApps = filterByDate(allApps, 'created_at', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
     const filteredScheds = filterByDate(allScheds.filter(s=>s.due_date), 'due_date', f);
@@ -5759,34 +5780,35 @@ async function renderAccounting() {
     // Push the date filter to Postgres so we never hit row-count caps regardless
     // of how large the table grows. JS filterByDate still runs as a safety net.
     const f = appFilters.accounting;
-    const now = new Date();
+    const todayISO=kenyaDateISO(new Date());
     let qStart, qEnd;
     if (f.type === 'this_month') {
-      qStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-      const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
-      qEnd = `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,'0')}-${String(last.getDate()).padStart(2,'0')}`;
+      qStart = `${todayISO.slice(0,7)}-01`;
+      const nextMonth=new Date(`${qStart}T00:00:00Z`);
+      nextMonth.setUTCMonth(nextMonth.getUTCMonth()+1);
+      qEnd=shiftISODate(kenyaDateISO(nextMonth),-1);
     } else if (f.type === 'today') {
-      qStart = qEnd = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+      qStart = qEnd = todayISO;
     } else if (f.type === 'yesterday') {
-      const y = new Date(now); y.setDate(y.getDate()-1);
-      qStart = qEnd = `${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,'0')}-${String(y.getDate()).padStart(2,'0')}`;
+      qStart = qEnd = shiftISODate(todayISO,-1);
     } else if (f.type === 'this_week') {
-      const w = new Date(now); w.setDate(w.getDate() - w.getDay() + 1);
-      qStart = `${w.getFullYear()}-${String(w.getMonth()+1).padStart(2,'0')}-${String(w.getDate()).padStart(2,'0')}`;
-      qEnd = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+      const todayUtc=new Date(`${todayISO}T00:00:00Z`);
+      qStart=shiftISODate(todayISO,-((todayUtc.getUTCDay()+6)%7));
+      qEnd=todayISO;
     } else if (f.type === 'custom' && f.start && f.end) {
       qStart = f.start; qEnd = f.end;
     } else {
       // 'all' or unrecognised — fetch everything
       qStart = '2000-01-01'; qEnd = '2099-12-31';
     }
-    const qEndFull = qEnd + 'T23:59:59+00:00'; // inclusive end of day in UTC
+    const qFetchStart=shiftISODate(qStart,-1);
+    const qEndFull = shiftISODate(qEnd,1) + 'T23:59:59+00:00';
 
     const[loansR,repR,cliR,penR,allLoansMapR]=await Promise.all([
-      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
-      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,registration_fee_portion,processing_fee_portion,loan_portion,credit_portion,payment_date,payment_method').eq('business_id',biz).gte('payment_date',qStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
-      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000),
+      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qFetchStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
+      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,registration_fee_portion,processing_fee_portion,loan_portion,credit_portion,payment_date,payment_method,created_at').eq('business_id',biz).gte('payment_date',qFetchStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
+      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qFetchStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
+      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qFetchStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000),
       sb('loans').select('id,client_id,total_interest,total_payable,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(100000)
     ]);
     if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
@@ -5806,7 +5828,10 @@ async function renderAccounting() {
     // JS-side filterByDate runs as a safety net for any edge-case drift
     // but the server has already done the heavy lifting above.
     const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
-    const filteredReps = filterByDate(allReps, 'payment_date', f);
+    const filteredReps = filterByDate(allReps, r=>{
+      const method=String(r.payment_method||'').toLowerCase();
+      return (method.includes('mpesa')||method.includes('m-pesa'))&&r.created_at?r.created_at:r.payment_date;
+    }, f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
     const filteredPenalties = filterByDate(allPenalties.filter(p=>p.date_charged), 'date_charged', f);
 
