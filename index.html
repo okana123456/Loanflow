@@ -3257,9 +3257,120 @@ async function viewClientPayments(loanId){
       </table>
     </div>
     <div class="modal-actions">
+      <button class="btn btn-primary" onclick="downloadPaymentStatementPdf('${loanId}')">Download PDF</button>
       <button class="btn btn-outline" onclick="closeModal()">Close</button>
     </div>
   `,true);
+}
+
+async function downloadPaymentStatementPdf(loanId){
+  try{
+    const{data:loan,error:loanError}=await sb('loans')
+      .select('*,loan_clients(full_name,phone,id_number)')
+      .eq('id',loanId).single();
+    if(loanError) throw loanError;
+    const{data:payments,error:paymentError}=await sb('loan_repayments')
+      .select('*').eq('loan_id',loanId)
+      .order('payment_date',{ascending:true})
+      .order('created_at',{ascending:true});
+    if(paymentError) throw paymentError;
+
+    const orderedPayments=(payments||[]).slice().sort(repaymentChronology);
+    const balanceMap=buildRepaymentBalanceMap(orderedPayments,{[loanId]:Number(loan.outstanding_balance||0)});
+    const totalPayable=Number(loan.total_payable||0);
+    const totalPaid=orderedPayments.reduce((sum,p)=>sum+Number(p.amount||0),0);
+    const balance=Number(loan.outstanding_balance||0);
+    const client=loan.loan_clients||{};
+    const statusText=balance<=0.01?'PAID IN FULL':'BALANCE OUTSTANDING';
+    const{jsPDF}=window.jspdf;
+    const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+    const navy=[15,28,52];
+    const green=[15,118,110];
+    const light=[243,247,250];
+
+    doc.setFillColor(...navy);
+    doc.rect(0,0,210,31,'F');
+    doc.setTextColor(255,255,255);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(18);
+    doc.text('BRIPTA',14,13);
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8.5);
+    doc.text('LOAN REPAYMENT STATEMENT',14,21);
+    doc.text(`Loan No: ${loan.loan_no||'-'}`,196,13,{align:'right'});
+    doc.text(`Generated: ${fmtPaymentDateTime(new Date().toISOString())}`,196,21,{align:'right'});
+
+    doc.setTextColor(31,41,55);
+    doc.setFillColor(...light);
+    doc.roundedRect(14,38,182,35,2,2,'F');
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(11);
+    doc.text(client.full_name||'Unknown client',19,47);
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(8.5);
+    doc.text(`Phone: ${client.phone||'-'}`,19,54);
+    doc.text(`ID Number: ${client.id_number||'-'}`,19,60);
+    doc.text(`Disbursed: ${fmtDate(loan.disbursement_date)}`,19,66);
+    doc.text(`Total loan: ${fmtMoney(totalPayable)}`,108,47);
+    doc.text(`Total repaid: ${fmtMoney(totalPaid)}`,108,54);
+    doc.text(`Balance: ${fmtMoney(balance)}`,108,60);
+    doc.setFont('helvetica','bold');
+    doc.setTextColor(...(balance<=0.01?green:[190,52,52]));
+    doc.text(statusText,108,67);
+
+    const body=orderedPayments.map((payment,index)=>[
+      repaymentDisplayDateTime(payment),
+      payment.receipt_no||payment.payment_reference||'-',
+      payment.payment_method||'-',
+      index===0?fmtMoney(totalPayable):'',
+      fmtMoney(payment.amount),
+      (balanceMap[payment.id]??balance)<=0.01?'CLEARED':fmtMoney(balanceMap[payment.id]??balance)
+    ]);
+
+    doc.autoTable({
+      startY:80,
+      head:[['Date & Time','Receipt / Ref','Method','Total Loan','Repayment','Balance After']],
+      body:body.length?body:[['-','No repayments recorded','-','-',fmtMoney(0),fmtMoney(balance)]],
+      theme:'grid',
+      styles:{font:'helvetica',fontSize:7.5,cellPadding:2.4,textColor:[31,41,55],lineColor:[218,225,232],lineWidth:0.2},
+      headStyles:{fillColor:navy,textColor:[255,255,255],fontStyle:'bold'},
+      alternateRowStyles:{fillColor:[248,250,252]},
+      columnStyles:{0:{cellWidth:28},1:{cellWidth:31},2:{cellWidth:23},3:{cellWidth:30,halign:'right'},4:{cellWidth:30,halign:'right'},5:{cellWidth:32,halign:'right',fontStyle:'bold'}},
+      didParseCell(data){
+        if(data.section==='body'&&data.column.index===5){
+          data.cell.styles.textColor=data.cell.raw==='CLEARED'?green:[190,52,52];
+        }
+      },
+      didDrawPage(){
+        const pageHeight=doc.internal.pageSize.height;
+        doc.setDrawColor(220,225,230);
+        doc.line(14,pageHeight-15,196,pageHeight-15);
+        doc.setTextColor(100,110,120);
+        doc.setFontSize(7);
+        doc.setFont('helvetica','normal');
+        doc.text('Bripta loan repayment statement - generated from the recorded payment ledger.',14,pageHeight-9);
+        doc.text(`Page ${doc.internal.getNumberOfPages()}`,196,pageHeight-9,{align:'right'});
+      }
+    });
+
+    const finalY=(doc.lastAutoTable?.finalY||80)+9;
+    if(finalY<275){
+      doc.setFillColor(240,253,250);
+      doc.roundedRect(116,finalY,80,16,2,2,'F');
+      doc.setTextColor(...green);
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(9);
+      doc.text('CURRENT BALANCE',121,finalY+6);
+      doc.setFontSize(12);
+      doc.text(balance<=0.01?'CLEARED':fmtMoney(balance),191,finalY+11,{align:'right'});
+    }
+
+    const safeName=String(client.full_name||'Client').replace(/[^a-z0-9]+/gi,'_').replace(/^_|_$/g,'');
+    doc.save(`${safeName}_${loan.loan_no||'Loan'}_Repayment_Statement.pdf`);
+    toast('Repayment statement downloaded','success');
+  }catch(error){
+    toast(error.message||'Could not generate the repayment statement','error');
+  }
 }
 
 async function exportLoanPDF(id){
