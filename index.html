@@ -3200,24 +3200,51 @@ function buildRepaymentBalanceMap(repayments,currentBalances={}){
   return balances;
 }
 
+function loanStatementEventTime(row,type){
+  const raw=type==='penalty'
+    ? (row.created_at||row.date_charged||'')
+    : (row.payment_date||row.created_at||'');
+  const value=String(raw||'');
+  return new Date(value.length===10?value+'T00:00:00':value).getTime()||0;
+}
+
+function buildLoanStatementTimeline(repayments,penalties,currentBalance){
+  const events=[
+    ...(repayments||[]).map(row=>({type:'payment',row,time:loanStatementEventTime(row,'payment')})),
+    ...(penalties||[]).map(row=>({type:'penalty',row,time:loanStatementEventTime(row,'penalty')}))
+  ].sort((a,b)=>a.time-b.time||String(a.row.id||'').localeCompare(String(b.row.id||'')));
+  let balance=Number(currentBalance||0);
+  for(let i=events.length-1;i>=0;i--){
+    const event=events[i];
+    event.balanceAfter=Number(Math.max(0,balance).toFixed(2));
+    if(event.type==='payment') balance+=Number(event.row.amount||0);
+    else if(!event.row.is_waived) balance=Math.max(0,balance-Number(event.row.penalty_amount||0));
+  }
+  return events;
+}
+
 async function viewClientPayments(loanId){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',loanId).single();
   if(!loan) return toast('Loan not found','error');
 
-  const{data:payments}=await sb('loan_repayments')
-    .select('*').eq('loan_id',loanId)
-    .order('payment_date',{ascending:true})
-    .order('created_at',{ascending:true});
+  const[{data:payments},{data:penalties}]=await Promise.all([
+    sb('loan_repayments').select('*').eq('loan_id',loanId)
+      .order('payment_date',{ascending:true}).order('created_at',{ascending:true}),
+    sb('loan_penalties').select('*').eq('loan_id',loanId)
+      .order('date_charged',{ascending:true})
+  ]);
 
   const clientName = loan.loan_clients?.full_name||'Unknown';
   const totalPayable = Number(loan.total_payable||0);
   const procFee = Number(loan.processing_fee||0);
 
-  const paymentBalanceMap=buildRepaymentBalanceMap(payments||[],{[loanId]:Number(loan.outstanding_balance||0)});
+  const timeline=buildLoanStatementTimeline(payments||[],penalties||[],Number(loan.outstanding_balance||0));
   let runningPaid = 0;
-  const rows = (payments||[]).map((p,index)=>{
-    runningPaid += Number(p.amount||0);
-    const balAfter = paymentBalanceMap[p.id]??Number(loan.outstanding_balance||0);
+  const rows = timeline.map((event,index)=>{
+    const p=event.row;
+    const isPenalty=event.type==='penalty';
+    if(!isPenalty) runningPaid += Number(p.amount||0);
+    const balAfter=event.balanceAfter;
     const isCleared = balAfter <= 0;
     // Detect if processing fee is covered: totalPayable - balAfter >= (totalPayable - procFee)
     // i.e. runningPaid >= principal+interest, meaning procFee portion is now covered
@@ -3228,23 +3255,21 @@ async function viewClientPayments(loanId){
           ? '<span style="font-size:10px;color:var(--accent-green);margin-left:4px">✅ Fee Covered</span>'
           : '<span style="font-size:10px;color:var(--accent-yellow);margin-left:4px">⏳ Fee Pending</span>')
       : '';
-    const notes=(p.notes||'').toLowerCase();
-    const isPenalty=Number(p.penalty_portion||0)>0||notes.includes('penalty')||notes.includes('rollover');
     const typeTag = isPenalty
-      ? '<span class="badge badge-red" style="font-size:9px">Penalty</span>'
+      ? '<span class="badge badge-red" style="font-size:9px">'+(p.is_waived?'Penalty waived':'Penalty applied')+'</span>'
       : '<span class="badge badge-green" style="font-size:9px">Payment</span>';
     return '<tr>'
-      +'<td>'+fmtDate(p.payment_date||p.created_at)+'</td>'
+      +'<td>'+fmtDate(isPenalty?(p.date_charged||p.created_at):(p.payment_date||p.created_at))+'</td>'
       +'<td>'+typeTag+'</td>'
       +'<td>'+(index===0?'<strong>'+fmtMoney(totalPayable)+'</strong>':'<span style="color:var(--text-secondary)">-</span>')+'</td>'
-      +'<td><strong>'+fmtMoney(p.amount)+'</strong></td>'
-      +'<td>'+(p.payment_method||'-')+'</td>'
-      +'<td>'+(p.receipt_no||'-')+'</td>'
+      +'<td><strong style="color:'+(isPenalty?'var(--accent-red)':'var(--accent-green)')+'">'+(isPenalty?(p.is_waived?'Waived ':'+ '):'- ')+fmtMoney(isPenalty?p.penalty_amount:p.amount)+'</strong></td>'
+      +'<td>'+(isPenalty?'System':(p.payment_method||'-'))+'</td>'
+      +'<td>'+(isPenalty?(p.reason||'Rollover penalty'):(p.receipt_no||p.payment_reference||'-'))+'</td>'
       +'<td>'
         +(isCleared
           ? '<span style="color:var(--accent-green);font-weight:700">Cleared ✅</span>'
           : '<strong style="color:var(--accent-red)">'+fmtMoney(balAfter)+'</strong>')
-        +procFeeTag
+        +(isPenalty?'':procFeeTag)
       +'</td>'
       +'</tr>';
   });
@@ -3269,8 +3294,8 @@ async function viewClientPayments(loanId){
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Date</th><th>Type</th><th>Total Loan</th><th>Repayment</th>
-          <th>Method</th><th>Receipt</th><th>Balance After</th>
+          <th>Date</th><th>Type</th><th>Total Loan</th><th>Transaction</th>
+          <th>Method</th><th>Receipt / Details</th><th>Balance After</th>
         </tr></thead>
         <tbody>
           ${rows.join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No payments recorded yet</td></tr>'}
@@ -3290,14 +3315,17 @@ async function downloadPaymentStatementPdf(loanId){
       .select('*,loan_clients(full_name,phone,id_number)')
       .eq('id',loanId).single();
     if(loanError) throw loanError;
-    const{data:payments,error:paymentError}=await sb('loan_repayments')
-      .select('*').eq('loan_id',loanId)
-      .order('payment_date',{ascending:true})
-      .order('created_at',{ascending:true});
+    const[{data:payments,error:paymentError},{data:penalties,error:penaltyError}]=await Promise.all([
+      sb('loan_repayments').select('*').eq('loan_id',loanId)
+        .order('payment_date',{ascending:true}).order('created_at',{ascending:true}),
+      sb('loan_penalties').select('*').eq('loan_id',loanId)
+        .order('date_charged',{ascending:true})
+    ]);
     if(paymentError) throw paymentError;
+    if(penaltyError) throw penaltyError;
 
     const orderedPayments=(payments||[]).slice().sort(repaymentChronology);
-    const balanceMap=buildRepaymentBalanceMap(orderedPayments,{[loanId]:Number(loan.outstanding_balance||0)});
+    const timeline=buildLoanStatementTimeline(orderedPayments,penalties||[],Number(loan.outstanding_balance||0));
     const totalPayable=Number(loan.total_payable||0);
     const totalPaid=orderedPayments.reduce((sum,p)=>sum+Number(p.amount||0),0);
     const balance=Number(loan.outstanding_balance||0);
@@ -3339,26 +3367,31 @@ async function downloadPaymentStatementPdf(loanId){
     doc.setTextColor(...(balance<=0.01?green:[190,52,52]));
     doc.text(statusText,108,67);
 
-    const body=orderedPayments.map((payment,index)=>[
-      repaymentDisplayDateTime(payment),
-      payment.receipt_no||payment.payment_reference||'-',
-      payment.payment_method||'-',
-      index===0?fmtMoney(totalPayable):'',
-      fmtMoney(payment.amount),
-      (balanceMap[payment.id]??balance)<=0.01?'CLEARED':fmtMoney(balanceMap[payment.id]??balance)
-    ]);
+    const body=timeline.map((event,index)=>{
+      const row=event.row;
+      const isPenalty=event.type==='penalty';
+      return [
+        isPenalty?fmtDate(row.date_charged||row.created_at):repaymentDisplayDateTime(row),
+        isPenalty?(row.is_waived?'PENALTY WAIVED':'PENALTY APPLIED'):'REPAYMENT',
+        isPenalty?(row.reason||'Rollover penalty'):(row.receipt_no||row.payment_reference||'-'),
+        isPenalty?'System':(row.payment_method||'-'),
+        index===0?fmtMoney(totalPayable):'',
+        (isPenalty?(row.is_waived?'Waived ':'+ '):'- ')+fmtMoney(isPenalty?row.penalty_amount:row.amount),
+        event.balanceAfter<=0.01?'CLEARED':fmtMoney(event.balanceAfter)
+      ];
+    });
 
     doc.autoTable({
       startY:80,
-      head:[['Date & Time','Receipt / Ref','Method','Total Loan','Repayment','Balance After']],
-      body:body.length?body:[['-','No repayments recorded','-','-',fmtMoney(0),fmtMoney(balance)]],
+      head:[['Date & Time','Type','Receipt / Details','Method','Total Loan','Transaction','Balance After']],
+      body:body.length?body:[['-','-','No repayments or penalties recorded','-','-',fmtMoney(0),fmtMoney(balance)]],
       theme:'grid',
       styles:{font:'helvetica',fontSize:7.5,cellPadding:2.4,textColor:[31,41,55],lineColor:[218,225,232],lineWidth:0.2},
       headStyles:{fillColor:navy,textColor:[255,255,255],fontStyle:'bold'},
       alternateRowStyles:{fillColor:[248,250,252]},
-      columnStyles:{0:{cellWidth:28},1:{cellWidth:31},2:{cellWidth:23},3:{cellWidth:30,halign:'right'},4:{cellWidth:30,halign:'right'},5:{cellWidth:32,halign:'right',fontStyle:'bold'}},
+      columnStyles:{0:{cellWidth:25},1:{cellWidth:24},2:{cellWidth:39},3:{cellWidth:20},4:{cellWidth:24,halign:'right'},5:{cellWidth:25,halign:'right'},6:{cellWidth:27,halign:'right',fontStyle:'bold'}},
       didParseCell(data){
-        if(data.section==='body'&&data.column.index===5){
+        if(data.section==='body'&&data.column.index===6){
           data.cell.styles.textColor=data.cell.raw==='CLEARED'?green:[190,52,52];
         }
       },
@@ -3369,7 +3402,7 @@ async function downloadPaymentStatementPdf(loanId){
         doc.setTextColor(100,110,120);
         doc.setFontSize(7);
         doc.setFont('helvetica','normal');
-        doc.text('Bripta loan repayment statement - generated from the recorded payment ledger.',14,pageHeight-9);
+        doc.text('Bripta loan statement - repayments and applied or waived penalties are shown chronologically.',14,pageHeight-9);
         doc.text(`Page ${doc.internal.getNumberOfPages()}`,196,pageHeight-9,{align:'right'});
       }
     });
@@ -4044,7 +4077,7 @@ async function renderOverdue(opts){
     if(loanIds.length){
       const{data:scheds}=await sb('loan_schedules')
         .select('*').in('loan_id',loanIds)
-        .lte('due_date',asOfDate)
+        .lt('due_date',asOfDate)
         .order('due_date',{ascending:true});
       allScheds=scheds||[];
     }
@@ -4119,11 +4152,21 @@ async function renderOverdue(opts){
     // Also fetch dues for the selected date for the dues-by-date section
     const{data:dueScheds}=await sb('loan_schedules')
       .select('*').eq('business_id',currentUser.business_id).eq('due_date',asOfDate);
+    const dueArrearsCutoff=asOfDate<todayStr?asOfDate:todayStr;
+    const dueArrearsByLoan={};
+    allScheds.filter(s=>s.due_date<dueArrearsCutoff).forEach(s=>{
+      const unpaid=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+      if(unpaid>0.01) dueArrearsByLoan[s.loan_id]=(dueArrearsByLoan[s.loan_id]||0)+unpaid;
+    });
     const dueRows=(dueScheds||[]).map(s=>{
       const loan=loanMap[s.loan_id];
       if(!loan)return null;
       const remaining=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
-      return{loan,s,remaining,paid:Number(s.total_paid||0)};
+      const arrears=Math.min(
+        Number(loan.outstanding_balance||0),
+        Number(dueArrearsByLoan[loan.id]||0)
+      );
+      return{loan,s,remaining,paid:Number(s.total_paid||0),arrears};
     }).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
 
     window._overdueSnapshot={asOfDate,overdueLoans,missedRows,dueRows};
@@ -4298,7 +4341,7 @@ function buildDuesTable(dueRows){
   html += '</tr></thead><tbody>';
   filteredRows.forEach(function(item){
     var loan=item.loan, s=item.s, remaining=item.remaining, paid=item.paid;
-    var arrears=Number(loan.arrears_amount||0);
+    var arrears=Number(item.arrears!=null?item.arrears:(loan._asof_arrears!=null?loan._asof_arrears:loan.arrears_amount||0));
     var loanBalance=Number(loan.outstanding_balance||0);
     var isPartial = paid>0 && remaining>0;
     var badge = isPartial
@@ -4342,18 +4385,30 @@ async function loadArrearsDues(startDate, endDate){
 
   const loanIds=Object.keys(activeLoanMap);
   let scheds=[];
+  let arrearsScheds=[];
   if(loanIds.length){
-    const{data}=await sb('loan_schedules')
-      .select('*').in('loan_id',loanIds).gte('due_date',startDate).lte('due_date',endDate);
-    scheds=data||[];
+    const arrearsCutoff=endDate<today()?endDate:today();
+    const[dueResult,arrearsResult]=await Promise.all([
+      sb('loan_schedules').select('*').in('loan_id',loanIds).gte('due_date',startDate).lte('due_date',endDate),
+      sb('loan_schedules').select('loan_id,total_due,total_paid,due_date,status').in('loan_id',loanIds).lt('due_date',arrearsCutoff)
+    ]);
+    scheds=dueResult.data||[];
+    arrearsScheds=arrearsResult.data||[];
   }
+
+  const arrearsByLoan={};
+  arrearsScheds.forEach(s=>{
+    const unpaid=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+    if(unpaid>0.01) arrearsByLoan[s.loan_id]=(arrearsByLoan[s.loan_id]||0)+unpaid;
+  });
 
   const dueRows=((scheds||[]).map(s=>{
     const loan=activeLoanMap[s.loan_id];
     if(!loan)return null; // skip completed/non-active loans
     const remaining=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
     if(remaining===0)return null; // skip fully paid installments
-    return{loan,s,remaining,paid:Number(s.total_paid||0)};
+    const arrears=Math.min(Number(loan.outstanding_balance||0),Number(arrearsByLoan[loan.id]||0));
+    return{loan,s,remaining,paid:Number(s.total_paid||0),arrears};
   })).filter(Boolean).sort((a,b)=>b.remaining-a.remaining);
 
   // Update snapshot with new dues
@@ -4391,7 +4446,7 @@ function downloadDuesExcel(){
   const sheetLabel=('Dues '+rangeLabel).slice(0,31); // Excel sheet name max 31 chars
   const dueRows=snap.dueRows||[];
   if(!dueRows.length){toast('No dues data to download','warning');return;}
-  const sheet=dueRows.map(({loan,s,remaining,paid})=>({
+  const sheet=dueRows.map(({loan,s,remaining,paid,arrears})=>({
     'Date Range':rangeLabel,
     'Client Name':loan.loan_clients?.full_name||'-',
     'Phone':loan.loan_clients?.phone||'-',
@@ -4403,7 +4458,7 @@ function downloadDuesExcel(){
     'Amount Due (KES)':Number(s.total_due||0),
     'Amount Paid (KES)':paid,
     'Remaining (KES)':remaining,
-    'Arrears (KES)':Number(loan._asof_arrears != null ? loan._asof_arrears : loan.arrears_amount||0),
+    'Arrears (KES)':Number(arrears!=null?arrears:(loan._asof_arrears != null ? loan._asof_arrears : loan.arrears_amount||0)),
     'Loan Balance (KES)':Number(loan.outstanding_balance||0),
     'Status':remaining===0?'Paid':paid>0?'Partial':'Unpaid'
   }));
