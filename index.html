@@ -526,6 +526,13 @@ function repaymentDisplayDateTime(repayment){
     ? repayment.created_at
     : repayment?.payment_date||repayment?.created_at);
 }
+function repaymentBusinessDate(repayment){
+  const method=String(repayment?.payment_method||'').toLowerCase();
+  const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
+  return kenyaDateISO(isMpesa&&repayment?.created_at
+    ? repayment.created_at
+    : repayment?.payment_date||repayment?.created_at);
+}
 const fmtLongDate = (d=new Date()) => {
   const dt=parseLocalDate(d);
   return dt ? dt.toLocaleDateString('en-KE',{day:'2-digit',month:'long',year:'numeric'}) : '-';
@@ -3458,7 +3465,9 @@ async function renderRepayments(page=1){
     const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,outstanding_balance,total_paid,status,processing_fee,total_payable,disbursement_date,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
-    let filteredReps = filterByDate(reps||[], 'payment_date', f);
+    // Filter by the same Kenya business date shown in the table. M-Pesa
+    // callbacks use created_at; manually recorded payments use payment_date.
+    let filteredReps = filterByDate(reps||[], repaymentBusinessDate, f);
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
     if (isOnlyOfficer) filteredReps = filteredReps.filter(r => r.loans?.loan_officer_id === currentUser.id);
 
@@ -5628,7 +5637,7 @@ function downloadOfficerPerformanceReport(){
   const nowM = localISODate().slice(0,7);
   const data = rows.map(({o,oActive,oLoansMonth,outstanding,overdueLoans,collected})=>{
     const clientsInArr = new Set(overdueLoans.map(l=>l.client_id)).size;
-    const totalArrAmt  = overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+    const totalArrAmt  = overdueLoans.reduce((s,l)=>s+Number(l._current_arrears||0),0);
     const bq  = oActive.length>0 ? ((oActive.length-clientsInArr)/oActive.length*100) : 100;
     const par = outstanding>0 ? (totalArrAmt/outstanding*100) : 0;
     const disbMonth = oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
@@ -5654,7 +5663,7 @@ function downloadOfficerPerformanceReport(){
     'ACC Arrears (Clients)': rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0),
     'BQ %':              '',
     'OLB (KES)':         Number(rows.reduce((s,r)=>s+r.outstanding,0).toFixed(2)),
-    'Arrears (KES)':     Number(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l.arrears_amount||0),0),0).toFixed(2)),
+    'Arrears (KES)':     Number(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l._current_arrears||0),0),0).toFixed(2)),
     'PAR %':             '',
     'Collections Month (KES)': Number(rows.reduce((s,r)=>s+r.collected,0).toFixed(2)),
     'Disbursed Month (KES)':   Number(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0).toFixed(2))
@@ -5697,6 +5706,31 @@ async function renderOfficerPerformance(){
     const allApps=appsR.data||[];
     const allStaff=staffR.data||[];
 
+    // Fetch schedules in small loan batches so Supabase's per-request row cap
+    // cannot hide older installments from the arrears calculation.
+    const activeLoanIds=allLoans.filter(l=>l.status==='active').map(l=>l.id);
+    const scheduleChunks=[];
+    for(let i=0;i<activeLoanIds.length;i+=35) scheduleChunks.push(activeLoanIds.slice(i,i+35));
+    const scheduleResults=await Promise.all(scheduleChunks.map(ids=>
+      sb('loan_schedules')
+        .select('loan_id,due_date,total_due,total_paid,status')
+        .in('loan_id',ids)
+        .lt('due_date',today())
+        .order('due_date',{ascending:true})
+        .limit(1000)
+    ));
+    const scheduleError=scheduleResults.find(result=>result.error)?.error;
+    if(scheduleError) throw scheduleError;
+    const pastDueSchedules=scheduleResults.flatMap(result=>result.data||[]);
+    const arrearsByLoan={};
+    pastDueSchedules.forEach(schedule=>{
+      const unpaid=Math.max(0,Number(schedule.total_due||0)-Number(schedule.total_paid||0));
+      if(unpaid<=0.01)return;
+      if(!arrearsByLoan[schedule.loan_id]) arrearsByLoan[schedule.loan_id]={amount:0,oldest:schedule.due_date};
+      arrearsByLoan[schedule.loan_id].amount+=unpaid;
+      if(schedule.due_date<arrearsByLoan[schedule.loan_id].oldest) arrearsByLoan[schedule.loan_id].oldest=schedule.due_date;
+    });
+
     // Filter to staff who have the loan_officer role ONLY.
     // Admins/branch managers should not appear in officer performance —
     // clients should always be attributed to a loan officer, never to admin.
@@ -5723,7 +5757,14 @@ async function renderOfficerPerformance(){
       const oClientIds = new Set(oLoans.map(l=>l.client_id));
       const portfolio = oActive.reduce((s,l)=>s+Number(l.principal_amount||0),0);
       const outstanding = oActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
-      const overdueLoans = oActive.filter(l=>l.overdue_days>0);
+      const overdueLoans = oActive.map(l=>{
+        const current=arrearsByLoan[l.id];
+        if(!current)return null;
+        const amount=Math.min(Number(l.outstanding_balance||0),Number(current.amount||0));
+        if(amount<=0.01)return null;
+        const overdueDays=Math.max(1,Math.floor((new Date(`${today()}T00:00:00Z`)-new Date(`${current.oldest}T00:00:00Z`))/(24*60*60*1000)));
+        return {...l,_current_arrears:amount,_current_overdue_days:overdueDays};
+      }).filter(Boolean);
       // Collections this month attributed to officer's loans
       const oLoanIds = new Set(oLoans.map(l=>l.id));
       const oRepsMonth = allReps.filter(r=>r.loan_id && oLoanIds.has(r.loan_id) && r.payment_date && r.payment_date.startsWith(nowM));
@@ -5753,7 +5794,7 @@ async function renderOfficerPerformance(){
           <tbody>
             ${rows.map(({o,oLoans,oActive,oClientIds,portfolio,outstanding,overdueLoans,collected,oLoansMonth})=>{
               const clientsInArr=new Set(overdueLoans.map(l=>l.client_id)).size;
-              const totalArrAmt=overdueLoans.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+              const totalArrAmt=overdueLoans.reduce((s,l)=>s+Number(l._current_arrears||0),0);
               const bq=oActive.length>0?((oActive.length-clientsInArr)/oActive.length*100):100;
               const par=outstanding>0?(totalArrAmt/outstanding*100):0;
               const disbMonth=oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
@@ -5781,7 +5822,7 @@ async function renderOfficerPerformance(){
               <td><strong>${rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0)}</strong></td>
               <td></td>
               <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.outstanding,0))}</strong></td>
-              <td><strong style="color:var(--accent-red)">${fmtMoney(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l.arrears_amount||0),0),0))}</strong></td>
+              <td><strong style="color:var(--accent-red)">${fmtMoney(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l._current_arrears||0),0),0))}</strong></td>
               <td></td>
               <td><strong style="color:var(--accent-green)">${fmtMoney(rows.reduce((s,r)=>s+r.collected,0))}</strong></td>
               <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0))}</strong></td>
