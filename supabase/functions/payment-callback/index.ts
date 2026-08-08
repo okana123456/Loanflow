@@ -213,8 +213,9 @@ serve(async (req) => {
     // in full. Registration and processing fees are never diverted here.
     const registrationFeePortion = 0;
     const processingFeePortion = 0;
-    const loanPortion = Number(amount.toFixed(2));
-    const creditPortion = 0;
+    const currentBalance = Math.max(0, Number(loan.outstanding_balance || 0));
+    const loanPortion = Number(Math.min(amount, currentBalance).toFixed(2));
+    const creditPortion = Number(Math.max(0, amount - loanPortion).toFixed(2));
     const totalPayable = Number(loan.total_payable || 0);
     const totalInterest = Number(loan.total_interest || 0);
     const interestRatio = totalPayable > 0 && totalInterest > 0 ? totalInterest / totalPayable : 0;
@@ -223,6 +224,7 @@ serve(async (req) => {
     const receiptNo = transId;
     const allocationNote = [
       loanPortion > 0 ? `loan KES ${loanPortion.toFixed(2)}` : "",
+      creditPortion > 0 ? `excess KES ${creditPortion.toFixed(2)}` : "",
     ].filter(Boolean).join(", ");
 
     const { data: repayment, error: repErr } = await supabase

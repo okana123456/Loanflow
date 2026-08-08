@@ -1315,6 +1315,7 @@ function buildSidebar() {
     { id: 'officer_dashboard', icon: '◉', label: 'My Dashboard', roles: ['loan_officer'] },
     { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager'] },
     { id: 'suspense', icon: '?', label: 'Suspense Account', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'excess_charges', icon: 'E', label: 'Excess & Charges', roles: ['admin'] },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
     { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
@@ -1434,7 +1435,7 @@ function navigateTo(section){
   const renderers={
     dashboard:renderDashboard,clients:renderClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
-    repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,
+    repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,excess_charges:renderExcessCharges,
     accounting:renderAccounting,staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
@@ -2880,6 +2881,26 @@ async function confirmDisburse(appId,clientId,termWeeks){
     }
     if(lErr)throw lErr;
 
+    // Future-only charge ledger. These charges never alter the loan balance
+    // and repayments are never silently diverted to them.
+    const futureCharges=[{
+      business_id:currentUser.business_id,client_id:clientId,loan_id:loan.id,
+      charge_type:'processing_fee',description:`Processing fee for loan ${loanNo}`,
+      amount:procFee,amount_paid:0,status:'pending',source:'system',
+      charge_date:disbDate,created_by:currentUser.id
+    }];
+    if(regFee>0)futureCharges.push({
+      business_id:currentUser.business_id,client_id:clientId,loan_id:loan.id,
+      charge_type:'registration_fee',description:'New client registration fee',
+      amount:regFee,amount_paid:0,status:'pending',source:'system',
+      charge_date:disbDate,created_by:currentUser.id
+    });
+    const{error:chargeErr}=await sb('bripta_charges').insert(futureCharges);
+    if(chargeErr){
+      console.warn('Future charge ledger insert failed:',chargeErr.message);
+      toast('Loan created, but its separate charge records were not saved. Run the Excess & Charges SQL setup.','warning');
+    }
+
     const schedules=c.schedule.map((s,i)=>{
       const due=parseLocalDate(firstRep);due.setDate(due.getDate()+i*7);
       return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:localISODate(due),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
@@ -3539,10 +3560,12 @@ async function renderRepayments(page=1){
         // Detect payment type from notes or penalty_portion
         const notes    = (r.notes||'').toLowerCase();
         const hasFees=Number(r.registration_fee_portion||0)>0||Number(r.processing_fee_portion||0)>0;
+        const hasExcess=Number(r.credit_portion||0)>0;
         const isProcFee= notes.includes('processing fee')||hasFees;
         const isPenalty= Number(r.penalty_portion||0) > 0 || notes.includes('penalty') || notes.includes('rollover');
         const isDisb   = notes.includes('disburs');
-        const payType  = isProcFee ? `<span class="badge badge-yellow">Split payment</span><div style="font-size:10px;margin-top:3px;color:var(--text-secondary)">${escapeHtml(paymentAllocationText({registrationFeePortion:Number(r.registration_fee_portion||0),processingFeePortion:Number(r.processing_fee_portion||0),loanPortion:Number(r.loan_portion??r.amount??0),creditPortion:Number(r.credit_portion||0)}))}</div>`
+        const payType  = hasExcess ? `<span class="badge badge-yellow">Repayment + excess</span><div style="font-size:10px;margin-top:3px;color:var(--text-secondary)">${escapeHtml(paymentAllocationText({registrationFeePortion:0,processingFeePortion:0,loanPortion:Number(r.loan_portion??r.amount??0),creditPortion:Number(r.credit_portion||0)}))}</div>`
+                       : isProcFee ? `<span class="badge badge-yellow">Split payment</span><div style="font-size:10px;margin-top:3px;color:var(--text-secondary)">${escapeHtml(paymentAllocationText({registrationFeePortion:Number(r.registration_fee_portion||0),processingFeePortion:Number(r.processing_fee_portion||0),loanPortion:Number(r.loan_portion??r.amount??0),creditPortion:Number(r.credit_portion||0)}))}</div>`
                        : isPenalty ? '<span class="badge badge-red">Penalty</span>'
                        : isDisb    ? '<span class="badge badge-purple">Disbursement</span>'
                        :             '<span class="badge badge-green">Repayment</span>';
@@ -3684,12 +3707,15 @@ async function dismissMpesaPayment(queueId){
 }
 
 function calculatePaymentAllocation(loan,grossAmount){
-  const loanPortion=Number(Number(grossAmount||0).toFixed(2));
+  const gross=Number(Number(grossAmount||0).toFixed(2));
+  const balance=Math.max(0,Number(loan?.outstanding_balance||0));
+  const loanPortion=Number(Math.min(gross,balance).toFixed(2));
+  const creditPortion=Number(Math.max(0,gross-loanPortion).toFixed(2));
   return{
     registrationFeePortion:0,
     processingFeePortion:0,
     loanPortion,
-    creditPortion:0
+    creditPortion
   };
 }
 
@@ -3702,7 +3728,7 @@ function paymentAllocationText(a){
     a.registrationFeePortion>0?`registration KES ${fmtMoney(a.registrationFeePortion)}`:'',
     a.processingFeePortion>0?`processing KES ${fmtMoney(a.processingFeePortion)}`:'',
     a.loanPortion>0?`loan KES ${fmtMoney(a.loanPortion)}`:'',
-    a.creditPortion>0?`client credit KES ${fmtMoney(a.creditPortion)}`:''
+    a.creditPortion>0?`excess KES ${fmtMoney(a.creditPortion)}`:''
   ].filter(Boolean).join(', ');
 }
 
@@ -4022,8 +4048,8 @@ async function printReceipt(id){
   doc.text(`Amount: ${fmtMoney(rep.amount)}`,5,y);y+=5;
   if(Number(rep.registration_fee_portion||0)>0){doc.text(`Registration fee: ${fmtMoney(rep.registration_fee_portion)}`,5,y);y+=5;}
   if(Number(rep.processing_fee_portion||0)>0){doc.text(`Processing fee: ${fmtMoney(rep.processing_fee_portion)}`,5,y);y+=5;}
+  if(Number(rep.credit_portion||0)>0){doc.text(`Excess held for client: ${fmtMoney(rep.credit_portion)}`,5,y);y+=5;}
   if(rep.loan_portion!=null){doc.text(`Loan repayment: ${fmtMoney(rep.loan_portion)}`,5,y);y+=5;}
-  if(Number(rep.credit_portion||0)>0){doc.text(`Client credit: ${fmtMoney(rep.credit_portion)}`,5,y);y+=5;}
   doc.text(`Method: ${rep.payment_method}`,5,y);y+=5;
   doc.text(`Reference: ${rep.payment_reference||'-'}`,5,y);y+=5;
   doc.text(`Date: ${repaymentDisplayDateTime(rep)}`,5,y);y+=5;
@@ -5212,6 +5238,155 @@ async function renderOfficerDashboard(){
 // ═══ SUSPENSE ACCOUNT ═══
 // Payments that arrive via M-Pesa C2B but cannot be matched to a loan fall here.
 // A cashier can then manually match them to the correct loan account.
+let excessChargesFilter={search:'',status:'open',from:'',to:''};
+
+function excessChargeTypeLabel(type){
+  return ({processing_fee:'Processing fee',registration_fee:'Registration fee',penalty:'Penalty',other:'Other charge'})[type]||type||'Charge';
+}
+
+function setExcessChargesFilter(key,value){
+  excessChargesFilter[key]=value;
+  renderExcessCharges();
+}
+
+function resetExcessChargesFilter(){
+  excessChargesFilter={search:'',status:'open',from:'',to:''};
+  renderExcessCharges();
+}
+
+async function renderExcessCharges(){
+  const main=$('#mainContent');
+  if(!hasRole('admin')){
+    main.innerHTML='<div class="empty-state"><p>Only an administrator can access Excess & Charges.</p></div>';
+    return;
+  }
+  try{
+    const biz=currentUser.business_id;
+    const [excessRes,chargesRes,allocRes]=await Promise.all([
+      sb('bripta_excess_ledger').select('*,loan_clients(full_name,phone),loans(loan_no)').eq('business_id',biz).order('created_at',{ascending:false}).limit(2000),
+      sb('bripta_charges').select('*,loan_clients(full_name,phone),loans(loan_no)').eq('business_id',biz).order('charge_date',{ascending:false}).limit(2000),
+      sb('bripta_excess_allocations').select('*,bripta_excess_ledger(loan_clients(full_name)),bripta_charges(description)').eq('business_id',biz).order('created_at',{ascending:false}).limit(250)
+    ]);
+    if(excessRes.error||chargesRes.error||allocRes.error){
+      const err=excessRes.error||chargesRes.error||allocRes.error;
+      if(/does not exist|schema cache|relation/i.test(err.message||'')){
+        throw new Error('Run bripta-excess-and-charges-future-only.sql in Supabase, then refresh this page.');
+      }
+      throw err;
+    }
+    const allExcess=excessRes.data||[];
+    const allCharges=chargesRes.data||[];
+    const allocations=allocRes.data||[];
+    const q=(excessChargesFilter.search||'').trim().toLowerCase();
+    const inRange=row=>{
+      const d=String(row.charge_date||row.created_at||'').slice(0,10);
+      return (!excessChargesFilter.from||d>=excessChargesFilter.from)&&(!excessChargesFilter.to||d<=excessChargesFilter.to);
+    };
+    const matches=row=>{
+      const text=[row.loan_clients?.full_name,row.loan_clients?.phone,row.loans?.loan_no,row.payment_reference,row.description].join(' ').toLowerCase();
+      const statusOk=excessChargesFilter.status==='all'
+        ||(excessChargesFilter.status==='open'&&['available','partially_used','pending','partially_paid'].includes(row.status))
+        ||row.status===excessChargesFilter.status;
+      return (!q||text.includes(q))&&statusOk&&inRange(row);
+    };
+    const excess=allExcess.filter(matches);
+    const charges=allCharges.filter(matches);
+    const availableTotal=allExcess.reduce((s,r)=>s+Number(r.amount_available||0),0);
+    const pendingCharges=allCharges.filter(r=>['pending','partially_paid'].includes(r.status));
+    const chargesOutstanding=pendingCharges.reduce((s,r)=>s+Math.max(0,Number(r.amount||0)-Number(r.amount_paid||0)),0);
+    const settledThisMonth=allocations.filter(a=>String(a.created_at||'').slice(0,7)===today().slice(0,7)).reduce((s,a)=>s+Number(a.amount||0),0);
+
+    main.innerHTML=`
+      <div class="page-header" style="align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div><h1>Excess & Charges</h1><p style="font-size:12px;color:var(--text-secondary);margin-top:4px">Future transactions only. Existing loan balances and historical repayments are not changed.</p></div>
+        <button class="btn btn-primary btn-sm" onclick="openAddChargeModal()">+ Add Charge</button>
+      </div>
+      <div class="kpi-grid" style="margin-bottom:14px">
+        <div class="kpi-card"><div class="kpi-label">Available Excess</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(availableTotal)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Open Charges</div><div class="kpi-value" style="color:var(--accent-yellow)">${fmtMoney(chargesOutstanding)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Pending Charge Records</div><div class="kpi-value">${pendingCharges.length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Resolved This Month</div><div class="kpi-value">${fmtMoney(settledThisMonth)}</div></div>
+      </div>
+      <div class="search-bar" style="margin-bottom:14px">
+        <input class="input" value="${escapeHtml(excessChargesFilter.search)}" placeholder="Search client, phone, loan or reference..." oninput="excessChargesFilter.search=this.value;clearTimeout(window._excessSearchTimer);window._excessSearchTimer=setTimeout(renderExcessCharges,250)">
+        <select class="select" onchange="setExcessChargesFilter('status',this.value)">
+          <option value="open" ${excessChargesFilter.status==='open'?'selected':''}>Open items</option><option value="all" ${excessChargesFilter.status==='all'?'selected':''}>All statuses</option>
+          <option value="available" ${excessChargesFilter.status==='available'?'selected':''}>Available excess</option><option value="pending" ${excessChargesFilter.status==='pending'?'selected':''}>Pending charges</option>
+          <option value="paid" ${excessChargesFilter.status==='paid'?'selected':''}>Paid charges</option><option value="refunded" ${excessChargesFilter.status==='refunded'?'selected':''}>Refunded excess</option>
+        </select>
+        <input class="input" type="date" value="${excessChargesFilter.from}" title="From date" onchange="setExcessChargesFilter('from',this.value)">
+        <input class="input" type="date" value="${excessChargesFilter.to}" title="To date" onchange="setExcessChargesFilter('to',this.value)">
+        <button class="btn btn-outline btn-sm" onclick="resetExcessChargesFilter()">Clear</button>
+      </div>
+      <h3 class="dash-h3">Available and Resolved Excess</h3>
+      <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Date</th><th>Client</th><th>Loan</th><th>Reference</th><th>Original</th><th>Available</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${excess.length?excess.map(r=>`<tr><td>${fmtDateTime(r.created_at)}</td><td><strong>${escapeHtml(r.loan_clients?.full_name||'-')}</strong><div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(r.loan_clients?.phone||'')}</div></td><td>${escapeHtml(r.loans?.loan_no||'-')}</td><td style="font-family:monospace">${escapeHtml(r.payment_reference||'-')}</td><td>${fmtMoney(r.amount_original)}</td><td><strong style="color:var(--accent-green)">${fmtMoney(r.amount_available)}</strong></td><td><span class="badge ${Number(r.amount_available||0)>0?'badge-yellow':'badge-green'}">${escapeHtml(String(r.status||'').replace(/_/g,' '))}</span></td><td>${Number(r.amount_available||0)>0?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openApplyExcessModal('${r.id}','${r.client_id}',${Number(r.amount_available||0)})">Apply to charge</button><button class="btn btn-outline btn-sm" onclick="openApplyExcessToLoanModal('${r.id}','${r.client_id}',${Number(r.amount_available||0)})">Use on loan</button><button class="btn btn-outline btn-sm" onclick="openResolveExcessModal('${r.id}','refund',${Number(r.amount_available||0)})">Refund</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Resolved</span>'}</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;padding:18px;color:var(--text-secondary)">No excess records match this view</td></tr>'}
+      </tbody></table></div>
+      <h3 class="dash-h3">Client Charges</h3>
+      <div class="table-wrap" style="margin-bottom:18px"><table><thead><tr><th>Date</th><th>Client</th><th>Loan</th><th>Charge</th><th>Charged</th><th>Paid</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${charges.length?charges.map(r=>{const due=Math.max(0,Number(r.amount||0)-Number(r.amount_paid||0));return `<tr><td>${fmtDate(r.charge_date)}</td><td><strong>${escapeHtml(r.loan_clients?.full_name||'-')}</strong><div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(r.loan_clients?.phone||'')}</div></td><td>${escapeHtml(r.loans?.loan_no||'-')}</td><td><strong>${escapeHtml(excessChargeTypeLabel(r.charge_type))}</strong><div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(r.description||'')}</div></td><td>${fmtMoney(r.amount)}</td><td>${fmtMoney(r.amount_paid)}</td><td><strong style="color:${due>0?'var(--accent-yellow)':'var(--accent-green)'}">${fmtMoney(due)}</strong></td><td><span class="badge ${['paid','waived'].includes(r.status)?'badge-green':'badge-yellow'}">${escapeHtml(String(r.status||'').replace(/_/g,' '))}</span></td><td>${['pending','partially_paid'].includes(r.status)?`<button class="btn btn-outline btn-sm" onclick="settleBriptaCharge('${r.id}','paid')">Record paid</button> <button class="btn btn-outline btn-sm" onclick="settleBriptaCharge('${r.id}','waived')">Waive</button>`:'-'}</td></tr>`}).join(''):'<tr><td colspan="9" style="text-align:center;padding:18px;color:var(--text-secondary)">No charge records match this view</td></tr>'}
+      </tbody></table></div>
+      <h3 class="dash-h3">Recent Excess Actions</h3>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Client</th><th>Action</th><th>Amount</th><th>Charge / Note</th></tr></thead><tbody>
+        ${allocations.length?allocations.slice(0,100).map(a=>`<tr><td>${fmtDateTime(a.created_at)}</td><td>${escapeHtml(a.bripta_excess_ledger?.loan_clients?.full_name||'-')}</td><td><span class="badge badge-blue">${escapeHtml(String(a.action||'').replace(/_/g,' '))}</span></td><td>${fmtMoney(a.amount)}</td><td>${escapeHtml(a.bripta_charges?.description||a.note||'-')}</td></tr>`).join(''):'<tr><td colspan="5" style="text-align:center;padding:18px;color:var(--text-secondary)">No excess actions recorded</td></tr>'}
+      </tbody></table></div>`;
+  }catch(e){toast(e.message||'Could not load Excess & Charges','error');main.innerHTML=`<div class="empty-state"><p>${escapeHtml(e.message||'Could not load Excess & Charges')}</p></div>`}
+}
+
+async function openAddChargeModal(){
+  const{data:clients,error}=await sb('loan_clients').select('id,full_name,phone').eq('business_id',currentUser.business_id).order('full_name').limit(3000);
+  if(error)return toast(error.message,'error');
+  window._chargeClientRows=clients||[];
+  openModal(`<h2>Add Client Charge</h2><p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">This records a separate charge. It does not change any loan balance.</p><div class="form-group"><label>Search client</label><input class="input" placeholder="Type name or phone..." oninput="filterChargeClients(this.value)"><select class="select" id="newChargeClient" size="6" style="height:150px;margin-top:6px">${(clients||[]).slice(0,100).map(c=>`<option value="${c.id}">${escapeHtml(c.full_name)} - ${escapeHtml(c.phone||'')}</option>`).join('')}</select></div><div class="form-row"><div class="form-group"><label>Charge type</label><select class="select" id="newChargeType"><option value="other">Other charge</option><option value="processing_fee">Processing fee</option><option value="registration_fee">Registration fee</option><option value="penalty">Penalty</option></select></div><div class="form-group"><label>Amount</label><input class="input" type="number" min="1" id="newChargeAmount"></div></div><div class="form-group"><label>Description</label><input class="input" id="newChargeDescription" placeholder="Reason for this charge"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveManualCharge()">Save charge</button></div>`);
+}
+
+function filterChargeClients(value){
+  const q=String(value||'').toLowerCase();const sel=document.getElementById('newChargeClient');if(!sel)return;
+  sel.innerHTML=(window._chargeClientRows||[]).filter(c=>`${c.full_name} ${c.phone||''}`.toLowerCase().includes(q)).slice(0,100).map(c=>`<option value="${c.id}">${escapeHtml(c.full_name)} - ${escapeHtml(c.phone||'')}</option>`).join('');
+}
+
+async function saveManualCharge(){
+  const clientId=document.getElementById('newChargeClient')?.value;const amount=Number(document.getElementById('newChargeAmount')?.value||0);const description=(document.getElementById('newChargeDescription')?.value||'').trim();
+  if(!clientId||amount<=0||!description)return toast('Select a client, enter the amount and description','warning');
+  const{error}=await sb('bripta_charges').insert({business_id:currentUser.business_id,client_id:clientId,charge_type:document.getElementById('newChargeType').value,description,amount,source:'manual',created_by:currentUser.id,charge_date:today()});
+  if(error)return toast(error.message,'error');await audit('charge_created','bripta_charges',null,null,{client_id:clientId,amount,description});toast('Charge recorded separately','success');closeModal();renderExcessCharges();
+}
+
+async function openApplyExcessModal(excessId,clientId,available){
+  const{data:charges,error}=await sb('bripta_charges').select('*').eq('business_id',currentUser.business_id).eq('client_id',clientId).in('status',['pending','partially_paid']).order('charge_date');
+  if(error)return toast(error.message,'error');
+  if(!charges?.length)return toast('This client has no outstanding charges','info');
+  openModal(`<h2>Apply Excess to Charge</h2><p style="font-size:13px;margin-bottom:12px">Available excess: <strong style="color:var(--accent-green)">${fmtMoney(available)}</strong></p><div class="form-group"><label>Outstanding charge</label><select class="select" id="applyExcessCharge" onchange="document.getElementById('applyExcessAmount').max=this.selectedOptions[0].dataset.balance">${charges.map(c=>{const bal=Number(c.amount||0)-Number(c.amount_paid||0);return `<option value="${c.id}" data-balance="${bal}">${escapeHtml(excessChargeTypeLabel(c.charge_type))} - ${fmtMoney(bal)} remaining</option>`}).join('')}</select></div><div class="form-group"><label>Amount to apply</label><input class="input" type="number" min="0.01" max="${available}" value="${Math.min(available,Number(charges[0].amount||0)-Number(charges[0].amount_paid||0))}" id="applyExcessAmount"></div><div class="form-group"><label>Note</label><input class="input" id="applyExcessNote" placeholder="Optional reference"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmApplyExcess('${excessId}')">Apply excess</button></div>`);
+}
+
+async function confirmApplyExcess(excessId){
+  const chargeId=document.getElementById('applyExcessCharge')?.value;const amount=Number(document.getElementById('applyExcessAmount')?.value||0);const note=document.getElementById('applyExcessNote')?.value||null;
+  if(!chargeId||amount<=0)return toast('Enter a valid amount','warning');const{data,error}=await supabaseClient.rpc('bripta_apply_excess_to_charge',{p_excess_id:excessId,p_charge_id:chargeId,p_amount:amount,p_note:note});if(error)return toast(error.message,'error');await audit('excess_applied_to_charge','bripta_excess_ledger',excessId,null,data);toast(`${fmtMoney(data.amount_applied)} applied to the charge`,'success');closeModal();renderExcessCharges();
+}
+
+async function openApplyExcessToLoanModal(excessId,clientId,available){
+  const{data:loans,error}=await sb('loans').select('id,loan_no,outstanding_balance').eq('business_id',currentUser.business_id).eq('client_id',clientId).eq('status','active').gt('outstanding_balance',0).order('created_at',{ascending:false});
+  if(error)return toast(error.message,'error');if(!loans?.length)return toast('This client has no active loan. Leave the excess available until the next loan is created.','info');
+  openModal(`<h2>Use Excess on Active Loan</h2><p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">This creates a clearly labelled repayment from client excess. It cannot make the loan balance negative.</p><div class="form-group"><label>Loan</label><select class="select" id="excessTargetLoan">${loans.map(l=>`<option value="${l.id}">${escapeHtml(l.loan_no)} - ${fmtMoney(l.outstanding_balance)} balance</option>`).join('')}</select></div><div class="form-group"><label>Amount</label><input class="input" id="excessLoanAmount" type="number" min="0.01" max="${available}" value="${Math.min(available,Number(loans[0].outstanding_balance||0))}"></div><div class="form-group"><label>Note</label><input class="input" id="excessLoanNote" placeholder="Reason or approval reference"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmApplyExcessToLoan('${excessId}')">Apply to loan</button></div>`);
+}
+
+async function confirmApplyExcessToLoan(excessId){
+  const loanId=document.getElementById('excessTargetLoan')?.value;const amount=Number(document.getElementById('excessLoanAmount')?.value||0);const note=(document.getElementById('excessLoanNote')?.value||'').trim();if(!loanId||amount<=0||!note)return toast('Select the loan, enter the amount and an approval note','warning');const{data,error}=await supabaseClient.rpc('bripta_apply_excess_to_loan',{p_excess_id:excessId,p_loan_id:loanId,p_amount:amount,p_note:note});if(error)return toast(error.message,'error');await audit('excess_applied_to_loan','bripta_excess_ledger',excessId,null,data);cachedData.loans=null;cachedData.repayments=null;cachedData.schedules=null;toast(`${fmtMoney(data.amount_applied)} applied to the loan`,'success');closeModal();renderExcessCharges();
+}
+
+function openResolveExcessModal(excessId,action,available){
+  const label=action==='refund'?'Record Excess Refund':'Keep for Future Loan';
+  openModal(`<h2>${label}</h2><p style="font-size:13px;margin-bottom:12px">Available excess: <strong>${fmtMoney(available)}</strong></p><div class="form-group"><label>Amount</label><input class="input" type="number" min="0.01" max="${available}" value="${available}" id="resolveExcessAmount"></div><div class="form-group"><label>${action==='refund'?'Refund reference / note':'Carry-forward note'}</label><input class="input" id="resolveExcessNote" placeholder="Required for the audit record"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="confirmResolveExcess('${excessId}','${action}')">Confirm</button></div>`);
+}
+
+async function confirmResolveExcess(excessId,action){
+  const amount=Number(document.getElementById('resolveExcessAmount')?.value||0);const note=(document.getElementById('resolveExcessNote')?.value||'').trim();if(amount<=0||!note)return toast('Enter the amount and a clear reference note','warning');const{data,error}=await supabaseClient.rpc('bripta_resolve_excess',{p_excess_id:excessId,p_action:action,p_amount:amount,p_note:note});if(error)return toast(error.message,'error');await audit('excess_resolved','bripta_excess_ledger',excessId,null,data);toast(action==='refund'?'Refund recorded':'Excess reserved for a future loan','success');closeModal();renderExcessCharges();
+}
+
+async function settleBriptaCharge(chargeId,action){
+  const wording=action==='paid'?'mark this charge as paid':'waive this charge';if(!await confirm_(`Confirm that you want to ${wording}?`))return;const note=prompt('Reference or reason:')||'';if(!note)return toast('A reference or reason is required','warning');const{data,error}=await supabaseClient.rpc('bripta_settle_charge',{p_charge_id:chargeId,p_action:action,p_note:note});if(error)return toast(error.message,'error');await audit('charge_settled','bripta_charges',chargeId,null,data);toast(action==='paid'?'Charge marked as paid':'Charge waived','success');renderExcessCharges();
+}
+
 const selectedSuspenseEntries=new Set();
 let visibleSuspenseEntries=[];
 
