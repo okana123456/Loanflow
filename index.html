@@ -4192,8 +4192,10 @@ async function renderOverdue(opts){
     const allActive=(loans||[]).filter(l=>l.status==='active');
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
-    overdueLoans.forEach(l=>{const d=Number(l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
+    overdueLoans.forEach(l=>{const d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
     const totalArrears=overdueLoans.reduce((s,l)=>s+Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0),0);
+    const nplLoans=overdueLoans.filter(l=>Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>180);
+    const nplOutstanding=nplLoans.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
 
     // Build missed installment rows (flat)
     const missedRows=[];
@@ -4301,7 +4303,7 @@ async function renderOverdue(opts){
       overdueLoans.forEach(function(l){
         var arrears=Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0);
         var d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);
-        var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'>180d';
+        var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'NPL (>180d)';
         var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
         var officerName=(window._staffMap && l.loan_officer_id && window._staffMap[l.loan_officer_id])||'Unassigned';
         summaryHtml += '<tr>' +
@@ -4320,10 +4322,34 @@ async function renderOverdue(opts){
     }
     summaryHtml += '</tbody></table></div>';
 
+    let nplHtml='<div class="table-wrap"><table style="font-size:12px"><thead><tr>'+
+      '<th>Client</th><th>Phone</th><th>Loan #</th><th>Officer</th><th>Days Overdue</th><th>Arrears</th><th>Outstanding</th><th>Classification</th><th>Actions</th>'+
+      '</tr></thead><tbody>';
+    if(nplLoans.length){
+      nplLoans.forEach(function(l){
+        var days=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);
+        var arrears=Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0);
+        var officer=(window._staffMap&&l.loan_officer_id&&window._staffMap[l.loan_officer_id])||'Unassigned';
+        nplHtml+='<tr>'+
+          '<td><strong>'+(l.loan_clients?.full_name||'-')+'</strong></td>'+
+          '<td><a href="tel:'+(l.loan_clients?.phone||'')+'" style="color:var(--accent-blue)">'+(l.loan_clients?.phone||'-')+'</a></td>'+
+          '<td>'+l.loan_no+'</td><td>'+officer+'</td>'+
+          '<td><span class="badge badge-red">'+days+'d</span></td>'+
+          '<td style="color:var(--accent-red);font-weight:700">'+fmtMoney(arrears)+'</td>'+
+          '<td style="font-weight:700">'+fmtMoney(l.outstanding_balance||0)+'</td>'+
+          '<td><span class="badge badge-red">NPL</span></td>'+
+          '<td>'+(hasRole('admin','branch_manager','cashier')?'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+l.id+'\')">Pay</button> ':'')+'<button class="btn btn-outline btn-sm" onclick="addFollowUp(\''+l.id+'\',\''+l.client_id+'\')">Follow-Up</button></td>'+
+        '</tr>';
+      });
+    }else{
+      nplHtml+='<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:12px">No accounts have reached the NPL threshold</td></tr>';
+    }
+    nplHtml+='</tbody></table></div>';
+
     // ── 4. PAR metrics ──
-    var par30pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>30;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
-    var par60pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>60;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
-    var par90pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l.overdue_days||0)>90;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par30pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>30;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par60pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>60;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
+    var par90pct = portfolio>0?((overdueLoans.filter(function(l){return Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>90;}).reduce(function(s,l){return s+Number(l.outstanding_balance||0);},0))/portfolio*100).toFixed(1):'0';
     var parHtml =
       '<div style="padding:12px 14px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap">' +
         '<span><strong>PAR 30:</strong> '+par30pct+'%</span>' +
@@ -4352,9 +4378,11 @@ async function renderOverdue(opts){
               '<option value="30" '+(minDays===30?'selected':'')+'>30+ days (PAR 30)</option>' +
               '<option value="60" '+(minDays===60?'selected':'')+'>60+ days (PAR 60)</option>' +
               '<option value="90" '+(minDays===90?'selected':'')+'>90+ days (PAR 90)</option>' +
+              '<option value="180" '+(minDays===180?'selected':'')+'>180+ days (NPL)</option>' +
             '</select>' +
           '</div>' +
           '<span class="badge badge-red">'+overdueLoans.length+' loan'+(overdueLoans.length!==1?'s':'')+' &nbsp;·&nbsp; KES '+fmtMoney(totalArrears)+' in arrears</span>' +
+          '<span class="badge badge-red">NPL: '+nplLoans.length+' &nbsp;·&nbsp; KES '+fmtMoney(nplOutstanding)+' OLB</span>' +
         '</div>' +
       '</div>' +
       // Section 1: Dues by date (open by default)
@@ -4363,7 +4391,9 @@ async function renderOverdue(opts){
       makeSection('missed', '⚠️ Missed Installments — as of '+asOfDate, missedRows.length, 'KES '+fmtMoney(missedArrears)+' unpaid', missedHtml, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadMissedExcel()">⬇ Excel</button>') +
       // Section 3: Loan summary (collapsed by default)
       makeSection('loansummary', '📊 Loan-Level Arrears Summary', overdueLoans.length, 'KES '+fmtMoney(totalArrears), summaryHtml, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadArrearsSummaryExcel()">⬇ Excel</button>') +
-      // Section 4: PAR / Chart (collapsed by default)
+      // Section 4: NPL accounts (collapsed by default)
+      makeSection('npl', 'NPL Accounts (>180 Days)', nplLoans.length, 'KES '+fmtMoney(nplOutstanding)+' OLB', nplHtml) +
+      // Section 5: PAR / Chart (collapsed by default)
       makeSection('parchart', '📈 Aging Buckets & PAR Metrics', null, 'PAR30: '+par30pct+'%  PAR60: '+par60pct+'%  PAR90: '+par90pct+'%', parHtml);
 
     main.innerHTML = pageHtml;
@@ -4377,7 +4407,7 @@ async function renderOverdue(opts){
     });
 
     const ctx=document.getElementById('chartAging');
-    if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-180d','>180d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
+    if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-180d','NPL >180d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
   }catch(e){console.error(e);toast(e.message,'error')}
 }
 

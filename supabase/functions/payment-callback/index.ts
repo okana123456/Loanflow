@@ -62,15 +62,20 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const { data: settings } = await supabase
+    const { data: allSettingsRows } = await supabase
       .from("loan_settings")
-      .select("business_id, mpesa_auto_confirm")
-      .eq("mpesa_shortcode", shortcode)
-      .limit(1)
-      .maybeSingle();
+      .select("business_id, mpesa_auto_confirm, mpesa_shortcode");
 
-    const businessId = settings?.business_id || null;
-    const autoConfirm = !!settings?.mpesa_auto_confirm;
+    const shortcodeDigits = digitsOnly(shortcode);
+    const settingsRows = (allSettingsRows || []).filter((row) =>
+      digitsOnly(row.mpesa_shortcode) === shortcodeDigits
+    );
+
+    const configuredBusinesses = [...new Set((settingsRows || [])
+      .map((row) => String(row.business_id || "").trim())
+      .filter(Boolean))];
+    let businessId = configuredBusinesses.length === 1 ? configuredBusinesses[0] : null;
+    let autoConfirm = configuredBusinesses.length === 1 && !!settingsRows?.[0]?.mpesa_auto_confirm;
 
     const { data: existingRepayment } = await supabase
       .from("loan_repayments")
@@ -78,6 +83,74 @@ serve(async (req) => {
       .or(`payment_reference.eq.${transId},receipt_no.eq.${transId}`)
       .limit(1)
       .maybeSingle();
+
+    if (existingRepayment) {
+      return accepted;
+    }
+
+    const candidates = [...new Set([
+      ...phoneVariants(accountNumber),
+      ...phoneVariants(payerPhone),
+    ])];
+
+    let client: { id: string; business_id: string; full_name: string | null; account_credit?: number | null } | null = null;
+    for (const candidateBusiness of configuredBusinesses) {
+      for (const phone of candidates) {
+        const { data } = await supabase
+          .from("loan_clients")
+          .select("id, business_id, full_name, account_credit")
+          .eq("business_id", candidateBusiness)
+          .eq("phone", phone)
+          .limit(1)
+          .maybeSingle();
+        if (data) {
+          client = data;
+          break;
+        }
+      }
+      if (client) break;
+    }
+
+    if (!client && candidates.length) {
+      const tails = [...new Set(candidates.map((candidate) => candidate.replace(/\D/g, "").slice(-9)).filter(Boolean))];
+      for (const candidateBusiness of configuredBusinesses) {
+        for (const tail of tails) {
+          if (client) break;
+          if (!tail) continue;
+          const { data } = await supabase
+            .from("loan_clients")
+            .select("id, business_id, full_name, phone, account_credit")
+            .eq("business_id", candidateBusiness)
+            .ilike("phone", `%${tail}`)
+            .limit(1)
+            .maybeSingle();
+          if (data) client = data;
+        }
+        if (client) break;
+      }
+    }
+
+    const accountDigits = digitsOnly(accountNumber);
+    if (!client && accountDigits) {
+      for (const candidateBusiness of configuredBusinesses) {
+        const { data } = await supabase
+          .from("loan_clients")
+          .select("id, business_id, full_name, phone, id_number, account_credit")
+          .eq("business_id", candidateBusiness)
+          .eq("id_number", accountDigits)
+          .limit(1)
+          .maybeSingle();
+        if (data) {
+          client = data;
+          break;
+        }
+      }
+    }
+
+    if (client) {
+      businessId = client.business_id;
+      autoConfirm = !!(settingsRows || []).find((row) => row.business_id === businessId)?.mpesa_auto_confirm;
+    }
 
     const { data: queue } = await supabase
       .from("mpesa_callback_queue")
@@ -97,71 +170,12 @@ serve(async (req) => {
       .maybeSingle();
 
     const queueId = queue?.id;
-    if (!businessId) return accepted;
 
-    if (existingRepayment) {
-      if (queueId) {
-        await supabase
-          .from("mpesa_callback_queue")
-          .update({
-            confirmed: true,
-            loan_id: existingRepayment.loan_id,
-            repayment_id: existingRepayment.id,
-            business_short_code: businessId,
-          })
-          .eq("id", queueId);
+    if (!client || !businessId) {
+      if (!businessId) {
+        console.error("Could not identify the Bripta business for payment", transId, shortcode, payerPhone);
+        return accepted;
       }
-      return accepted;
-    }
-
-    const candidates = [...new Set([
-      ...phoneVariants(accountNumber),
-      ...phoneVariants(payerPhone),
-    ])];
-
-    let client: { id: string; business_id: string; full_name: string | null; account_credit?: number | null } | null = null;
-    for (const phone of candidates) {
-      const { data } = await supabase
-        .from("loan_clients")
-        .select("id, business_id, full_name, account_credit")
-        .eq("business_id", businessId)
-        .eq("phone", phone)
-        .maybeSingle();
-      if (data) {
-        client = data;
-        break;
-      }
-    }
-
-    if (!client && candidates.length) {
-      const tails = [...new Set(candidates.map((candidate) => candidate.replace(/\D/g, "").slice(-9)).filter(Boolean))];
-      for (const tail of tails) {
-        if (client) break;
-        if (!tail) continue;
-        const { data } = await supabase
-          .from("loan_clients")
-          .select("id, business_id, full_name, phone, account_credit")
-          .eq("business_id", businessId)
-          .ilike("phone", `%${tail}`)
-          .limit(1)
-          .maybeSingle();
-        if (data) client = data;
-      }
-    }
-
-    const accountDigits = digitsOnly(accountNumber);
-    if (!client && accountDigits) {
-      const { data } = await supabase
-        .from("loan_clients")
-        .select("id, business_id, full_name, phone, id_number, account_credit")
-        .eq("business_id", businessId)
-        .eq("id_number", accountDigits)
-        .limit(1)
-        .maybeSingle();
-      if (data) client = data;
-    }
-
-    if (!client) {
       await supabase.from("unmatched_payments").insert({
         amount,
         account_number: accountNumber,
@@ -187,6 +201,43 @@ serve(async (req) => {
       .maybeSingle();
 
     if (!loan) {
+      const { data: pendingCharge } = await supabase
+        .from("bripta_charges")
+        .select("id, loan_id, amount, amount_paid, charge_type, status")
+        .eq("business_id", businessId)
+        .eq("client_id", client.id)
+        .eq("charge_type", "processing_fee")
+        .in("status", ["pending", "partially_paid"])
+        .order("charge_date", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (pendingCharge?.loan_id && autoConfirm) {
+        const { data: feeResult, error: feeError } = await supabase.rpc("bripta_record_callback_charge_payment", {
+          p_business_id: businessId,
+          p_client_id: client.id,
+          p_loan_id: pendingCharge.loan_id,
+          p_charge_id: pendingCharge.id,
+          p_amount: amount,
+          p_payment_reference: transId,
+          p_payment_date: paymentDate,
+          p_payer_name: payerName,
+        });
+        if (feeError) throw feeError;
+        if (queueId) {
+          await supabase
+            .from("mpesa_callback_queue")
+            .update({
+              confirmed: true,
+              loan_id: pendingCharge.loan_id,
+              repayment_id: feeResult?.repayment_id || null,
+              business_short_code: businessId,
+            })
+            .eq("id", queueId);
+        }
+        return accepted;
+      }
+
       await supabase.from("unmatched_payments").insert({
         amount,
         account_number: accountNumber,
