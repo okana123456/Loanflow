@@ -3861,7 +3861,7 @@ function repaymentSenderHtml(r){
   const name=repaymentSenderName(r);
   const phone=repaymentSenderPhone(r);
   if(!name && !phone) return '<span style="color:var(--text-secondary)">-</span>';
-  return `<strong>${escapeHtml(name||'-')}</strong><div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(phone||'')}</div>`;
+  return `<strong title="${escapeHtml(phone||'')}">${escapeHtml(name||phone||'-')}</strong>`;
 }
 
 async function openPaymentModal(loanId){
