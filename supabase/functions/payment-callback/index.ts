@@ -53,7 +53,7 @@ serve(async (req) => {
     const accountNumber = String(body?.BillRefNumber || "").trim();
     const amount = Number(body?.TransAmount || 0);
     const payerPhone = String(body?.MSISDN || "").trim();
-    const payerName = `${body?.FirstName || ""} ${body?.LastName || ""}`.trim();
+    const payerName = `${body?.FirstName || ""} ${body?.MiddleName || ""} ${body?.LastName || ""}`.replace(/\s+/g, " ").trim();
     const paymentDate = mpesaDate(body?.TransTime);
 
     if (!shortcode || !amount || amount <= 0) return accepted;
@@ -163,6 +163,8 @@ serve(async (req) => {
         bill_ref_number: accountNumber,
         msisdn: payerPhone,
         first_name: body?.FirstName || "",
+        middle_name: body?.MiddleName || "",
+        last_name: body?.LastName || "",
         raw_payload: body,
         confirmed: false,
       })
@@ -222,6 +224,7 @@ serve(async (req) => {
           p_payment_reference: transId,
           p_payment_date: paymentDate,
           p_payer_name: payerName,
+          p_payer_phone: payerPhone,
         });
         if (feeError) throw feeError;
         if (queueId) {
@@ -289,6 +292,8 @@ serve(async (req) => {
         receipt_no: receiptNo,
         mpesa_confirmed: true,
         payment_date: paymentDate,
+        sender_name: payerName,
+        sender_phone: payerPhone,
         interest_portion: interestPortion,
         principal_portion: principalPortion,
         penalty_portion: 0,

@@ -3668,7 +3668,7 @@ async function renderRepayments(page=1){
         <div class="table-wrap"><table><thead><tr><th>Trans ID</th><th>Amount</th><th>Phone</th><th>Account Ref</th><th>Time</th><th>Actions</th></tr></thead><tbody>
         ${myQueue.map(q=>`<tr><td>${escapeHtml(q.trans_id||'-')}</td><td>${fmtMoney(q.trans_amount)}</td><td>${paymentPhoneHtml(q)}</td><td>${escapeHtml(q.bill_ref_number||'-')}</td><td>${fmtDateTime(q.created_at)}</td><td>${canPay?`<button class="btn btn-success btn-sm" onclick="confirmMpesaPayment('${q.id}','${q.msisdn||q.bill_ref_number||''}',${q.trans_amount},'${q.trans_id}')">Confirm</button> <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>`:''}</td></tr>`).join('')}
         </tbody></table></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Phone</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Loan Total</th><th>Repayment</th><th title="Loan balance immediately after this payment">Balance After</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Client</th><th>Client Phone</th><th>Sender</th><th>Loan #</th><th>Type</th><th>Reference</th><th>Loan Total</th><th>Repayment</th><th title="Loan balance immediately after this payment">Balance After</th><th>Method</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
       ${p.items.map(r=>{
         // Balance AFTER this specific payment (running balance, not current balance)
         const balRem   = cachedData._balAfterMap?.[r.id] ?? Number(r.loans?.outstanding_balance ?? 0);
@@ -3705,6 +3705,7 @@ async function renderRepayments(page=1){
           '<td><strong>',r.receipt_no,'</strong></td>',
           '<td>',rclient,'</td>',
           '<td>',rphone,'</td>',
+          '<td>',repaymentSenderHtml(r),'</td>',
           '<td>',rloan,'</td>',
           '<td>',payType,'</td>',
           '<td><span style="font-family:monospace">',rref,'</span></td>',
@@ -3716,7 +3717,7 @@ async function renderRepayments(page=1){
           '<td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="viewClientPayments(\'',r.loan_id,'\')">Statement</button> <button class="btn btn-outline btn-sm" onclick="printReceipt(\'',rid,'\')">Print</button></td>',
           '</tr>'
         ].join('');
-      }).join('')||'<tr><td colspan="12" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
+      }).join('')||'<tr><td colspan="13" style="text-align:center;color:var(--text-secondary)">No repayments recorded for this period</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
@@ -3725,6 +3726,7 @@ async function renderRepayments(page=1){
 
 async function confirmMpesaPayment(queueId,billRef,amount,transId){
   try{
+    const {data:queueRow}=await sb('mpesa_callback_queue').select('*').eq('id',queueId).maybeSingle();
     const refRaw = String(billRef||'').trim();
     if(!refRaw) return toast('M-Pesa account reference is empty','warning');
     const phoneRefs = _phoneVariants(refRaw);
@@ -3758,7 +3760,9 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
     const mpPrincipalPortion=Number((allocation.loanPortion-mpInterestPortion).toFixed(2));
     const allocationText=paymentAllocationText(allocation);
 
-    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:0,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:`M-Pesa C2B confirmed by cashier. Allocation: ${allocationText||'none'}`};
+    const senderName=[queueRow?.first_name,queueRow?.middle_name,queueRow?.last_name].filter(Boolean).join(' ').trim();
+    const senderPhone=queueRow?.msisdn||queueRow?.payer_phone||refRaw||'';
+    const rec={loan_id:loan.id,receipt_no:receiptNo,amount,payment_method:'mpesa',payment_reference:transId,payment_date:localDateTime(),sender_name:senderName,sender_phone:senderPhone,principal_portion:mpPrincipalPortion,interest_portion:mpInterestPortion,penalty_portion:0,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,mpesa_confirmed:true,collected_by:currentUser?.id,business_id:currentUser?.business_id,notes:`M-Pesa C2B confirmed by cashier. Allocation: ${allocationText||'none'}`};
     const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
     if(error)throw error;
     await persistPaymentAllocation(loan,allocation);
@@ -3847,6 +3851,19 @@ function paymentAllocationText(a){
   ].filter(Boolean).join(', ');
 }
 
+function repaymentSenderName(r){
+  return r?.sender_name || r?.payer_name || '';
+}
+function repaymentSenderPhone(r){
+  return r?.sender_phone || r?.payer_phone || '';
+}
+function repaymentSenderHtml(r){
+  const name=repaymentSenderName(r);
+  const phone=repaymentSenderPhone(r);
+  if(!name && !phone) return '<span style="color:var(--text-secondary)">-</span>';
+  return `<strong>${escapeHtml(name||'-')}</strong><div style="font-size:10px;color:var(--text-secondary)">${escapeHtml(phone||'')}</div>`;
+}
+
 async function openPaymentModal(loanId){
   window._payLoanCache=null;
   let loanInfo='';
@@ -3861,6 +3878,7 @@ async function openPaymentModal(loanId){
     <input type="hidden" id="payLoanId" value="${loanId||''}">
     <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="mpesa_c2b">📲 M-Pesa C2B (Daraja — auto)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payDarajaInfoWrap" style="display:none"><div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);padding:10px;border-radius:8px;font-size:12px;line-height:1.5">Client pays via M-Pesa Paybill <strong>${(appSettings&&appSettings.mpesa_shortcode)||'—'}</strong>, account number = <strong>their National ID</strong>. Payment is matched and recorded automatically by the Daraja webhook.</div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
+    <div class="form-row"><div class="form-group"><label>Sender Name</label><input class="input" id="paySenderName" placeholder="Name shown on payment message"></div><div class="form-group"><label>Sender Phone</label><input class="input" id="paySenderPhone" placeholder="Phone that sent the payment"></div></div>
     <div class="form-group"><label>Amount applied to Penalty (KES)</label><input class="input" type="number" id="payPenaltyAmt" value="0"></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="payNotes"></textarea></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btnSavePayment" onclick="savePayment()">Confirm Payment</button></div>
@@ -4039,7 +4057,7 @@ async function savePayment(){
 
     const allocationText=paymentAllocationText(allocation);
     const userNote=($('#payNotes').value||'').trim();
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id};
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),sender_name:($('#paySenderName')?.value||'').trim(),sender_phone:($('#paySenderPhone')?.value||'').trim(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id};
     const{error}=await sb('loan_repayments').insert(rec);
     if(error)throw error;
     await persistPaymentAllocation(loan,allocation);
@@ -4186,6 +4204,8 @@ function exportRepaymentsExcel(){
       'Receipt':           r.receipt_no,
       'Client':            r.loans?.loan_clients?.full_name||'-',
       'Phone':             r.loans?.loan_clients?.phone||'-',
+      'Sender Name':       repaymentSenderName(r)||'-',
+      'Sender Phone':      repaymentSenderPhone(r)||'-',
       'Loan #':            r.loans?.loan_no||'-',
       'Payment Type':      payType,
       'Reference':         r.payment_reference||'-',
@@ -5135,14 +5155,16 @@ async function renderOfficerDashboard(){
     const todayStr=today();
     const nowM=localISODate().slice(0,7);
 
-    // Admins can view any officer; others always see themselves
+    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_schedules','loan_staff']);
+
+    // Admins can view any loan officer; officers always see themselves.
     const isAdmin=hasRole('admin','branch_manager');
-    const{data:allStaff}=isAdmin
-      ? await sb('loan_staff').select('id,name,role').eq('business_id',currentUser.business_id).eq('is_active',true)
-      : {data:[{id:currentUser.id,name:currentUser.name,role:currentUser.role}]};
-    const officers=(allStaff||[]).filter(s=>{
+    const allStaff=isAdmin
+      ? (cachedData.staff||[]).filter(s=>s.is_active!==false)
+      : [{id:currentUser.id,name:currentUser.name,role:currentUser.role}];
+    const officers=allStaff.filter(s=>{
       const roles=(s.role||'').split(',').map(r=>r.trim());
-      return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r));
+      return roles.some(r=>r==='loan_officer');
     });
 
     // Determine which officer is selected (default = self for officers, first for admins)
@@ -5151,23 +5173,29 @@ async function renderOfficerDashboard(){
     const selOfficer=officers.find(o=>o.id===selOfficerId)||officers[0];
     if(!selOfficer){main.innerHTML='<div class="empty-state"><p>No officer data found.</p></div>';return;}
 
-    // Fetch all data for this officer
-    const[loansR,repsR,schedsR,clientsR]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id',currentUser.business_id).eq('loan_officer_id',selOfficerId),
-      sb('loan_repayments').select('*').eq('business_id',currentUser.business_id),
-      sb('loan_schedules').select('*').eq('business_id',currentUser.business_id),
-      sb('loan_clients').select('id,full_name,created_at').eq('business_id',currentUser.business_id)
-    ]);
-    const oLoans=loansR.data||[];
-    const allReps=repsR.data||[];
-    const allScheds=schedsR.data||[];
-    const allClients=clientsR.data||[];
+    const oLoans=(cachedData.loans||[]).filter(l=>l.loan_officer_id===selOfficerId);
+    const allReps=cachedData.repayments||[];
+    const allScheds=cachedData.schedules||[];
+    const allClients=cachedData.clients||[];
 
     const oLoanIds=new Set(oLoans.map(l=>l.id));
     const oReps=allReps.filter(r=>oLoanIds.has(r.loan_id));
     const oScheds=allScheds.filter(s=>oLoanIds.has(s.loan_id));
 
-    const oActive=oLoans.filter(l=>l.status==='active');
+    const todayMs = new Date(`${todayStr}T00:00:00+03:00`).getTime();
+    const arrearsByLoan={};
+    oScheds.forEach(s=>{
+      const unpaid=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
+      if(unpaid<=0.01 || s.status==='paid' || !s.due_date || s.due_date>=todayStr) return;
+      if(!arrearsByLoan[s.loan_id]) arrearsByLoan[s.loan_id]={amount:0,oldest:s.due_date};
+      arrearsByLoan[s.loan_id].amount+=unpaid;
+      if(s.due_date<arrearsByLoan[s.loan_id].oldest) arrearsByLoan[s.loan_id].oldest=s.due_date;
+    });
+    const oActive=oLoans.filter(l=>l.status==='active').map(l=>{
+      const ar=arrearsByLoan[l.id]||{amount:0,oldest:null};
+      const overdueDays=ar.oldest?Math.max(0,Math.floor((todayMs-new Date(`${ar.oldest}T00:00:00+03:00`).getTime())/86400000)):0;
+      return {...l,_current_arrears:Number(ar.amount.toFixed(2)),_current_overdue_days:overdueDays};
+    });
     const oClientIds=new Set(oLoans.map(l=>l.client_id));
 
     // New clients this month registered under loans of this officer
@@ -5180,7 +5208,7 @@ async function renderOfficerDashboard(){
     const olb=oActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
 
     // Total arrears
-    const totalArrears=oActive.reduce((s,l)=>s+Number(l.arrears_amount||0),0);
+    const totalArrears=oActive.reduce((s,l)=>s+Number(l._current_arrears||0),0);
 
     // Active clients (unique clients with active loans under this officer)
     const activeClientIds=new Set(oActive.map(l=>l.client_id));
@@ -5216,12 +5244,12 @@ async function renderOfficerDashboard(){
     const monthlyRate=monthDue>0?(monthPaid/monthDue*100):0;
 
     // Arrears collected this month (payments on overdue loans)
-    const arrearsLoanIds=new Set(oActive.filter(l=>l.overdue_days>0||l.arrears_amount>0).map(l=>l.id));
+    const arrearsLoanIds=new Set(oActive.filter(l=>l._current_overdue_days>0||l._current_arrears>0).map(l=>l.id));
     const arrearsCollected=oReps.filter(r=>(r.payment_date||'').startsWith(nowM)&&arrearsLoanIds.has(r.loan_id))
       .reduce((s,r)=>s+Number(r.amount||0),0);
 
     // Book quality = (active clients - clients in arrears) / active clients × 100
-    const clientsInArrears=new Set(oActive.filter(l=>l.arrears_amount>0||l.overdue_days>0).map(l=>l.client_id)).size;
+    const clientsInArrears=new Set(oActive.filter(l=>l._current_arrears>0||l._current_overdue_days>0).map(l=>l.client_id)).size;
     const bookQuality=activeClients>0?((activeClients-clientsInArrears)/activeClients*100):100;
 
     // Build officer selector HTML (admin only)
@@ -5359,8 +5387,8 @@ async function renderOfficerDashboard(){
                 <td>${l.loan_type==='repeat_loan'?'<span class="badge badge-purple">Repeat</span>':'<span class="badge badge-blue">New</span>'}</td>
                 <td>${fmtMoney(l.principal_amount)}</td>
                 <td style="color:var(--accent-yellow)">${fmtMoney(l.outstanding_balance)}</td>
-                <td style="color:${Number(l.arrears_amount)>0?'var(--accent-red)':'var(--text-secondary)'}"><strong>${fmtMoney(l.arrears_amount)}</strong></td>
-                <td>${statusBadge(l.status)}${l.overdue_days>0?` <span class="badge badge-red">${l.overdue_days}d</span>`:''}</td>
+                <td style="color:${Number(l._current_arrears)>0?'var(--accent-red)':'var(--text-secondary)'}"><strong>${fmtMoney(l._current_arrears)}</strong></td>
+                <td>${statusBadge(l.status)}${l._current_overdue_days>0?` <span class="badge badge-red">${l._current_overdue_days}d</span>`:''}</td>
               </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">No active loans</td></tr>'}
           </tbody>
         </table>
@@ -5854,10 +5882,20 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
     const principalPortion=Number((allocation.loanPortion-interestPortion).toFixed(2));
     const method=document.getElementById('suspMatchMethod')?.value||'mpesa';
     const paymentDate=new Date().toISOString();
+    let senderName='',senderPhone='';
+    if(entryType==='mpesa'){
+      const{data:qrow}=await sb('mpesa_callback_queue').select('*').eq('id',entryId).maybeSingle();
+      senderName=[qrow?.first_name,qrow?.middle_name,qrow?.last_name].filter(Boolean).join(' ').trim();
+      senderPhone=qrow?.msisdn||qrow?.payer_phone||'';
+    } else {
+      const{data:urow}=await sb('unmatched_payments').select('*').eq('id',entryId).maybeSingle();
+      senderName=urow?.payer_name||'';
+      senderPhone=urow?.payer_phone||'';
+    }
 
     const { data: repayment, error: repaymentErr } = await sb('loan_repayments').insert({
       loan_id:loanId,receipt_no:receiptNo,amount,payment_method:method,
-      payment_reference:ref,payment_date:paymentDate,
+      payment_reference:ref,payment_date:paymentDate,sender_name:senderName,sender_phone:senderPhone,
       principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:0,
       registration_fee_portion:allocation.registrationFeePortion,
       processing_fee_portion:allocation.processingFeePortion,

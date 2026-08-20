@@ -69,7 +69,8 @@ create or replace function public.bripta_record_callback_charge_payment(
   p_amount numeric,
   p_payment_reference text,
   p_payment_date timestamptz,
-  p_payer_name text default null
+  p_payer_name text default null,
+  p_payer_phone text default null
 ) returns jsonb
 language plpgsql security definer set search_path = public
 as $$
@@ -113,10 +114,13 @@ begin
   insert into public.loan_repayments(
     loan_id,receipt_no,amount,payment_method,payment_reference,payment_date,
     principal_portion,interest_portion,penalty_portion,registration_fee_portion,
-    processing_fee_portion,loan_portion,credit_portion,mpesa_confirmed,business_id,notes
+    processing_fee_portion,loan_portion,credit_portion,mpesa_confirmed,business_id,
+    sender_name,sender_phone,notes
   ) values (
     p_loan_id,p_payment_reference,round(p_amount,2),'M-Pesa',p_payment_reference,
     coalesce(p_payment_date,now()),0,0,0,0,v_fee_paid,0,v_excess,true,p_business_id,
+    nullif(trim(coalesce(p_payer_name,'')),''),
+    nullif(trim(coalesce(p_payer_phone,'')),''),
     '[BRIPTA_CHARGE_PAYMENT] Auto-confirmed processing-fee payment after loan clearance. Payer: '||coalesce(p_payer_name,'')
   ) returning id into v_repayment_id;
 
@@ -141,7 +145,7 @@ begin
   );
 end $$;
 
-grant execute on function public.bripta_record_callback_charge_payment(text,uuid,uuid,uuid,numeric,text,timestamptz,text)
+grant execute on function public.bripta_record_callback_charge_payment(text,uuid,uuid,uuid,numeric,text,timestamptz,text,text)
 to service_role;
 
 -- Keep the existing admin action, but make a paid processing/registration
