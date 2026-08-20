@@ -346,6 +346,125 @@ const SERVICE_BILLING_FIRST_REMINDER_DATE = '2026-08-02';
 const SERVICE_BILLING_REMINDER_DAY = 2;
 const SERVICE_BILLING_LOCK_DAY = 4;
 
+// Low-egress local cache. It keeps heavy business tables on the device and
+// later syncs only rows changed through updated_at tracking.
+const BRIPTA_CACHE_VERSION = 1;
+const BRIPTA_FULL_SYNC_MS = 14 * 24 * 60 * 60 * 1000;
+const BRIPTA_SYNC_OVERLAP_MS = 5 * 60 * 1000;
+const BRIPTA_CACHE_MAP = {
+  loan_clients: 'clients',
+  loans: 'loans',
+  loan_schedules: 'schedules',
+  loan_repayments: 'repayments',
+  loan_applications: 'applications',
+  loan_staff: 'staff',
+  loan_products: 'products',
+  loan_penalties: 'penalties',
+  bripta_excess_ledger: 'excessLedger',
+  bripta_charges: 'charges',
+  unmatched_payments: 'unmatchedPayments'
+};
+
+function openBriptaCache(){
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open('bripta-business-cache', BRIPTA_CACHE_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains('tables')) db.createObjectStore('tables',{keyPath:'key'});
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function briptaCacheKey(table){
+  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${table}:v${BRIPTA_CACHE_VERSION}`;
+}
+async function readBriptaCache(table){
+  try{
+    const db = await openBriptaCache();
+    return await new Promise((resolve,reject)=>{
+      const req = db.transaction('tables','readonly').objectStore('tables').get(briptaCacheKey(table));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }catch(e){ return null; }
+}
+async function writeBriptaCache(table, rows, fullSyncAt){
+  try{
+    const db = await openBriptaCache();
+    await new Promise((resolve,reject)=>{
+      const req = db.transaction('tables','readwrite').objectStore('tables').put({
+        key: briptaCacheKey(table),
+        rows: rows || [],
+        fullSyncAt: fullSyncAt || Date.now(),
+        savedAt: Date.now()
+      });
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }catch(e){}
+}
+async function fetchPagedBusinessRows(table, configureQuery){
+  const pageSize = 1000;
+  const maxRows = 100000;
+  const rows = [];
+  for(let from=0; from<maxRows; from+=pageSize){
+    let query = sb(table).select('*').range(from, from + pageSize - 1);
+    if(currentUser?.business_id) query = query.eq('business_id', currentUser.business_id);
+    if(configureQuery) query = configureQuery(query);
+    const {data,error} = await query;
+    if(error) return {data: rows, error};
+    rows.push(...(data || []));
+    if(!data || data.length < pageSize) break;
+  }
+  return {data: rows, error: null};
+}
+async function fetchBriptaTableOptimized(table){
+  const cached = await readBriptaCache(table);
+  const needsFull = !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= BRIPTA_FULL_SYNC_MS;
+  if(needsFull){
+    const result = await fetchPagedBusinessRows(table);
+    if(!result.error) await writeBriptaCache(table, result.data, Date.now());
+    return result;
+  }
+  const cursor = new Date(Math.max(0, Number(cached.savedAt || 0) - BRIPTA_SYNC_OVERLAP_MS)).toISOString();
+  let result = await fetchPagedBusinessRows(table, q => q.gte('updated_at', cursor).order('updated_at', {ascending:false}));
+  if(result.error && /updated_at|column .* does not exist/i.test(result.error.message || '')){
+    result = await fetchPagedBusinessRows(table);
+    if(!result.error) await writeBriptaCache(table, result.data, Date.now());
+    return result;
+  }
+  if(result.error) return {data: cached.rows || [], error: null, stale: true};
+  const merged = new Map((cached.rows || []).filter(r=>r?.id).map(r=>[r.id,r]));
+  (result.data || []).filter(r=>r?.id).forEach(r=>merged.set(r.id,r));
+  const rows = [...merged.values()];
+  await writeBriptaCache(table, rows, cached.fullSyncAt);
+  return {data: rows, error: null, fromCache: true};
+}
+function hydrateBriptaRelations(){
+  const clientsById = new Map((cachedData.clients || []).map(c=>[c.id,c]));
+  (cachedData.loans || []).forEach(l => {
+    l.loan_clients = l.loan_clients || clientsById.get(l.client_id) || null;
+  });
+  const loansById = new Map((cachedData.loans || []).map(l=>[l.id,l]));
+  (cachedData.repayments || []).forEach(r => {
+    const loan = loansById.get(r.loan_id);
+    if(loan) r.loans = r.loans || loan;
+  });
+}
+async function loadBriptaTables(tables){
+  const uniqueTables = [...new Set(tables)];
+  const results = await Promise.all(uniqueTables.map(t=>fetchBriptaTableOptimized(t)));
+  results.forEach((res,i)=>{
+    const table = uniqueTables[i];
+    if(res.error) throw res.error;
+    const key = BRIPTA_CACHE_MAP[table] || table;
+    cachedData[key] = res.data || [];
+  });
+  hydrateBriptaRelations();
+  return cachedData;
+}
+
 // ═══ KEEP ALIVE PING ═══
 // Pings Supabase to reset the 7-day pause timer
 async function keepSupabaseAlive() {
@@ -1636,21 +1755,13 @@ async function renderDashboard(){
   if(!currentUser?.business_id) return;
   try{
     const todayFetch=today();
-    const[loansR,schedR,todaySchedR,repR,appsR,clientsR]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id),
-      sb('loan_schedules').select('*').eq('business_id', currentUser.business_id).limit(50000),
-      sb('loan_schedules').select('*').eq('business_id', currentUser.business_id).eq('due_date', todayFetch),
-      sb('loan_repayments').select('*').eq('business_id', currentUser.business_id),
-      sb('loan_applications').select('*').eq('business_id', currentUser.business_id),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id', currentUser.business_id)
-    ]);
-    const allLoans=loansR.data||[];
-    const allScheds=schedR.data||[];
-    const todayScheds=todaySchedR.data||[];
-    const allReps=repR.data||[];
-    const allApps=appsR.data||[];
-    const allClients=clientsR.data||[];
-    cachedData={loans:allLoans,schedules:allScheds,repayments:allReps,applications:allApps,clients:allClients};
+    await loadBriptaTables(['loan_clients','loans','loan_schedules','loan_repayments','loan_applications']);
+    const allLoans=(cachedData.loans||[]).slice();
+    const allScheds=(cachedData.schedules||[]).slice();
+    const todayScheds=allScheds.filter(s=>s.due_date===todayFetch);
+    const allReps=(cachedData.repayments||[]).slice();
+    const allApps=(cachedData.applications||[]).slice();
+    const allClients=(cachedData.clients||[]).map(c=>({id:c.id,created_at:c.created_at,notes:c.notes}));
     const f = appFilters.dashboard;
     const todayStr = today();
 
@@ -1892,12 +2003,12 @@ async function renderClients(page=1){
   clientPage=page;const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   try{
-    const{data:clients,error}=await sb('loan_clients').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
-    if(error)throw error;
+    await loadBriptaTables(['loan_clients','loan_staff','loans']);
+    const clients=(cachedData.clients||[]).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
 
-    // Fetch staff and ALL loans (not just active) to map clients to officers — prefer most recent
-    const {data:staffData}=await sb('loan_staff').select('id,name').eq('business_id', currentUser.business_id);
-    const {data:loansData}=await sb('loans').select('client_id,loan_officer_id,status,disbursement_date').eq('business_id', currentUser.business_id).order('disbursement_date', {ascending: false});
+    // Use staff and all loans to map clients to officers — prefer most recent.
+    const staffData=cachedData.staff||[];
+    const loansData=(cachedData.loans||[]).slice().sort((a,b)=>String(b.disbursement_date||b.created_at||'').localeCompare(String(a.disbursement_date||a.created_at||'')));
 
     window._staffMap = {};
     (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
@@ -1909,7 +2020,7 @@ async function renderClients(page=1){
       }
     });
     // Fallback: parse [OFFICER:uuid] tag from client notes for clients with no loan
-    (clients||[]).forEach(c=>{
+    clients.forEach(c=>{
       if(!window._clientOffMap[c.id]){
         const m = String(c.notes||'').match(/\[OFFICER:([^\]]+)\]/);
         if(m) window._clientOffMap[c.id] = m[1];
@@ -2927,9 +3038,9 @@ let loanPage=1;
 async function renderLoans(page=1){
   loanPage=page;const main=$('#mainContent');
   try{
-    const{data:loans}=await sb('loans').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
-
-    const {data:staffData}=await sb('loan_staff').select('id,name').eq('business_id', currentUser.business_id);
+    await loadBriptaTables(['loan_clients','loans','loan_staff']);
+    const loans=(cachedData.loans||[]).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+    const staffData=cachedData.staff||[];
     window._staffMap = {};
     (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
 
@@ -3506,7 +3617,11 @@ let repPage=1;
 async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
   try{
-    const{data:reps}=await sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,outstanding_balance,total_paid,status,processing_fee,total_payable,disbursement_date,loan_clients(full_name,phone))').eq('business_id', currentUser.business_id).order('payment_date',{ascending:false}).order('created_at',{ascending:false});
+    await loadBriptaTables(['loan_clients','loans','loan_repayments']);
+    const reps=(cachedData.repayments||[]).slice().sort((a,b)=>{
+      const bd=String(b.payment_date||'').localeCompare(String(a.payment_date||''));
+      return bd || String(b.created_at||'').localeCompare(String(a.created_at||''));
+    });
 
     const f = appFilters.repayments || { type: 'this_month', start: '', end: '' };
     // Filter by the same Kenya business date shown in the table. M-Pesa
@@ -4108,15 +4223,11 @@ async function renderOverdue(opts){
     // For loan officers: filter to only their assigned loans
     const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
 
-    // Fetch active loans — officers see only their own, admins see all
-    let loansQuery = sb('loans').select('*,loan_clients(full_name,phone,address)')
-      .eq('business_id',currentUser.business_id).eq('status','active').order('overdue_days',{ascending:false});
-    if(isOfficerOnly) loansQuery = loansQuery.eq('loan_officer_id', currentUser.id);
-
-    const [{data:loans},{data:staffList}]=await Promise.all([
-      loansQuery,
-      sb('loan_staff').select('id,name').eq('business_id',currentUser.business_id)
-    ]);
+    await loadBriptaTables(['loan_clients','loans','loan_schedules','loan_staff']);
+    let loans = (cachedData.loans||[]).filter(l=>l.status==='active');
+    if(isOfficerOnly) loans = loans.filter(l=>l.loan_officer_id === currentUser.id);
+    loans.sort((a,b)=>Number(b.overdue_days||0)-Number(a.overdue_days||0));
+    const staffList = cachedData.staff || [];
 
     // Populate global staff map so buildDueTodayTable / buildDuesTable can also use it
     window._staffMap = {};
@@ -4131,14 +4242,10 @@ async function renderOverdue(opts){
     cachedData.loans = loans || [];
 
     const loanIds=(loans||[]).map(l=>l.id);
-    let allScheds=[];
-    if(loanIds.length){
-      const{data:scheds}=await sb('loan_schedules')
-        .select('*').in('loan_id',loanIds)
-        .lt('due_date',asOfDate)
-        .order('due_date',{ascending:true});
-      allScheds=scheds||[];
-    }
+    const loanIdSet = new Set(loanIds);
+    let allScheds=(cachedData.schedules||[])
+      .filter(s=>loanIdSet.has(s.loan_id) && s.due_date < asOfDate)
+      .sort((a,b)=>String(a.due_date||'').localeCompare(String(b.due_date||'')));
 
     // Build per-loan arrears based on asOfDate
     const loanMap={};
@@ -5922,34 +6029,17 @@ async function renderOfficerPerformance(){
   const main=$('#mainContent');
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
-    const[loansR,repsR,appsR,staffR]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name)').eq('business_id',currentUser.business_id),
-      sb('loan_repayments').select('*').eq('business_id',currentUser.business_id),
-      sb('loan_applications').select('*').eq('business_id',currentUser.business_id),
-      // FIX #13: loan_staff column is `name`, not `full_name`
-      sb('loan_staff').select('id,name,email,role').eq('business_id',currentUser.business_id)
-    ]);
-    const allLoans=loansR.data||[];
-    const allReps=repsR.data||[];
-    const allApps=appsR.data||[];
-    const allStaff=staffR.data||[];
+    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_applications','loan_staff','loan_schedules']);
+    const allLoans=cachedData.loans||[];
+    const allReps=cachedData.repayments||[];
+    const allApps=cachedData.applications||[];
+    const allStaff=cachedData.staff||[];
 
-    // Fetch schedules in small loan batches so Supabase's per-request row cap
-    // cannot hide older installments from the arrears calculation.
     const activeLoanIds=allLoans.filter(l=>l.status==='active').map(l=>l.id);
-    const scheduleChunks=[];
-    for(let i=0;i<activeLoanIds.length;i+=35) scheduleChunks.push(activeLoanIds.slice(i,i+35));
-    const scheduleResults=await Promise.all(scheduleChunks.map(ids=>
-      sb('loan_schedules')
-        .select('loan_id,due_date,total_due,total_paid,status')
-        .in('loan_id',ids)
-        .lt('due_date',today())
-        .order('due_date',{ascending:true})
-        .limit(1000)
-    ));
-    const scheduleError=scheduleResults.find(result=>result.error)?.error;
-    if(scheduleError) throw scheduleError;
-    const pastDueSchedules=scheduleResults.flatMap(result=>result.data||[]);
+    const activeLoanIdSet=new Set(activeLoanIds);
+    const pastDueSchedules=(cachedData.schedules||[])
+      .filter(s=>activeLoanIdSet.has(s.loan_id) && s.due_date<today())
+      .sort((a,b)=>String(a.due_date||'').localeCompare(String(b.due_date||'')));
     const arrearsByLoan={};
     pastDueSchedules.forEach(schedule=>{
       const unpaid=Math.max(0,Number(schedule.total_due||0)-Number(schedule.total_paid||0));
@@ -6128,22 +6218,25 @@ async function renderAccounting() {
     const qFetchStart=shiftISODate(qStart,-1);
     const qEndFull = shiftISODate(qEnd,1) + 'T23:59:59+00:00';
 
-    const[loansR,repR,cliR,penR,allLoansMapR]=await Promise.all([
-      sb('loans').select('id,client_id,loan_no,principal_amount,disbursed_amount,total_interest,total_payable,processing_fee,disbursement_date,status,loan_officer_id').eq('business_id',biz).gte('disbursement_date',qFetchStart).lte('disbursement_date',qEndFull).order('disbursement_date', {ascending: false}).limit(100000),
-      sb('loan_repayments').select('id,loan_id,amount,interest_portion,principal_portion,penalty_portion,registration_fee_portion,processing_fee_portion,loan_portion,credit_portion,payment_date,payment_method,created_at').eq('business_id',biz).gte('payment_date',qFetchStart).lte('payment_date',qEndFull).order('payment_date', {ascending: false}).limit(100000),
-      sb('loan_clients').select('id,created_at,notes').eq('business_id',biz).gte('created_at',qFetchStart).lte('created_at',qEndFull).order('created_at', {ascending: false}).limit(100000),
-      sb('loan_penalties').select('id,loan_id,penalty_amount,date_charged,is_waived').eq('business_id',biz).eq('is_waived',false).gte('date_charged',qFetchStart).lte('date_charged',qEndFull).order('date_charged', {ascending: false}).limit(100000),
-      sb('loans').select('id,client_id,total_interest,total_payable,loan_officer_id').eq('business_id',biz).order('disbursement_date', {ascending: false}).limit(100000)
-    ]);
-    if(loansR.error) throw new Error('Loans fetch error: '+loansR.error.message);
-    if(repR.error) throw new Error('Repayments fetch error: '+repR.error.message);
-    if(cliR.error) throw new Error('Clients fetch error: '+cliR.error.message);
+    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_penalties','loan_staff']);
 
-    const allLoans = loansR.data||[];
-    const allLoansForMapping = allLoansMapR.data||allLoans;
-    const allReps = repR.data||[];
-    const allClients = cliR.data||[];
-    const allPenalties = penR.data||[];
+    const allLoans = (cachedData.loans||[]).filter(l=>{
+      const d=String(l.disbursement_date||'');
+      return d && d>=qFetchStart && d<=qEndFull;
+    }).sort((a,b)=>String(b.disbursement_date||'').localeCompare(String(a.disbursement_date||'')));
+    const allLoansForMapping = cachedData.loans||allLoans;
+    const allReps = (cachedData.repayments||[]).filter(r=>{
+      const d=String(r.payment_date||'');
+      return d && d>=qFetchStart && d<=qEndFull;
+    }).sort((a,b)=>String(b.payment_date||'').localeCompare(String(a.payment_date||'')));
+    const allClients = (cachedData.clients||[]).filter(c=>{
+      const d=String(c.created_at||'');
+      return d && d>=qFetchStart && d<=qEndFull;
+    }).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+    const allPenalties = (cachedData.penalties||[]).filter(p=>{
+      const d=String(p.date_charged||'');
+      return !p.is_waived && d && d>=qFetchStart && d<=qEndFull;
+    }).sort((a,b)=>String(b.date_charged||'').localeCompare(String(a.date_charged||'')));
 
     // Build loan lookup map for fast interest ratio calculation
     const loanMap = {};
@@ -6206,7 +6299,7 @@ async function renderAccounting() {
     allLoansForMapping.forEach(l => { if(l.loan_officer_id && !clientToOfficer[l.client_id]) clientToOfficer[l.client_id] = l.loan_officer_id; });
 
     const officerStats = {};
-    const { data: staffData } = await sb('loan_staff').select('id, name, role').eq('business_id', biz);
+    const staffData = cachedData.staff || [];
     (staffData || []).forEach(s => {
       // Exclude Admin from Officer Performance
       if (!(s.role || '').includes('admin')) {
