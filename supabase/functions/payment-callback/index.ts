@@ -34,6 +34,25 @@ function mpesaDate(value: unknown) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
+async function sendRepaymentSms(supabaseUrl: string, serviceKey: string, repaymentId: string | null | undefined) {
+  if (!repaymentId) return;
+  try {
+    const response = await fetch(`${supabaseUrl}/functions/v1/send-repayment-sms`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ repayment_id: repaymentId }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) console.error("Repayment SMS request failed", response.status, await response.text());
+  } catch (error) {
+    // Payment processing is already complete. Keep the SMS queued for retry.
+    console.error("Could not request repayment SMS", repaymentId, error);
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -238,6 +257,7 @@ serve(async (req) => {
             })
             .eq("id", queueId);
         }
+        await sendRepaymentSms(supabaseUrl, supabaseKey, feeResult?.repayment_id);
         return accepted;
       }
 
@@ -385,6 +405,8 @@ serve(async (req) => {
         })
         .eq("id", queueId);
     }
+
+    await sendRepaymentSms(supabaseUrl, supabaseKey, repayment.id);
 
     return accepted;
   } catch (error) {

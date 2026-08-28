@@ -1408,6 +1408,7 @@ function showApp(){
   loadCachedServiceBilling();
   renderServiceBillingOverlay();
   loadServiceBillingStatus({ silent:true });
+  setTimeout(checkSmsWalletAlert,1200);
   setTimeout(applyRolloverPenalties,2000);
 }
 
@@ -1433,6 +1434,7 @@ function buildSidebar() {
     { id: 'officer_performance', icon: '★', label: 'Officer Performance', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'officer_dashboard', icon: '◉', label: 'My Dashboard', roles: ['loan_officer'] },
     { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager'] },
+    { id: 'sms_center', icon: 'M', label: 'SMS Centre', roles: ['admin', 'branch_manager'] },
     { id: 'suspense', icon: '?', label: 'Suspense Account', roles: ['admin', 'branch_manager', 'cashier'] },
     { id: 'excess_charges', icon: 'E', label: 'Excess & Charges', roles: ['admin'] },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
@@ -1555,7 +1557,7 @@ function navigateTo(section){
     dashboard:renderDashboard,clients:renderClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,excess_charges:renderExcessCharges,
-    accounting:renderAccounting,staff:renderStaff,calculator:renderCalculator,
+    accounting:renderAccounting,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
   if(renderers[section])renderers[section]();
@@ -3832,6 +3834,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
       status: mpNewBalance <= 0 ? 'completed' : mpLoanRef.status
     }).eq('id', loan.id);
     await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loan.id,repayment_id:repayment?.id||null}).eq('id',queueId);
+    triggerRepaymentSms(repayment?.id);
     await audit('mpesa_payment_confirmed','loan_repayments',null,null,rec);
     const mpToastMsg = mpMinInt.adjusted
       ? `M-Pesa payment ${receiptNo} confirmed! Minimum interest applied — client still owes KES ${fmtMoney(mpMinInt.shortfall)}.`
@@ -4092,7 +4095,7 @@ async function savePayment(){
     const allocationText=paymentAllocationText(allocation);
     const userNote=($('#payNotes').value||'').trim();
     const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),sender_name:($('#paySenderName')?.value||'').trim(),sender_phone:($('#paySenderPhone')?.value||'').trim(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id};
-    const{error}=await sb('loan_repayments').insert(rec);
+    const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
     if(error)throw error;
     await persistPaymentAllocation(loan,allocation);
 
@@ -4175,6 +4178,7 @@ async function savePayment(){
       arrears_amount:newBalance<=0?0:Number(Math.max(0,newArrears).toFixed(2))
     }).eq('id',loanId);
 
+    triggerRepaymentSms(repayment?.id);
     await audit('payment_recorded','loan_repayments',null,null,rec);
     const toastMsg = minIntResult.adjusted
       ? `Payment ${receiptNo} recorded! Remaining interest balance: KES ${fmtMoney(minIntResult.shortfall)}`
@@ -5583,7 +5587,7 @@ async function confirmResolveExcess(excessId,action){
 }
 
 async function settleBriptaCharge(chargeId,action){
-  const wording=action==='paid'?'mark this charge as paid':'waive this charge';if(!await confirm_(`Confirm that you want to ${wording}?`))return;const note=prompt('Reference or reason:')||'';if(!note)return toast('A reference or reason is required','warning');const{data,error}=await supabaseClient.rpc('bripta_settle_charge',{p_charge_id:chargeId,p_action:action,p_note:note});if(error)return toast(error.message,'error');await audit('charge_settled','bripta_charges',chargeId,null,data);toast(action==='paid'?'Charge marked as paid':'Charge waived','success');renderExcessCharges();
+  const wording=action==='paid'?'mark this charge as paid':'waive this charge';if(!await confirm_(`Confirm that you want to ${wording}?`))return;const note=prompt('Reference or reason:')||'';if(!note)return toast('A reference or reason is required','warning');const{data,error}=await supabaseClient.rpc('bripta_settle_charge',{p_charge_id:chargeId,p_action:action,p_note:note});if(error)return toast(error.message,'error');if(action==='paid'&&data?.repayment_id)triggerRepaymentSms(data.repayment_id);await audit('charge_settled','bripta_charges',chargeId,null,data);toast(action==='paid'?'Charge marked as paid':'Charge waived','success');renderExcessCharges();
 }
 
 const selectedSuspenseEntries=new Set();
@@ -5991,6 +5995,8 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       arrears_amount:newBal<=0?0:Number(Math.max(0,newArrears).toFixed(2))
     }).eq('id',loanId);
 
+    triggerRepaymentSms(repayment?.id);
+
     // Mark suspense entry as matched
     if(entryType==='mpesa'){
       await sb('mpesa_callback_queue').update({confirmed:true,loan_id:loanId,repayment_id:repayment?.id||null}).eq('id',entryId);
@@ -6254,6 +6260,102 @@ function copyCallbackUrl(){
 
 
 // ═══ ACCOUNTING ═══
+async function triggerRepaymentSms(repaymentId){
+  if(!repaymentId)return;
+  try{
+    const{error}=await supabaseClient.functions.invoke('send-repayment-sms',{body:{repayment_id:repaymentId}});
+    if(error)console.warn('Repayment SMS remains queued:',error.message||error);
+  }catch(error){
+    console.warn('Repayment SMS remains queued:',error?.message||error);
+  }
+}
+
+async function checkSmsWalletAlert(){
+  if(!currentUser||!hasRole('admin','branch_manager'))return;
+  try{
+    const{data:wallet}=await sb('bripta_sms_wallets').select('*').eq('business_id',currentUser.business_id).maybeSingle();
+    if(!wallet)return;
+    const remaining=Math.max(0,Number(wallet.credits_purchased||0)-Number(wallet.credits_used||0));
+    if(remaining>Number(wallet.low_balance_threshold||100))return;
+    const key=`bripta_sms_alert_${currentUser.business_id}_${today()}_${remaining}`;
+    if(localStorage.getItem(key))return;
+    localStorage.setItem(key,'1');
+    toast(remaining<=0?'SMS credits are exhausted. Purchase a new bundle to continue sending repayment messages.':`SMS credits are running low: ${remaining} remaining.`,'warning');
+  }catch(_){ /* SMS setup may not be deployed yet. */ }
+}
+
+function smsStatusBadge(status){
+  const colours={sent:'badge-green',queued:'badge-blue',sending:'badge-blue',failed:'badge-red',delivery_unknown:'badge-yellow',blocked_no_credit:'badge-yellow'};
+  return `<span class="badge ${colours[status]||'badge-gray'}">${escapeHtml(String(status||'').replace(/_/g,' '))}</span>`;
+}
+
+async function renderSmsCenter(){
+  const main=$('#mainContent');
+  try{
+    const[{data:wallet,error:walletError},{data:messages,error:messagesError},{data:topups}]=await Promise.all([
+      sb('bripta_sms_wallets').select('*').eq('business_id',currentUser.business_id).maybeSingle(),
+      sb('bripta_sms_outbox').select('*').eq('business_id',currentUser.business_id).order('queued_at',{ascending:false}).limit(100),
+      sb('bripta_sms_topups').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(10)
+    ]);
+    if(walletError)throw walletError;
+    if(messagesError)throw messagesError;
+    const purchased=Number(wallet?.credits_purchased||0);
+    const used=Number(wallet?.credits_used||0);
+    const remaining=Math.max(0,purchased-used);
+    const threshold=Number(wallet?.low_balance_threshold||100);
+    const rows=messages||[];
+    const sent=rows.filter(r=>r.status==='sent').length;
+    const attention=rows.filter(r=>['failed','delivery_unknown','blocked_no_credit'].includes(r.status)).length;
+    main.innerHTML=`
+      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment confirmations sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
+      ${remaining<=threshold?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow);background:rgba(217,119,6,.07)"><strong style="color:var(--accent-yellow)">${remaining<=0?'SMS credits are exhausted':'SMS credits are running low'}</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Purchase a new SMS bundle to keep repayment messages active.</div></div>`:''}
+      <div class="kpi-grid" style="margin-bottom:18px">
+        <div class="kpi-card"><div class="kpi-label">SMS Remaining</div><div class="kpi-value" style="color:${remaining<=threshold?'var(--accent-yellow)':'var(--accent-green)'}">${remaining.toLocaleString()}</div><div class="kpi-sub">Available SMS credits</div></div>
+        <div class="kpi-card"><div class="kpi-label">Credits Purchased</div><div class="kpi-value">${purchased.toLocaleString()}</div><div class="kpi-sub">All Bripta bundles</div></div>
+        <div class="kpi-card"><div class="kpi-label">Messages Sent</div><div class="kpi-value" style="color:var(--accent-green)">${sent.toLocaleString()}</div><div class="kpi-sub">Latest 100 records</div></div>
+        <div class="kpi-card"><div class="kpi-label">Needs Attention</div><div class="kpi-value" style="color:${attention?'var(--accent-yellow)':'var(--accent-green)'}">${attention}</div><div class="kpi-sub">Failed, blocked or uncertain</div></div>
+      </div>
+      <div class="card" style="margin-bottom:18px"><h3 style="font-size:14px;margin-bottom:10px">Recent SMS activity</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Client</th><th>Phone</th><th>Message</th><th>Credits</th><th>Status</th><th>Details</th></tr></thead><tbody>
+        ${rows.length?rows.map(r=>`<tr><td>${fmtDateTime(r.queued_at)}</td><td><strong>${escapeHtml(r.client_name||'-')}</strong></td><td>${escapeHtml(r.recipient||'-')}</td><td style="min-width:260px;white-space:normal">${escapeHtml(r.message||'Waiting for final payment balance')}</td><td>${Number(r.segments||0)||'-'}</td><td>${smsStatusBadge(r.status)}</td><td style="font-size:11px;color:var(--text-secondary);white-space:normal">${escapeHtml(r.last_error||r.provider_uid||'-')}</td></tr>`).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:18px">No repayment SMS records yet</td></tr>'}
+      </tbody></table></div></div>
+      <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Bundle history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Payment Reference</th><th>Note</th></tr></thead><tbody>
+        ${(topups||[]).length?(topups||[]).map(t=>`<tr><td>${fmtDateTime(t.created_at)}</td><td><strong>${Number(t.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(t.customer_reference||'-')}</td><td>${escapeHtml(t.note||'-')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No SMS bundles purchased yet</td></tr>'}
+      </tbody></table></div></div>`;
+  }catch(error){
+    main.innerHTML=`<div class="empty-state"><h3>SMS Centre is not ready</h3><p>${escapeHtml(error.message||'Run the Bripta TalkSasa SMS wallet SQL setup.')}</p></div>`;
+  }
+}
+
+async function processPendingSms(btn){
+  if(btn){btn.disabled=true;btn.textContent='Processing...';}
+  try{
+    const{data,error}=await supabaseClient.functions.invoke('send-repayment-sms',{body:{}});
+    if(error)throw error;
+    const processed=Number(data?.processed||0);
+    toast(processed?`${processed} pending SMS record${processed===1?'':'s'} processed.`:'No pending SMS records found.','success');
+    renderSmsCenter();
+  }catch(error){
+    toast(error.message||'Could not process pending SMS records','error');
+    if(btn){btn.disabled=false;btn.textContent='Retry pending';}
+  }
+}
+
+function openSmsBundleRequest(){
+  openModal(`
+    <h2>Request SMS Bundle</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose the number of SMS credits Bripta would like to purchase.</p>
+    <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty"><option value="1000">1,000 SMS</option><option value="2500">2,500 SMS</option><option value="5000">5,000 SMS</option><option value="10000">10,000 SMS</option></select></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="copySmsBundleRequest()">Copy Request</button></div>
+  `);
+}
+
+async function copySmsBundleRequest(){
+  const qty=Number(document.getElementById('smsBundleQty')?.value||1000).toLocaleString();
+  const text=`Hello, Bripta would like to purchase ${qty} SMS credits. Kindly send us the payment instructions.`;
+  try{await navigator.clipboard.writeText(text);toast('SMS bundle request copied.','success');closeModal();}
+  catch(_){toast(text,'info');}
+}
+
 async function renderAccounting() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
