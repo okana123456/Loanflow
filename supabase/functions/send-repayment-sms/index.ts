@@ -61,6 +61,72 @@ function providerUid(payload: any) {
   ).trim() || null;
 }
 
+async function deliverClaim(
+  admin: ReturnType<typeof createClient>,
+  talksasaToken: string,
+  sendUrl: string,
+  claim: any,
+) {
+  const recipient = kenyaPhone(claim.recipient);
+  if (!recipient) {
+    await admin.rpc("bripta_complete_repayment_sms", {
+      p_outbox_id: claim.outbox_id,
+      p_status: "failed",
+      p_error: "Recipient phone number is invalid",
+      p_refund: true,
+    });
+    return { ok: false, code: "invalid_phone" };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(sendUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${talksasaToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        recipient,
+        sender_id: claim.sender_id || "BRIPTA",
+        type: "plain",
+        message: claim.message,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await admin.rpc("bripta_complete_repayment_sms", {
+      p_outbox_id: claim.outbox_id,
+      p_status: "delivery_unknown",
+      p_error: `TalkSasa did not return a definite result: ${message}`,
+      p_refund: false,
+    });
+    return { ok: false, code: "delivery_unknown" };
+  }
+
+  const responseText = await response.text();
+  let providerResponse: any = { raw: responseText };
+  try { providerResponse = responseText ? JSON.parse(responseText) : {}; } catch (_) { /* keep raw response */ }
+  const providerError = String(providerResponse?.message || providerResponse?.error || `HTTP ${response.status}`);
+  const accepted = response.ok && String(providerResponse?.status || "success").toLowerCase() !== "error";
+
+  await admin.rpc("bripta_complete_repayment_sms", {
+    p_outbox_id: claim.outbox_id,
+    p_status: accepted ? "sent" : "failed",
+    p_provider_uid: accepted ? providerUid(providerResponse) : null,
+    p_provider_response: providerResponse,
+    p_error: accepted ? null : providerError,
+    p_refund: !accepted,
+  });
+  return {
+    ok: accepted,
+    status: accepted ? "sent" : "failed",
+    provider_uid: accepted ? providerUid(providerResponse) : null,
+  };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, message: "Method not allowed" }, 405);
@@ -80,6 +146,22 @@ serve(async (req) => {
   if (!callerBusiness) return json({ ok: false, message: "Unauthorized" }, 401);
 
   const body = await req.json().catch(() => ({}));
+  const testPhone = String(body?.test_phone || "").trim();
+  if (testPhone) {
+    if (callerBusiness !== "__service_role__") {
+      return json({ ok: false, message: "SMS tests require service-role authorization" }, 403);
+    }
+    const { data: claim, error: claimError } = await admin.rpc("bripta_claim_test_sms", {
+      p_business_id: "BIZ-B3F5E5D9",
+      p_phone: testPhone,
+    });
+    if (claimError) return json({ ok: false, message: claimError.message }, 500);
+    if (!claim?.ok || claim?.already_sent) return json(claim || { ok: false }, claim?.ok ? 200 : 400);
+
+    const result = await deliverClaim(admin, talksasaToken, sendUrl, claim);
+    return json({ ...result, test: true, recipient: kenyaPhone(testPhone) });
+  }
+
   const requestedRepaymentId = String(body?.repayment_id || "").trim();
   let repaymentIds: string[] = [];
 
@@ -123,67 +205,8 @@ serve(async (req) => {
       continue;
     }
 
-    const recipient = kenyaPhone(claim.recipient);
-    if (!recipient) {
-      await admin.rpc("bripta_complete_repayment_sms", {
-        p_outbox_id: claim.outbox_id,
-        p_status: "failed",
-        p_error: "Client phone number is invalid",
-        p_refund: true,
-      });
-      results.push({ repayment_id: repaymentId, ok: false, code: "invalid_phone" });
-      continue;
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(sendUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${talksasaToken}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          recipient,
-          sender_id: claim.sender_id || "BRIPTA",
-          type: "plain",
-          message: claim.message,
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await admin.rpc("bripta_complete_repayment_sms", {
-        p_outbox_id: claim.outbox_id,
-        p_status: "delivery_unknown",
-        p_error: `TalkSasa did not return a definite result: ${message}`,
-        p_refund: false,
-      });
-      results.push({ repayment_id: repaymentId, ok: false, code: "delivery_unknown" });
-      continue;
-    }
-
-    const responseText = await response.text();
-    let providerResponse: any = { raw: responseText };
-    try { providerResponse = responseText ? JSON.parse(responseText) : {}; } catch (_) { /* keep raw response */ }
-    const providerError = String(providerResponse?.message || providerResponse?.error || `HTTP ${response.status}`);
-    const accepted = response.ok && String(providerResponse?.status || "success").toLowerCase() !== "error";
-
-    await admin.rpc("bripta_complete_repayment_sms", {
-      p_outbox_id: claim.outbox_id,
-      p_status: accepted ? "sent" : "failed",
-      p_provider_uid: accepted ? providerUid(providerResponse) : null,
-      p_provider_response: providerResponse,
-      p_error: accepted ? null : providerError,
-      p_refund: !accepted,
-    });
-    results.push({
-      repayment_id: repaymentId,
-      ok: accepted,
-      status: accepted ? "sent" : "failed",
-      provider_uid: accepted ? providerUid(providerResponse) : null,
-    });
+    const result = await deliverClaim(admin, talksasaToken, sendUrl, claim);
+    results.push({ repayment_id: repaymentId, ...result });
   }
 
   return json({ ok: true, processed: results.length, results });

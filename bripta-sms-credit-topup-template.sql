@@ -4,9 +4,9 @@
 -- Your TalkSasa purchase cost is intentionally not stored.
 
 select public.bripta_owner_add_sms_credits(
-  p_business_id := 'BIZ-B3F5E5D9',
-  p_credits := 5,
-  p_customer_amount_paid := 0,
-  p_customer_reference := 'INTERNAL-TEST',
-  p_note := 'Bripta SMS integration test credits'
+  'BIZ-B3F5E5D9'::text,
+  5::integer,
+  0::numeric,
+  'INTERNAL-TEST'::text,
+  'Bripta SMS integration test credits'::text
 );
