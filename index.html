@@ -2943,7 +2943,34 @@ async function confirmDisburse(appId,clientId,termWeeks){
   const btn = document.getElementById('btnConfirmDisburse');
   if(btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try{
-    const {data: appCheck} = await sb('loan_applications').select('status').eq('id', appId).single();
+    const {data: appCheck,error:appCheckErr} = await sb('loan_applications')
+      .select('status,client_id,business_id')
+      .eq('id',appId)
+      .eq('business_id',currentUser?.business_id)
+      .single();
+    if(appCheckErr) throw appCheckErr;
+
+    // A previous attempt may have created the loan before the application
+    // status update completed. Reconcile that state instead of creating a
+    // second loan for the same application.
+    const {data:existingLoan,error:existingLoanErr}=await sb('loans')
+      .select('id,loan_no')
+      .eq('application_id',appId)
+      .eq('business_id',currentUser?.business_id)
+      .limit(1)
+      .maybeSingle();
+    if(existingLoanErr) throw existingLoanErr;
+    if(existingLoan){
+      const{error:reconcileErr}=await sb('loan_applications')
+        .update({status:'disbursed'})
+        .eq('id',appId)
+        .eq('business_id',currentUser?.business_id);
+      if(reconcileErr) throw reconcileErr;
+      toast(`Loan ${existingLoan.loan_no||''} was already disbursed. The application status is now corrected.`,'success');
+      closeModal();
+      renderDisbursement();
+      return;
+    }
     if(appCheck?.status === 'disbursed') {
         toast('This application has already been disbursed!', 'warning');
         closeModal();
@@ -3023,7 +3050,14 @@ async function confirmDisburse(appId,clientId,termWeeks){
         toast("Loan created, but schedule generation had an issue.", 'warning');
     }
 
-    await sb('loan_applications').update({status:'disbursed'}).eq('id',appId);
+    const{data:updatedApp,error:appStatusErr}=await sb('loan_applications')
+      .update({status:'disbursed'})
+      .eq('id',appId)
+      .eq('business_id',currentUser?.business_id)
+      .select('id,status')
+      .single();
+    if(appStatusErr)throw new Error(`Loan ${loanNo} was created, but the application status could not be updated: ${appStatusErr.message}`);
+    if(updatedApp?.status!=='disbursed')throw new Error(`Loan ${loanNo} was created, but its application status was not confirmed.`);
 
     await audit('loan_disbursed','loans',loan.id,null,loanRec);
     toast(`Loan ${loanNo} disbursed successfully!`,'success');closeModal();renderDisbursement();
