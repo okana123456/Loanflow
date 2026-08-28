@@ -6307,7 +6307,7 @@ async function renderSmsCenter(){
     const sent=rows.filter(r=>r.status==='sent').length;
     const attention=rows.filter(r=>['failed','delivery_unknown','blocked_no_credit'].includes(r.status)).length;
     main.innerHTML=`
-      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment confirmations sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
+      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment confirmations sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openSmsTestModal()">Send test</button><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
       ${remaining<=threshold?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow);background:rgba(217,119,6,.07)"><strong style="color:var(--accent-yellow)">${remaining<=0?'SMS credits are exhausted':'SMS credits are running low'}</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Purchase a new SMS bundle to keep repayment messages active.</div></div>`:''}
       <div class="kpi-grid" style="margin-bottom:18px">
         <div class="kpi-card"><div class="kpi-label">SMS Remaining</div><div class="kpi-value" style="color:${remaining<=threshold?'var(--accent-yellow)':'var(--accent-green)'}">${remaining.toLocaleString()}</div><div class="kpi-sub">Available SMS credits</div></div>
@@ -6337,6 +6337,38 @@ async function processPendingSms(btn){
   }catch(error){
     toast(error.message||'Could not process pending SMS records','error');
     if(btn){btn.disabled=false;btn.textContent='Retry pending';}
+  }
+}
+
+function openSmsTestModal(){
+  openModal(`
+    <h2>Send Test SMS</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Send one Bripta SMS test to confirm TalkSasa delivery.</p>
+    <div class="form-group">
+      <label>Phone number</label>
+      <input class="input" id="smsTestPhone" placeholder="e.g. 0792719505" inputmode="tel" value="0792719505">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="sendSmsTest(this)">Send Test</button>
+    </div>
+  `);
+}
+
+async function sendSmsTest(btn){
+  const phone=(document.getElementById('smsTestPhone')?.value||'').trim();
+  if(!phone)return toast('Enter a phone number first','warning');
+  if(btn){btn.disabled=true;btn.textContent='Sending...';}
+  try{
+    const{data,error}=await supabaseClient.functions.invoke('send-repayment-sms',{body:{test_phone:phone}});
+    if(error)throw error;
+    if(!data?.ok)throw new Error(data?.message||data?.code||'SMS test failed');
+    toast(`Test SMS sent to ${data.recipient||phone}`,'success');
+    closeModal();
+    renderSmsCenter();
+  }catch(error){
+    toast(error.message||'Could not send test SMS','error');
+    if(btn){btn.disabled=false;btn.textContent='Send Test';}
   }
 }
 

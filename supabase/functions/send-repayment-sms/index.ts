@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-test-pin",
 };
 
 function json(body: Record<string, unknown>, status = 200) {
@@ -25,12 +25,19 @@ async function callerBusinessId(
   admin: ReturnType<typeof createClient>,
   serviceKey: string,
 ) {
-  const authorization = req.headers.get("Authorization") || "";
-  const token = authorization.replace(/^Bearer\s+/i, "").trim();
-  if (!token) return null;
-  if (token === serviceKey) return "__service_role__";
+  const tokens = [
+    req.headers.get("Authorization"),
+    req.headers.get("apikey"),
+    req.headers.get("x-supabase-auth-token"),
+  ]
+    .map((value) => String(value || "").replace(/^Bearer\s+/i, "").trim())
+    .filter(Boolean);
 
-  const { data: userData, error: userError } = await admin.auth.getUser(token);
+  if (!tokens.length) return null;
+  if (tokens.includes(serviceKey)) return "__service_role__";
+
+  const userToken = tokens[0];
+  const { data: userData, error: userError } = await admin.auth.getUser(userToken);
   if (userError || !userData.user) return null;
 
   let query = admin
@@ -59,6 +66,64 @@ function providerUid(payload: any) {
     payload?.data?.uid || payload?.data?.id || payload?.data?.message_id ||
     payload?.uid || payload?.id || payload?.message_id || "",
   ).trim() || null;
+}
+
+function kenyaTodayUtcBounds() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Nairobi",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const today = formatter.format(new Date());
+  const start = new Date(`${today}T00:00:00+03:00`);
+  const end = new Date(`${today}T23:59:59.999+03:00`);
+  return {
+    today,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+}
+
+async function sendTalkSasaDirect(talksasaToken: string, sendUrl: string, phone: unknown) {
+  const recipient = kenyaPhone(phone);
+  if (!recipient) return { ok: false, code: "invalid_phone", message: "Phone number is invalid" };
+
+  const message = "Bripta Enterprises SMS test successful. Repayment notifications are now active.";
+  let response: Response;
+  try {
+    response = await fetch(sendUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${talksasaToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        recipient,
+        sender_id: "BRIPTA",
+        type: "plain",
+        message,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { ok: false, code: "talksasa_unreachable", recipient, message: errorMessage };
+  }
+
+  const responseText = await response.text();
+  let providerResponse: any = { raw: responseText };
+  try { providerResponse = responseText ? JSON.parse(responseText) : {}; } catch (_) { /* keep raw response */ }
+  const accepted = response.ok && String(providerResponse?.status || "success").toLowerCase() !== "error";
+  return {
+    ok: accepted,
+    status: accepted ? "sent" : "failed",
+    recipient,
+    provider_uid: accepted ? providerUid(providerResponse) : null,
+    provider_response: providerResponse,
+    provider_error: accepted ? null : String(providerResponse?.message || providerResponse?.error || `HTTP ${response.status}`),
+  };
 }
 
 async function deliverClaim(
@@ -136,23 +201,90 @@ serve(async (req) => {
   const talksasaToken = Deno.env.get("TALKSASA_API_TOKEN")?.trim() || "";
   const sendUrl = Deno.env.get("TALKSASA_SEND_URL")?.trim() ||
     "https://bulksms.talksasa.com/api/v3/sms/send";
-  if (!supabaseUrl || !serviceKey) return json({ ok: false, message: "Supabase secrets are missing" }, 500);
   if (!talksasaToken) return json({ ok: false, code: "sms_not_configured", message: "TalkSasa token is not configured" }, 503);
+
+  const body = await req.json().catch(() => ({}));
+  const directTestPhone = String(body?.direct_test_phone || "").trim();
+  const processTodaySms = body?.process_today_sms === true;
+  if (directTestPhone) {
+    const expectedPin = Deno.env.get("BRIPTA_SMS_TEST_PIN")?.trim() || "";
+    const suppliedPin = String(req.headers.get("x-test-pin") || body?.test_pin || "").trim();
+    if (!expectedPin || suppliedPin !== expectedPin) {
+      return json({ ok: false, message: "Direct TalkSasa test requires the correct BRIPTA_SMS_TEST_PIN." }, 401);
+    }
+    return json(await sendTalkSasaDirect(talksasaToken, sendUrl, directTestPhone));
+  }
+
+  if (!supabaseUrl || !serviceKey) return json({ ok: false, message: "Supabase secrets are missing" }, 500);
 
   const admin = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const callerBusiness = await callerBusinessId(req, admin, serviceKey);
-  if (!callerBusiness) return json({ ok: false, message: "Unauthorized" }, 401);
 
-  const body = await req.json().catch(() => ({}));
+  if (processTodaySms) {
+    const expectedPin = Deno.env.get("BRIPTA_SMS_TEST_PIN")?.trim() || "";
+    const suppliedPin = String(req.headers.get("x-test-pin") || body?.test_pin || "").trim();
+    if (!expectedPin || suppliedPin !== expectedPin) {
+      return json({ ok: false, message: "Processing queued SMS requires the correct BRIPTA_SMS_TEST_PIN." }, 401);
+    }
+
+    const businessId = "BIZ-B3F5E5D9";
+    const limit = Math.max(1, Math.min(Number(body?.limit || 100), 200));
+    const bounds = kenyaTodayUtcBounds();
+    const { data: pending, error: pendingError } = await admin
+      .from("bripta_sms_outbox")
+      .select("repayment_id")
+      .eq("business_id", businessId)
+      .in("status", ["queued", "failed", "blocked_no_credit"])
+      .not("repayment_id", "is", null)
+      .gte("queued_at", bounds.startIso)
+      .lte("queued_at", bounds.endIso)
+      .order("queued_at", { ascending: true })
+      .limit(limit);
+
+    if (pendingError) return json({ ok: false, message: pendingError.message }, 500);
+
+    const results: Record<string, unknown>[] = [];
+    const repaymentIds = (pending || []).map((row) => row.repayment_id).filter(Boolean);
+    for (const repaymentId of repaymentIds) {
+      const { data: claim, error: claimError } = await admin.rpc("bripta_claim_repayment_sms", {
+        p_repayment_id: repaymentId,
+      });
+      if (claimError) {
+        results.push({ repayment_id: repaymentId, ok: false, error: claimError.message });
+        continue;
+      }
+      if (!claim?.ok || claim?.already_sent) {
+        results.push({ repayment_id: repaymentId, ...claim });
+        continue;
+      }
+      const result = await deliverClaim(admin, talksasaToken, sendUrl, claim);
+      results.push({ repayment_id: repaymentId, ...result });
+    }
+
+    return json({
+      ok: true,
+      mode: "process_today_sms",
+      business_id: businessId,
+      kenya_date: bounds.today,
+      queued_found: repaymentIds.length,
+      processed: results.length,
+      results,
+    });
+  }
+
+  const callerBusiness = await callerBusinessId(req, admin, serviceKey);
+  if (!callerBusiness) {
+    return json({
+      ok: false,
+      message: "Unauthorized: use this Bripta project's service_role key in Authorization or apikey.",
+    }, 401);
+  }
+
   const testPhone = String(body?.test_phone || "").trim();
   if (testPhone) {
-    if (callerBusiness !== "__service_role__") {
-      return json({ ok: false, message: "SMS tests require service-role authorization" }, 403);
-    }
     const { data: claim, error: claimError } = await admin.rpc("bripta_claim_test_sms", {
-      p_business_id: "BIZ-B3F5E5D9",
+      p_business_id: callerBusiness === "__service_role__" ? "BIZ-B3F5E5D9" : callerBusiness,
       p_phone: testPhone,
     });
     if (claimError) return json({ ok: false, message: claimError.message }, 500);
