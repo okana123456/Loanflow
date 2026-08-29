@@ -294,6 +294,31 @@ serve(async (req) => {
     return json({ ...result, test: true, recipient: kenyaPhone(testPhone) });
   }
 
+  const requestedClientId = String(body?.client_id || "").trim();
+  if (requestedClientId && String(body?.sms_type || "").trim() === "onboarding") {
+    const { data: outbox } = await admin
+      .from("bripta_sms_outbox")
+      .select("id,business_id,client_id,status")
+      .eq("client_id", requestedClientId)
+      .eq("message_type", "onboarding")
+      .order("queued_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!outbox) return json({ ok: false, code: "not_queued", message: "Client welcome SMS was not queued" }, 404);
+    if (callerBusiness !== "__service_role__" && outbox.business_id !== callerBusiness) {
+      return json({ ok: false, message: "Forbidden" }, 403);
+    }
+
+    const { data: claim, error: claimError } = await admin.rpc("bripta_claim_client_onboarding_sms", {
+      p_client_id: requestedClientId,
+    });
+    if (claimError) return json({ ok: false, message: claimError.message }, 500);
+    if (!claim?.ok || claim?.already_sent) return json(claim || { ok: false }, claim?.ok ? 200 : 400);
+
+    const result = await deliverClaim(admin, talksasaToken, sendUrl, claim);
+    return json({ ...result, onboarding: true, recipient: kenyaPhone(claim.recipient) });
+  }
+
   const requestedRepaymentId = String(body?.repayment_id || "").trim();
   let repaymentIds: string[] = [];
 

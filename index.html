@@ -505,7 +505,8 @@ const $ = (sel) => document.querySelector(sel);
 let appFilters = {
     dashboard: { type: 'this_month', start: '', end: '' },
     accounting: { type: 'this_month', start: '', end: '' },
-    repayments: { type: 'this_month', start: '', end: '' }
+    repayments: { type: 'this_month', start: '', end: '' },
+    sms: { type: 'today', start: '', end: '' }
 };
 
 function getDateFilterHtml(section) {
@@ -536,6 +537,7 @@ function updateDateFilter(section, type) {
         if(section==='dashboard') renderDashboard();
         if(section==='accounting') renderAccounting();
         if(section==='repayments') renderRepayments(1);
+        if(section==='sms') renderSmsCenter(1);
     } else {
         document.getElementById(section+'CustomDates').style.display = 'flex';
     }
@@ -547,6 +549,7 @@ function applyCustomDate(section) {
     if(section==='dashboard') renderDashboard();
     if(section==='accounting') renderAccounting();
     if(section==='repayments') renderRepayments(1);
+    if(section==='sms') renderSmsCenter(1);
 }
 
 function kenyaDateISO(value=new Date()){
@@ -2245,7 +2248,8 @@ async function saveClient(){
       if(window._clientOffMap) window._clientOffMap[data.id] = assignedOfficerId;
     }
     await audit('client_created','loan_clients',data.id,null,rec);
-    toast(`Client added. Loan repayments will reduce the loan balance in full.`,'success');closeModal();renderClients();
+    triggerClientOnboardingSms(data.id);
+    toast(`Client added. Welcome SMS will be sent if SMS credits are available.`,'success');closeModal();renderClients();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Save Client'; }
     toast(e.message,'error');
@@ -6270,6 +6274,16 @@ async function triggerRepaymentSms(repaymentId){
   }
 }
 
+async function triggerClientOnboardingSms(clientId){
+  if(!clientId)return;
+  try{
+    const{error}=await supabaseClient.functions.invoke('send-repayment-sms',{body:{client_id:clientId,sms_type:'onboarding'}});
+    if(error)console.warn('Client welcome SMS remains queued:',error.message||error);
+  }catch(error){
+    console.warn('Client welcome SMS remains queued:',error?.message||error);
+  }
+}
+
 async function checkSmsWalletAlert(){
   if(!currentUser||!hasRole('admin','branch_manager'))return;
   try{
@@ -6289,12 +6303,63 @@ function smsStatusBadge(status){
   return `<span class="badge ${colours[status]||'badge-gray'}">${escapeHtml(String(status||'').replace(/_/g,' '))}</span>`;
 }
 
-async function renderSmsCenter(){
+function smsDateRange(filterState){
+  const type=filterState?.type||'today';
+  const todayISO=kenyaDateISO(new Date());
+  let start=todayISO;
+  let end=todayISO;
+  if(type==='all') return {};
+  if(type==='yesterday') start=end=shiftISODate(todayISO,-1);
+  else if(type==='this_week'){
+    const todayUtc=new Date(`${todayISO}T00:00:00Z`);
+    const mondayOffset=(todayUtc.getUTCDay()+6)%7;
+    start=shiftISODate(todayISO,-mondayOffset);
+    end=todayISO;
+  }else if(type==='this_month'){
+    start=`${todayISO.slice(0,7)}-01`;
+    const nextMonth=new Date(`${start}T00:00:00Z`);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth()+1);
+    end=shiftISODate(kenyaDateISO(nextMonth),-1);
+  }else if(type==='custom'){
+    if(!filterState?.start||!filterState?.end)return {};
+    start=filterState.start;
+    end=filterState.end;
+  }
+  return {
+    startIso:new Date(`${start}T00:00:00+03:00`).toISOString(),
+    endIso:new Date(`${end}T23:59:59.999+03:00`).toISOString()
+  };
+}
+
+function smsKindLabel(row){
+  if(row.message_type==='onboarding')return 'Welcome';
+  if(row.message_type==='test'||row.client_name==='System test')return 'Test';
+  return 'Repayment';
+}
+
+function smsPageHtml(page,total,count,pageSize){
+  if(total<=1)return'';
+  return `<div class="pagination">
+    <button ${page<=1?'disabled':''} onclick="renderSmsCenter(${page-1})">Prev</button>
+    <span style="font-size:13px;color:var(--text-secondary)">Page ${page} of ${total} (${count} records)</span>
+    <button ${page>=total?'disabled':''} onclick="renderSmsCenter(${page+1})">Next</button>
+  </div>`;
+}
+
+async function renderSmsCenter(page=1){
   const main=$('#mainContent');
+  if(!appFilters.sms)appFilters.sms={type:'today',start:'',end:''};
+  const pageSize=25;
+  const safePage=Math.max(1,Number(page||1));
+  const from=(safePage-1)*pageSize;
+  const to=from+pageSize-1;
   try{
-    const[{data:wallet,error:walletError},{data:messages,error:messagesError},{data:topups}]=await Promise.all([
+    let msgQuery=sb('bripta_sms_outbox').select('*',{count:'exact'}).eq('business_id',currentUser.business_id);
+    const range=smsDateRange(appFilters.sms);
+    if(range.startIso&&range.endIso)msgQuery=msgQuery.gte('queued_at',range.startIso).lte('queued_at',range.endIso);
+    const[{data:wallet,error:walletError},{data:messages,error:messagesError,count:messageCount},{data:topups}]=await Promise.all([
       sb('bripta_sms_wallets').select('*').eq('business_id',currentUser.business_id).maybeSingle(),
-      sb('bripta_sms_outbox').select('*').eq('business_id',currentUser.business_id).order('queued_at',{ascending:false}).limit(100),
+      msgQuery.order('queued_at',{ascending:false}).range(from,to),
       sb('bripta_sms_topups').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(10)
     ]);
     if(walletError)throw walletError;
@@ -6304,20 +6369,28 @@ async function renderSmsCenter(){
     const remaining=Math.max(0,purchased-used);
     const threshold=Number(wallet?.low_balance_threshold||100);
     const rows=messages||[];
+    const totalMessages=Number(messageCount||0);
+    const totalPages=Math.max(1,Math.ceil(totalMessages/pageSize));
     const sent=rows.filter(r=>r.status==='sent').length;
     const attention=rows.filter(r=>['failed','delivery_unknown','blocked_no_credit'].includes(r.status)).length;
     main.innerHTML=`
-      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment confirmations sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openSmsTestModal()">Send test</button><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
+      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment and welcome messages sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openSmsTestModal()">Send test</button><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
       ${remaining<=threshold?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow);background:rgba(217,119,6,.07)"><strong style="color:var(--accent-yellow)">${remaining<=0?'SMS credits are exhausted':'SMS credits are running low'}</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Purchase a new SMS bundle to keep repayment messages active.</div></div>`:''}
       <div class="kpi-grid" style="margin-bottom:18px">
         <div class="kpi-card"><div class="kpi-label">SMS Remaining</div><div class="kpi-value" style="color:${remaining<=threshold?'var(--accent-yellow)':'var(--accent-green)'}">${remaining.toLocaleString()}</div><div class="kpi-sub">Available SMS credits</div></div>
         <div class="kpi-card"><div class="kpi-label">Credits Purchased</div><div class="kpi-value">${purchased.toLocaleString()}</div><div class="kpi-sub">All Bripta bundles</div></div>
-        <div class="kpi-card"><div class="kpi-label">Messages Sent</div><div class="kpi-value" style="color:var(--accent-green)">${sent.toLocaleString()}</div><div class="kpi-sub">Latest 100 records</div></div>
+        <div class="kpi-card"><div class="kpi-label">Messages Sent</div><div class="kpi-value" style="color:var(--accent-green)">${sent.toLocaleString()}</div><div class="kpi-sub">This page only</div></div>
         <div class="kpi-card"><div class="kpi-label">Needs Attention</div><div class="kpi-value" style="color:${attention?'var(--accent-yellow)':'var(--accent-green)'}">${attention}</div><div class="kpi-sub">Failed, blocked or uncertain</div></div>
       </div>
-      <div class="card" style="margin-bottom:18px"><h3 style="font-size:14px;margin-bottom:10px">Recent SMS activity</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Client</th><th>Phone</th><th>Message</th><th>Credits</th><th>Status</th><th>Details</th></tr></thead><tbody>
-        ${rows.length?rows.map(r=>`<tr><td>${fmtDateTime(r.queued_at)}</td><td><strong>${escapeHtml(r.client_name||'-')}</strong></td><td>${escapeHtml(r.recipient||'-')}</td><td style="min-width:260px;white-space:normal">${escapeHtml(r.message||'Waiting for final payment balance')}</td><td>${Number(r.segments||0)||'-'}</td><td>${smsStatusBadge(r.status)}</td><td style="font-size:11px;color:var(--text-secondary);white-space:normal">${escapeHtml(r.last_error||r.provider_uid||'-')}</td></tr>`).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:18px">No repayment SMS records yet</td></tr>'}
+      <div class="card" style="margin-bottom:18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <h3 style="font-size:14px;margin:0">SMS activity</h3>
+          ${getDateFilterHtml('sms')}
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Client</th><th>Phone</th><th>Message</th><th>Credits</th><th>Status</th><th>Details</th></tr></thead><tbody>
+        ${rows.length?rows.map(r=>`<tr><td>${fmtDateTime(r.queued_at)}</td><td>${smsKindLabel(r)}</td><td><strong>${escapeHtml(r.client_name||'-')}</strong></td><td>${escapeHtml(r.recipient||'-')}</td><td style="min-width:260px;white-space:normal">${escapeHtml(r.message||'Waiting for final message')}</td><td>${Number(r.segments||0)||'-'}</td><td>${smsStatusBadge(r.status)}</td><td style="font-size:11px;color:var(--text-secondary);white-space:normal">${escapeHtml(r.last_error||r.provider_uid||'-')}</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:18px">No SMS records in this period</td></tr>'}
       </tbody></table></div></div>
+      ${smsPageHtml(safePage,totalPages,totalMessages,pageSize)}
       <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Bundle history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Payment Reference</th><th>Note</th></tr></thead><tbody>
         ${(topups||[]).length?(topups||[]).map(t=>`<tr><td>${fmtDateTime(t.created_at)}</td><td><strong>${Number(t.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(t.customer_reference||'-')}</td><td>${escapeHtml(t.note||'-')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No SMS bundles purchased yet</td></tr>'}
       </tbody></table></div></div>`;
