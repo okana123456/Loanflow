@@ -38,9 +38,9 @@ with target_clients as (
   from public.loan_clients c
   where regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g')
         in ('0740526168', '254740526168', '740526168')
-    and lower(regexp_replace(coalesce(c.full_name, ''), '[^a-z]', '', 'g'))
-        like '%lydiahatieno%'
-), corrected as (
+    and lower(regexp_replace(coalesce(c.full_name, ''), '[^a-z]', '', 'g')) like '%lydia%'
+    and lower(regexp_replace(coalesce(c.full_name, ''), '[^a-z]', '', 'g')) like '%atieno%'
+), linked_corrected as (
   update public.loan_applications a
      set status = 'disbursed'
     from target_clients c
@@ -55,10 +55,30 @@ with target_clients as (
          and l.business_id = a.business_id
      )
   returning a.id
+), running_client_corrected as (
+  update public.loan_applications a
+     set status = 'disbursed'
+    from target_clients c
+   where a.client_id = c.id
+     and a.business_id = c.business_id
+     and a.status = 'approved'
+     and exists (
+       select 1
+       from public.loans l
+       where l.client_id = a.client_id
+         and l.business_id = a.business_id
+         and l.status = 'active'
+         and coalesce(l.outstanding_balance, 0) > 0.01
+     )
+  returning a.id
 )
 select count(*) as corrected_count
 into temporary table bripta_lydiah_repair_count
-from corrected;
+from (
+  select id from linked_corrected
+  union
+  select id from running_client_corrected
+) x;
 
 commit;
 
