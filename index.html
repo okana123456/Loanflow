@@ -1425,6 +1425,7 @@ function buildSidebar() {
     
     { isHeader: true, label: 'Lending', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier', 'viewer'] },
     { id: 'clients', icon: 'C', label: 'Clients', roles: ['admin', 'branch_manager', 'loan_officer'] },
+    { id: 'inactive_clients', icon: 'I', label: 'Inactive Clients', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'products', icon: 'P', label: 'Loan Products', roles: ['admin', 'branch_manager'] },
     { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
@@ -1557,7 +1558,7 @@ function navigateTo(section){
   const main=$('#mainContent');
   showLoading(main);
   const renderers={
-    dashboard:renderDashboard,clients:renderClients,products:renderProducts,
+    dashboard:renderDashboard,clients:renderClients,inactive_clients:renderInactiveClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,excess_charges:renderExcessCharges,
     accounting:renderAccounting,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
@@ -2004,6 +2005,24 @@ async function renderDashboard(){
 
 // ═══ CLIENTS ═══
 let clientPage=1;
+let inactiveClientPage=1;
+
+function activeUnpaidLoansForClient(clientId, loans=cachedData.loans||[]){
+  return (loans||[]).filter(l=>
+    String(l.client_id)===String(clientId)
+    && String(l.status||'').toLowerCase()==='active'
+    && Number(l.outstanding_balance||0)>0.01
+  );
+}
+
+function loanHistoryForClient(clientId, loans=cachedData.loans||[]){
+  return (loans||[]).filter(l=>String(l.client_id)===String(clientId));
+}
+
+function canClientTakeNewLoan(clientId, loans=cachedData.loans||[]){
+  return activeUnpaidLoansForClient(clientId,loans).length===0;
+}
+
 async function renderClients(page=1){
   clientPage=page;const main=$('#mainContent');
   if(!currentUser?.business_id) return;
@@ -2093,6 +2112,78 @@ function renderClientRows(clients){
       <td><span class="badge badge-green">Active</span></td>
       <td><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> ${isAdmin?`<button class="btn btn-outline btn-sm" onclick="editClient('${c.id}')">Edit</button> `:''}${transferBtn}</td>
     </tr>`}).join('');
+}
+
+async function renderInactiveClients(page=1){
+  inactiveClientPage=page;const main=$('#mainContent');
+  if(!currentUser?.business_id)return;
+  try{
+    await loadBriptaTables(['loan_clients','loan_staff','loans']);
+    const staffData=cachedData.staff||[];
+    const loansData=(cachedData.loans||[]).slice().sort((a,b)=>String(b.disbursement_date||b.created_at||'').localeCompare(String(a.disbursement_date||a.created_at||'')));
+    window._staffMap={};
+    staffData.forEach(s=>window._staffMap[s.id]=s.name);
+    window._clientOffMap={};
+    loansData.forEach(l=>{ if(l.loan_officer_id&&!window._clientOffMap[l.client_id]) window._clientOffMap[l.client_id]=l.loan_officer_id; });
+
+    let rows=(cachedData.clients||[]).map(c=>{
+      const loans=loanHistoryForClient(c.id,loansData);
+      const activeUnpaid=activeUnpaidLoansForClient(c.id,loansData);
+      const lastLoan=loans[0]||null;
+      const totalBorrowed=loans.reduce((s,l)=>s+Number(l.principal_amount||0),0);
+      const totalPaid=loans.reduce((s,l)=>s+Number(l.total_paid||0),0);
+      return {...c,_loanCount:loans.length,_lastLoan:lastLoan,_activeUnpaid:activeUnpaid.length,_totalBorrowed:totalBorrowed,_totalPaid:totalPaid};
+    }).filter(c=>c._loanCount>0&&c._activeUnpaid===0);
+
+    const isOnlyOfficer=hasRole('loan_officer')&&!hasRole('admin','branch_manager');
+    if(isOnlyOfficer) rows=rows.filter(c=>window._clientOffMap[c.id]===currentUser.id);
+    rows.sort((a,b)=>String(b._lastLoan?.maturity_date||b._lastLoan?.updated_at||b.created_at||'').localeCompare(String(a._lastLoan?.maturity_date||a._lastLoan?.updated_at||a.created_at||'')));
+    cachedData.inactiveClients=rows;
+    const p=paginate(rows,page,25);
+    main.innerHTML=`
+      <div class="page-header">
+        <div><h1>Inactive Clients</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Clients with cleared loan history and no active outstanding balance.</p></div>
+      </div>
+      <div class="search-bar" style="background:var(--card);padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;display:flex;gap:10px;align-items:center;box-shadow:0 1px 2px rgba(0,0,0,0.04)">
+        <span style="font-size:18px">🔎</span>
+        <input class="input" id="inactiveClientSearchInput" placeholder="Search inactive client by name, phone or ID..." oninput="filterInactiveClients(this.value)" style="flex:1;font-size:14px;padding:10px 12px">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('inactiveClientSearchInput').value='';filterInactiveClients('')">Clear</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID No</th><th>Phone</th><th>Officer</th><th>Loans</th><th>Last Loan</th><th>Total Borrowed</th><th>Total Paid</th><th>Actions</th></tr></thead>
+        <tbody id="inactiveClientsBody">${renderInactiveClientRows(p.items)}</tbody></table></div>
+      <div id="inactiveClientsPagination">${paginationHtml(p,'renderInactiveClients')}</div>
+    `;
+  }catch(e){toast(e.message,'error')}
+}
+
+function renderInactiveClientRows(clients){
+  return (clients||[]).map(c=>{
+    const offId=window._clientOffMap?.[c.id];
+    const offName=offId?(window._staffMap?.[offId]||'Unassigned'):'Unassigned';
+    return `<tr>
+      <td><div class="client-name-cell">${clientAvatarHtml(c)}<strong>${escapeHtml(c.full_name||'-')}</strong></div></td>
+      <td>${escapeHtml(c.id_number||'-')}</td>
+      <td>${escapeHtml(c.phone||'-')}</td>
+      <td><span class="badge badge-gray" style="text-transform:capitalize">${escapeHtml(offName)}</span></td>
+      <td><span class="badge badge-blue">${Number(c._loanCount||0)}</span></td>
+      <td>${c._lastLoan?`<strong>${escapeHtml(c._lastLoan.loan_no||'-')}</strong><div style="font-size:11px;color:var(--text-secondary)">${fmtDate(c._lastLoan.maturity_date||c._lastLoan.disbursement_date)}</div>`:'-'}</td>
+      <td>${fmtMoney(c._totalBorrowed||0)}</td>
+      <td>${fmtMoney(c._totalPaid||0)}</td>
+      <td style="white-space:nowrap"><button class="btn btn-outline btn-sm" onclick="viewClient('${c.id}')">View</button> <button class="btn btn-primary btn-sm" onclick="openNewApplication('${c.id}')">New Loan</button></td>
+    </tr>`;
+  }).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:20px">No inactive clients found</td></tr>';
+}
+
+function filterInactiveClients(q){
+  q=(q||'').toLowerCase().trim();
+  const allRows=cachedData.inactiveClients||[];
+  const rows=q
+    ? allRows.filter(c=>(c.full_name||'').toLowerCase().includes(q)||(c.phone||'').includes(q)||(c.id_number||'').toLowerCase().includes(q))
+    : paginate(allRows,inactiveClientPage,25).items;
+  const body=document.getElementById('inactiveClientsBody');
+  const pag=document.getElementById('inactiveClientsPagination');
+  if(body)body.innerHTML=renderInactiveClientRows(rows);
+  if(pag)pag.innerHTML=q?'':paginationHtml(paginate(allRows,inactiveClientPage,25),'renderInactiveClients');
 }
 
 function updateBulkTransferBtn(){
@@ -2259,8 +2350,9 @@ async function saveClient(){
 async function viewClient(id){
   try{
     const{data:c}=await sb('loan_clients').select('*').eq('id',id).single();
-    const{data:cLoans}=await sb('loans').select('*').eq('client_id',id);
+    const{data:cLoans}=await sb('loans').select('*').eq('business_id',currentUser.business_id).eq('client_id',id);
     if(!c)return toast('Client not found','error');
+    const hasActiveUnpaid=activeUnpaidLoansForClient(id,cLoans||[]).length>0;
     const photoInputId = `clientPhotoInput_${String(c.id).replace(/[^a-zA-Z0-9_-]/g,'')}`;
     const canManagePhoto = hasRole('admin','branch_manager');
     const canAddPhotoOnce = hasRole('loan_officer') && !canManagePhoto && !c.photo_path;
@@ -2326,6 +2418,7 @@ async function viewClient(id){
         </tr>`).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:20px">No loans</td></tr>'}
       </tbody></table></div>
       <div class="modal-actions">
+        ${!hasActiveUnpaid?`<button class="btn btn-primary" onclick="closeModal();openNewApplication('${c.id}')">New Loan</button>`:''}
         ${hasRole('admin','branch_manager')?`<button class="btn btn-outline" onclick="editClient('${c.id}')">✏️ Edit Client</button>`:''}
         <button class="btn btn-outline" onclick="closeModal()">Close</button>
       </div>
@@ -2652,7 +2745,7 @@ function renderAppRows(apps){
 function filterApps(q){q=(q||'').toLowerCase();const f=(cachedData.applications||[]).filter(a=>(a.application_no||'').toLowerCase().includes(q)||(a.loan_clients?.full_name||'').toLowerCase().includes(q)||(a.loan_clients?.phone||'').toLowerCase().includes(q)||(a.loan_clients?.id_number||'').toLowerCase().includes(q));$('#appsBody').innerHTML=renderAppRows(f)}
 function filterAppStatus(v){const f=v?(cachedData.applications||[]).filter(a=>a.status===v):(cachedData.applications||[]);$('#appsBody').innerHTML=renderAppRows(f)}
 
-async function openNewApplication(){
+async function openNewApplication(preselectedClientId=''){
   const{data:clients}=await sb('loan_clients').select('id,full_name,phone,id_number').eq('business_id', currentUser.business_id).order('full_name');
   const{data:products}=await sb('loan_products').select('*').eq('business_id', currentUser.business_id).eq('is_active',true);
   // Build datalist; encode id in option's data-id via a hidden lookup map
@@ -2665,6 +2758,8 @@ async function openNewApplication(){
     window._appClientLookup[(c.full_name||'').toLowerCase()] = c.id;
     return `<option value="${label.replace(/"/g,'&quot;')}"></option>`;
   }).join('');
+  window._appStep=1;window._appProducts=products||[];window._appClients=clients||[];
+  const selectedClient=(clients||[]).find(c=>String(c.id)===String(preselectedClientId));
   openModal(`
     <h2>New Loan Application</h2>
     <div class="steps"><div class="step active" data-step="1">1. Client</div><div class="step" data-step="2">2. Loan Details</div><div class="step" data-step="3">3. Review &amp; Submit</div></div>
@@ -2688,7 +2783,15 @@ async function openNewApplication(){
     <div id="appStep3" style="display:none"><div id="appReview"></div></div>
     <div class="modal-actions"><button class="btn btn-outline" id="appPrevBtn" onclick="appStepNav(-1)" style="display:none">Back</button><button class="btn btn-primary" id="appNextBtn" onclick="appStepNav(1)">Next</button></div>
   `,true);
-  window._appStep=1;window._appProducts=products||[];window._appClients=clients||[];
+  if(selectedClient){
+    const label=`${selectedClient.full_name} — ${selectedClient.phone||''}${selectedClient.id_number?(' — ID '+selectedClient.id_number):''}`;
+    const input=document.getElementById('appClientSearch');
+    const hidden=document.getElementById('appClient');
+    if(input)input.value=label;
+    if(hidden)hidden.value=selectedClient.id;
+    onAppClientPick(label);
+    appStepNav(1);
+  }
 }
 
 function onAppClientPick(val){
