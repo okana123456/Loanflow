@@ -80,6 +80,37 @@ from (
   select id from running_client_corrected
 ) x;
 
+-- Extra explicit correction for the visible stuck row. This is still guarded:
+-- it only changes Lydiah's approved application when a real active loan for
+-- the same client already exists.
+with target_clients as (
+  select c.id, c.business_id
+  from public.loan_clients c
+  where regexp_replace(coalesce(c.phone, ''), '[^0-9]', '', 'g')
+        in ('0740526168', '254740526168', '740526168')
+    and lower(regexp_replace(coalesce(c.full_name, ''), '[^a-z]', '', 'g')) like '%lydia%'
+    and lower(regexp_replace(coalesce(c.full_name, ''), '[^a-z]', '', 'g')) like '%atieno%'
+), fixed_visible_row as (
+  update public.loan_applications a
+     set status = 'disbursed'
+    from target_clients c
+   where a.client_id = c.id
+     and a.business_id = c.business_id
+     and a.status = 'approved'
+     and a.application_no = '847881'
+     and exists (
+       select 1
+       from public.loans l
+       where l.client_id = a.client_id
+         and l.business_id = a.business_id
+         and l.status = 'active'
+         and coalesce(l.outstanding_balance, 0) > 0.01
+     )
+  returning a.id
+)
+update bripta_lydiah_repair_count
+   set corrected_count = corrected_count + (select count(*) from fixed_visible_row);
+
 commit;
 
 select
