@@ -41,10 +41,11 @@ async function sendRepaymentSms(supabaseUrl: string, serviceKey: string, repayme
       method: "POST",
       headers: {
         Authorization: `Bearer ${serviceKey}`,
+        apikey: serviceKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ repayment_id: repaymentId }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(25000),
     });
     if (!response.ok) console.error("Repayment SMS request failed", response.status, await response.text());
   } catch (error) {

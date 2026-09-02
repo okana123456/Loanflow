@@ -6555,7 +6555,7 @@ async function renderSmsCenter(page=1){
     const sent=rows.filter(r=>r.status==='sent').length;
     const attention=rows.filter(r=>['failed','delivery_unknown','blocked_no_credit'].includes(r.status)).length;
     main.innerHTML=`
-      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment and welcome messages sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openSmsTestModal()">Send test</button><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Request SMS bundle</button></div></div>
+      <div class="page-header"><div><h1>SMS Centre</h1><p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Repayment and welcome messages sent from ${escapeHtml(wallet?.sender_id||'BRIPTA')}</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openSmsTestModal()">Send test</button><button class="btn btn-outline" onclick="processPendingSms(this)">Retry pending</button><button class="btn btn-primary" onclick="openSmsBundleRequest()">Buy SMS</button></div></div>
       ${remaining<=threshold?`<div class="card" style="margin-bottom:16px;border-color:var(--accent-yellow);background:rgba(217,119,6,.07)"><strong style="color:var(--accent-yellow)">${remaining<=0?'SMS credits are exhausted':'SMS credits are running low'}</strong><div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Purchase a new SMS bundle to keep repayment messages active.</div></div>`:''}
       <div class="kpi-grid" style="margin-bottom:18px">
         <div class="kpi-card"><div class="kpi-label">SMS Remaining</div><div class="kpi-value" style="color:${remaining<=threshold?'var(--accent-yellow)':'var(--accent-green)'}">${remaining.toLocaleString()}</div><div class="kpi-sub">Available SMS credits</div></div>
@@ -6563,17 +6563,19 @@ async function renderSmsCenter(page=1){
         <div class="kpi-card"><div class="kpi-label">Messages Sent</div><div class="kpi-value" style="color:var(--accent-green)">${sent.toLocaleString()}</div><div class="kpi-sub">This page only</div></div>
         <div class="kpi-card"><div class="kpi-label">Needs Attention</div><div class="kpi-value" style="color:${attention?'var(--accent-yellow)':'var(--accent-green)'}">${attention}</div><div class="kpi-sub">Failed, blocked or uncertain</div></div>
       </div>
-      <div class="card" style="margin-bottom:18px">
-        <h3 style="font-size:14px;margin-bottom:12px">Send custom SMS</h3>
-        <div class="form-row">
-          <div class="form-group"><label>Audience</label><select class="select" id="smsAudience" onchange="previewSmsAudience()"><option value="manual">Manual numbers</option><option value="active">Active loan clients</option><option value="arrears">Clients in arrears</option></select></div>
-          <div class="form-group"><label>Group</label><select class="select" id="smsGroupFilter" onchange="previewSmsAudience()"><option value="">All groups</option>${smsGroupOptions().map(g=>`<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join('')}</select></div>
-          <div class="form-group"><label>Officer</label><select class="select" id="smsOfficerFilter" onchange="previewSmsAudience()"><option value="">All officers</option>${(cachedData.staff||[]).filter(s=>String(s.role||'').includes('loan_officer')).map(s=>`<option value="${s.id}">${escapeHtml(s.name||'')}</option>`).join('')}</select></div>
+      <details class="card" style="margin-bottom:18px">
+        <summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:800;font-size:14px">Send custom SMS <span style="font-size:12px;color:var(--text-secondary);font-weight:600">Click to open</span></summary>
+        <div style="margin-top:14px">
+          <div class="form-row">
+            <div class="form-group"><label>Audience</label><select class="select" id="smsAudience" onchange="previewSmsAudience()"><option value="manual">Manual numbers</option><option value="active">Active loan clients</option><option value="arrears">Clients in arrears</option></select></div>
+            <div class="form-group"><label>Group</label><select class="select" id="smsGroupFilter" onchange="previewSmsAudience()"><option value="">All groups</option>${smsGroupOptions().map(g=>`<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join('')}</select></div>
+            <div class="form-group"><label>Officer</label><select class="select" id="smsOfficerFilter" onchange="previewSmsAudience()"><option value="">All officers</option>${(cachedData.staff||[]).filter(s=>String(s.role||'').includes('loan_officer')).map(s=>`<option value="${s.id}">${escapeHtml(s.name||'')}</option>`).join('')}</select></div>
+          </div>
+          <div class="form-group" id="smsManualWrap"><label>Phone numbers</label><textarea class="input" id="smsManualNumbers" rows="3" placeholder="0792719505, 0712345678"></textarea></div>
+          <div class="form-group"><label>Message</label><textarea class="input" id="smsCustomMessage" rows="4" maxlength="612" placeholder="Type the message here..."></textarea><div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><span id="smsAudienceCount">Manual numbers</span>. Longer messages may use more than 1 SMS credit.</div></div>
+          <button class="btn btn-primary" onclick="sendCustomSms(this)">Send SMS</button>
         </div>
-        <div class="form-group" id="smsManualWrap"><label>Phone numbers</label><textarea class="input" id="smsManualNumbers" rows="3" placeholder="0792719505, 0712345678"></textarea></div>
-        <div class="form-group"><label>Message</label><textarea class="input" id="smsCustomMessage" rows="4" maxlength="612" placeholder="Type the message here..."></textarea><div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><span id="smsAudienceCount">Manual numbers</span>. Longer messages may use more than 1 SMS credit.</div></div>
-        <button class="btn btn-primary" onclick="sendCustomSms(this)">Send SMS</button>
-      </div>
+      </details>
       <div class="card" style="margin-bottom:18px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
           <h3 style="font-size:14px;margin:0">SMS activity</h3>
@@ -6669,34 +6671,39 @@ async function sendSmsTest(btn){
 
 function openSmsBundleRequest(){
   openModal(`
-    <h2>Request SMS Bundle</h2>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose the number of SMS credits Bripta would like to purchase.</p>
-    <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty"><option value="1000">1,000 SMS</option><option value="2500">2,500 SMS</option><option value="5000">5,000 SMS</option><option value="10000">10,000 SMS</option></select></div>
+    <h2>Buy SMS Bundle</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose SMS credits and send an M-Pesa prompt to the payment phone.</p>
+    <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty" onchange="updateSmsBundleAmount()"><option value="50">50 SMS - KES 35</option><option value="100">100 SMS - KES 70</option><option value="200">200 SMS - KES 140</option><option value="500">500 SMS - KES 350</option><option value="1000">1,000 SMS - KES 700</option><option value="2500">2,500 SMS - KES 1,750</option><option value="5000">5,000 SMS - KES 3,500</option><option value="10000">10,000 SMS - KES 7,000</option></select></div>
     <div class="form-group"><label>Payment phone</label><input class="input" id="smsBundlePhone" placeholder="07XXXXXXXX" inputmode="tel"></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitSmsBundleRequest(this)">Send Request</button></div>
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">Amount to pay: <strong id="smsBundleAmount">KES 35</strong></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="startSmsBundlePayment(this)">Send M-Pesa Prompt</button></div>
   `);
 }
 
-async function submitSmsBundleRequest(btn){
+function updateSmsBundleAmount(){
+  const credits=Number(document.getElementById('smsBundleQty')?.value||50);
+  const amount=Math.ceil(credits*0.7);
+  const el=document.getElementById('smsBundleAmount');
+  if(el)el.textContent=`KES ${amount.toLocaleString('en-KE')}`;
+}
+
+async function startSmsBundlePayment(btn){
   const credits=Number(document.getElementById('smsBundleQty')?.value||1000);
   const phone=(document.getElementById('smsBundlePhone')?.value||'').trim();
+  if(!phone)return toast('Enter the payment phone first','warning');
   if(btn){btn.disabled=true;btn.textContent='Sending...';}
   try{
-    const{error}=await sb('bripta_sms_bundle_requests').insert({
-      business_id:currentUser.business_id,
-      credits,
-      phone:phone||null,
-      requested_by:currentUser.id,
-      status:'pending',
-      note:'Requested from Bripta SMS Centre'
+    const{data,error}=await supabaseClient.functions.invoke('start-sms-bundle-payment',{
+      body:{business_id:currentUser.business_id,staff_id:currentUser.id,phone,credits}
     });
     if(error)throw error;
-    toast(`SMS bundle request for ${credits.toLocaleString()} credits has been recorded.`,'success');
+    if(!data?.ok)throw new Error(data?.message||'M-Pesa prompt failed');
+    toast(data.message||'M-Pesa prompt sent. Complete it on the phone.','success');
     closeModal();
     renderSmsCenter();
   }catch(error){
-    toast(error.message||'Could not record SMS bundle request','error');
-    if(btn){btn.disabled=false;btn.textContent='Send Request';}
+    toast(error.message||'Could not start SMS payment','error');
+    if(btn){btn.disabled=false;btn.textContent='Send M-Pesa Prompt';}
   }
 }
 

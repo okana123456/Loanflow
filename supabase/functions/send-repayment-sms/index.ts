@@ -381,7 +381,7 @@ serve(async (req) => {
       .in("status", ["queued", "failed", "blocked_no_credit"])
       .not("repayment_id", "is", null)
       .order("queued_at", { ascending: true })
-      .limit(10);
+      .limit(50);
     repaymentIds = (pending || []).map((row) => row.repayment_id).filter(Boolean);
   }
 
