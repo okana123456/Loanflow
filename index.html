@@ -6468,7 +6468,52 @@ function smsDateRange(filterState){
 function smsKindLabel(row){
   if(row.message_type==='onboarding')return 'Welcome';
   if(row.message_type==='test'||row.client_name==='System test')return 'Test';
+  if(row.message_type==='custom')return 'Custom';
   return 'Repayment';
+}
+
+function normalizeSmsPhone(value){
+  const digits=String(value||'').replace(/\D/g,'');
+  if(!digits)return'';
+  const tail=digits.slice(-9);
+  if(!/^[17]\d{8}$/.test(tail))return'';
+  return '0'+tail;
+}
+
+function selectedSmsRecipients(){
+  const audience=document.getElementById('smsAudience')?.value||'manual';
+  const groupId=document.getElementById('smsGroupFilter')?.value||'';
+  const officerId=document.getElementById('smsOfficerFilter')?.value||'';
+  if(audience==='manual'){
+    return (document.getElementById('smsManualNumbers')?.value||'')
+      .split(/[\n,;|]+/)
+      .map(phone=>({phone:phone.trim(),name:'Manual SMS'}))
+      .filter(x=>normalizeSmsPhone(x.phone));
+  }
+  const loans=cachedData.loans||[];
+  const activeLoans=loans.filter(l=>String(l.status||'').toLowerCase()==='active'&&Number(l.outstanding_balance||0)>0);
+  const activeClientIds=new Set(activeLoans.map(l=>l.client_id));
+  const arrearsClientIds=new Set(activeLoans.filter(l=>Number(l.arrears_amount||0)>0||Number(l.overdue_days||0)>0).map(l=>l.client_id));
+  let clients=(cachedData.clients||[]).filter(c=>normalizeSmsPhone(c.phone));
+  if(audience==='active')clients=clients.filter(c=>activeClientIds.has(c.id));
+  if(audience==='arrears')clients=clients.filter(c=>arrearsClientIds.has(c.id));
+  if(groupId)clients=clients.filter(c=>String(c.group_id||c.group_name||c.group||'')===groupId);
+  if(officerId){
+    const officerClientIds=new Set(loans.filter(l=>String(l.loan_officer_id||'')===officerId).map(l=>l.client_id));
+    clients=clients.filter(c=>officerClientIds.has(c.id));
+  }
+  return clients.slice(0,300).map(c=>({name:c.full_name,phone:c.phone,client_id:c.id}));
+}
+
+function smsGroupOptions(){
+  const seen=new Set();
+  return (cachedData.clients||[]).map(c=>{
+    const id=String(c.group_id||c.group_name||c.group||'').trim();
+    const name=String(c.group_name||c.group||c.group_id||'').trim();
+    if(!id||seen.has(id))return null;
+    seen.add(id);
+    return {id,name:name||id};
+  }).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
 }
 
 function smsPageHtml(page,total,count,pageSize){
@@ -6488,13 +6533,15 @@ async function renderSmsCenter(page=1){
   const from=(safePage-1)*pageSize;
   const to=from+pageSize-1;
   try{
+    await loadBriptaTables(['loan_clients','loans','loan_staff']);
     let msgQuery=sb('bripta_sms_outbox').select('*',{count:'exact'}).eq('business_id',currentUser.business_id);
     const range=smsDateRange(appFilters.sms);
     if(range.startIso&&range.endIso)msgQuery=msgQuery.gte('queued_at',range.startIso).lte('queued_at',range.endIso);
-    const[{data:wallet,error:walletError},{data:messages,error:messagesError,count:messageCount},{data:topups}]=await Promise.all([
+    const[{data:wallet,error:walletError},{data:messages,error:messagesError,count:messageCount},{data:topups},{data:requests}]=await Promise.all([
       sb('bripta_sms_wallets').select('*').eq('business_id',currentUser.business_id).maybeSingle(),
       msgQuery.order('queued_at',{ascending:false}).range(from,to),
-      sb('bripta_sms_topups').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(10)
+      sb('bripta_sms_topups').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(10),
+      sb('bripta_sms_bundle_requests').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(10)
     ]);
     if(walletError)throw walletError;
     if(messagesError)throw messagesError;
@@ -6517,6 +6564,17 @@ async function renderSmsCenter(page=1){
         <div class="kpi-card"><div class="kpi-label">Needs Attention</div><div class="kpi-value" style="color:${attention?'var(--accent-yellow)':'var(--accent-green)'}">${attention}</div><div class="kpi-sub">Failed, blocked or uncertain</div></div>
       </div>
       <div class="card" style="margin-bottom:18px">
+        <h3 style="font-size:14px;margin-bottom:12px">Send custom SMS</h3>
+        <div class="form-row">
+          <div class="form-group"><label>Audience</label><select class="select" id="smsAudience" onchange="previewSmsAudience()"><option value="manual">Manual numbers</option><option value="active">Active loan clients</option><option value="arrears">Clients in arrears</option></select></div>
+          <div class="form-group"><label>Group</label><select class="select" id="smsGroupFilter" onchange="previewSmsAudience()"><option value="">All groups</option>${smsGroupOptions().map(g=>`<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join('')}</select></div>
+          <div class="form-group"><label>Officer</label><select class="select" id="smsOfficerFilter" onchange="previewSmsAudience()"><option value="">All officers</option>${(cachedData.staff||[]).filter(s=>String(s.role||'').includes('loan_officer')).map(s=>`<option value="${s.id}">${escapeHtml(s.name||'')}</option>`).join('')}</select></div>
+        </div>
+        <div class="form-group" id="smsManualWrap"><label>Phone numbers</label><textarea class="input" id="smsManualNumbers" rows="3" placeholder="0792719505, 0712345678"></textarea></div>
+        <div class="form-group"><label>Message</label><textarea class="input" id="smsCustomMessage" rows="4" maxlength="612" placeholder="Type the message here..."></textarea><div style="font-size:12px;color:var(--text-secondary);margin-top:4px"><span id="smsAudienceCount">Manual numbers</span>. Longer messages may use more than 1 SMS credit.</div></div>
+        <button class="btn btn-primary" onclick="sendCustomSms(this)">Send SMS</button>
+      </div>
+      <div class="card" style="margin-bottom:18px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
           <h3 style="font-size:14px;margin:0">SMS activity</h3>
           ${getDateFilterHtml('sms')}
@@ -6527,9 +6585,39 @@ async function renderSmsCenter(page=1){
       ${smsPageHtml(safePage,totalPages,totalMessages,pageSize)}
       <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Bundle history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Payment Reference</th><th>Note</th></tr></thead><tbody>
         ${(topups||[]).length?(topups||[]).map(t=>`<tr><td>${fmtDateTime(t.created_at)}</td><td><strong>${Number(t.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(t.customer_reference||'-')}</td><td>${escapeHtml(t.note||'-')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No SMS bundles purchased yet</td></tr>'}
+      </tbody></table></div></div>
+      <div class="card" style="margin-top:18px"><h3 style="font-size:14px;margin-bottom:10px">Bundle requests</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Phone</th><th>Status</th></tr></thead><tbody>
+        ${(requests||[]).length?(requests||[]).map(r=>`<tr><td>${fmtDateTime(r.created_at)}</td><td><strong>${Number(r.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(r.phone||'-')}</td><td>${smsStatusBadge(r.status||'pending')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No bundle requests yet</td></tr>'}
       </tbody></table></div></div>`;
   }catch(error){
     main.innerHTML=`<div class="empty-state"><h3>SMS Centre is not ready</h3><p>${escapeHtml(error.message||'Run the Bripta TalkSasa SMS wallet SQL setup.')}</p></div>`;
+  }
+}
+
+function previewSmsAudience(){
+  const audience=document.getElementById('smsAudience')?.value||'manual';
+  const manual=document.getElementById('smsManualWrap');
+  if(manual)manual.style.display=audience==='manual'?'block':'none';
+  const out=document.getElementById('smsAudienceCount');
+  if(out)out.textContent=audience==='manual'?'Manual numbers':`${selectedSmsRecipients().length} selected recipient(s)`;
+}
+
+async function sendCustomSms(btn){
+  const message=(document.getElementById('smsCustomMessage')?.value||'').trim();
+  if(!message)return toast('Type the SMS message first','warning');
+  const recipients=selectedSmsRecipients();
+  if(!recipients.length)return toast('Add at least one valid recipient','warning');
+  if(recipients.length>300)return toast('Send to 300 recipients or fewer at once','warning');
+  if(btn){btn.disabled=true;btn.textContent='Sending...';}
+  try{
+    const{data,error}=await supabaseClient.functions.invoke('send-repayment-sms',{body:{sms_type:'custom',message,recipients}});
+    if(error)throw error;
+    if(!data?.ok)throw new Error(data?.message||'SMS could not be sent');
+    toast(`SMS processed: ${Number(data.sent||0)} sent, ${Number(data.failed||0)} failed`,data.failed?'warning':'success');
+    renderSmsCenter(1);
+  }catch(error){
+    toast(error.message||'Could not send SMS','error');
+    if(btn){btn.disabled=false;btn.textContent='Send SMS';}
   }
 }
 
@@ -6584,15 +6672,32 @@ function openSmsBundleRequest(){
     <h2>Request SMS Bundle</h2>
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose the number of SMS credits Bripta would like to purchase.</p>
     <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty"><option value="1000">1,000 SMS</option><option value="2500">2,500 SMS</option><option value="5000">5,000 SMS</option><option value="10000">10,000 SMS</option></select></div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="copySmsBundleRequest()">Copy Request</button></div>
+    <div class="form-group"><label>Payment phone</label><input class="input" id="smsBundlePhone" placeholder="07XXXXXXXX" inputmode="tel"></div>
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitSmsBundleRequest(this)">Send Request</button></div>
   `);
 }
 
-async function copySmsBundleRequest(){
-  const qty=Number(document.getElementById('smsBundleQty')?.value||1000).toLocaleString();
-  const text=`Hello, Bripta would like to purchase ${qty} SMS credits. Kindly send us the payment instructions.`;
-  try{await navigator.clipboard.writeText(text);toast('SMS bundle request copied.','success');closeModal();}
-  catch(_){toast(text,'info');}
+async function submitSmsBundleRequest(btn){
+  const credits=Number(document.getElementById('smsBundleQty')?.value||1000);
+  const phone=(document.getElementById('smsBundlePhone')?.value||'').trim();
+  if(btn){btn.disabled=true;btn.textContent='Sending...';}
+  try{
+    const{error}=await sb('bripta_sms_bundle_requests').insert({
+      business_id:currentUser.business_id,
+      credits,
+      phone:phone||null,
+      requested_by:currentUser.id,
+      status:'pending',
+      note:'Requested from Bripta SMS Centre'
+    });
+    if(error)throw error;
+    toast(`SMS bundle request for ${credits.toLocaleString()} credits has been recorded.`,'success');
+    closeModal();
+    renderSmsCenter();
+  }catch(error){
+    toast(error.message||'Could not record SMS bundle request','error');
+    if(btn){btn.disabled=false;btn.textContent='Send Request';}
+  }
 }
 
 async function renderAccounting() {

@@ -280,11 +280,48 @@ serve(async (req) => {
       message: "Unauthorized: use this Bripta project's service_role key in Authorization or apikey.",
     }, 401);
   }
+  const businessId = callerBusiness === "__service_role__" ? "BIZ-B3F5E5D9" : callerBusiness;
+
+  if (String(body?.sms_type || "").trim() === "custom") {
+    const message = String(body?.message || "").trim();
+    const rawRecipients = Array.isArray(body?.recipients) ? body.recipients.slice(0, 300) : [];
+    if (!message) return json({ ok: false, message: "Message is required" }, 400);
+    if (!rawRecipients.length) return json({ ok: false, message: "At least one recipient is required" }, 400);
+
+    const results: Record<string, unknown>[] = [];
+    let sent = 0;
+    let failed = 0;
+    for (const item of rawRecipients) {
+      const phone = typeof item === "string" ? item : item?.phone;
+      const name = typeof item === "string" ? "Manual SMS" : item?.name;
+      const { data: claim, error: claimError } = await admin.rpc("bripta_claim_custom_sms", {
+        p_business_id: businessId,
+        p_recipient: phone,
+        p_message: message,
+        p_client_name: name || "Manual SMS",
+      });
+      if (claimError || !claim?.ok) {
+        failed++;
+        results.push({
+          phone,
+          ok: false,
+          error: claimError?.message || claim?.message || claim?.code || "Could not reserve SMS credit",
+        });
+        continue;
+      }
+
+      const result = await deliverClaim(admin, talksasaToken, sendUrl, claim);
+      if (result.ok) sent++; else failed++;
+      results.push({ phone, ...result });
+    }
+
+    return json({ ok: true, mode: "custom", business_id: businessId, sent, failed, processed: results.length, results });
+  }
 
   const testPhone = String(body?.test_phone || "").trim();
   if (testPhone) {
     const { data: claim, error: claimError } = await admin.rpc("bripta_claim_test_sms", {
-      p_business_id: callerBusiness === "__service_role__" ? "BIZ-B3F5E5D9" : callerBusiness,
+      p_business_id: businessId,
       p_phone: testPhone,
     });
     if (claimError) return json({ ok: false, message: claimError.message }, 500);
