@@ -34,6 +34,26 @@ function mpesaDate(value: unknown) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 
+function billingMonthFromPaymentDate(paymentDate: string) {
+  return `${String(paymentDate || "").slice(0, 7)}-01`;
+}
+
+function nextPaidUntil(billingMonth: string) {
+  const month = String(billingMonth || "").slice(0, 10);
+  const d = new Date(`${month}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  d.setUTCDate(4);
+  return d.toISOString().slice(0, 10);
+}
+
+function subscriptionAccountRef(businessId: string) {
+  return `BRIPTA${String(businessId).replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase()}`.slice(0, 12);
+}
+
+function compactAccount(value: unknown) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
 async function sendRepaymentSms(supabaseUrl: string, serviceKey: string, repaymentId: string | null | undefined) {
   if (!repaymentId) return;
   try {
@@ -105,6 +125,30 @@ serve(async (req) => {
       .maybeSingle();
 
     if (existingRepayment) {
+      return accepted;
+    }
+
+    const subscriptionCandidates = [...new Set([...configuredBusinesses, "BIZ-B3F5E5D9"])];
+    const subscriptionBusinessId = subscriptionCandidates.find((candidateBusiness) =>
+      compactAccount(accountNumber) === compactAccount(subscriptionAccountRef(candidateBusiness))
+    );
+    if (subscriptionBusinessId && amount >= 3000) {
+      const billingMonth = billingMonthFromPaymentDate(paymentDate);
+      const paidUntil = nextPaidUntil(billingMonth);
+      const { error: billingError } = await supabase
+        .from("loan_billing_cycles")
+        .upsert({
+          business_id: subscriptionBusinessId,
+          billing_month: billingMonth,
+          amount,
+          status: "paid",
+          paid_at: paymentDate,
+          paid_until: paidUntil,
+          receipt_number: transId,
+          phone: payerPhone || null,
+        }, { onConflict: "business_id,billing_month" });
+      if (billingError) throw billingError;
+
       return accepted;
     }
 

@@ -168,7 +168,6 @@ serve(async (req) => {
       phone: cleanPhone,
       merchant_request_id: stk.MerchantRequestID,
       checkout_request_id: stk.CheckoutRequestID,
-      result_description: stk.ResponseDescription,
     };
 
     const { error: saveError } = await supabase
