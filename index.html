@@ -1828,7 +1828,7 @@ async function renderDashboard(){
     const outstanding=active.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const overdue=active.filter(l=>l.overdue_days>0);
     const par30=active.filter(l=>l.overdue_days>30);
-    const npl=active.filter(l=>l.overdue_days>180);
+    const npl=active.filter(l=>Number(l.overdue_days||0)>=180);
     const par30val=par30.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const par30pct=portfolio>0?(par30val/portfolio*100):0;
 
@@ -4416,6 +4416,16 @@ async function renderOverdue(opts){
 
   const main=$('#mainContent');
   try{
+    // Refresh stored aging before reading the report. The database also runs
+    // this daily, while this call makes the latest classification immediate.
+    try{
+      await supabaseClient.rpc('bripta_refresh_my_loan_aging');
+      cachedData.loans=null;
+      cachedData.schedules=null;
+    }catch(agingError){
+      console.warn('Loan aging refresh unavailable:',agingError);
+    }
+
     // For loan officers: filter to only their assigned loans
     const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
 
@@ -4495,9 +4505,9 @@ async function renderOverdue(opts){
     const allActive=(loans||[]).filter(l=>l.status==='active');
     const portfolio=allActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
     const buckets=[0,0,0,0,0];
-    overdueLoans.forEach(l=>{const d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<=180)buckets[3]++;else buckets[4]++;});
+    overdueLoans.forEach(l=>{const d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);if(d<=30)buckets[0]++;else if(d<=60)buckets[1]++;else if(d<=90)buckets[2]++;else if(d<180)buckets[3]++;else buckets[4]++;});
     const totalArrears=overdueLoans.reduce((s,l)=>s+Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0),0);
-    const nplLoans=overdueLoans.filter(l=>Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>180);
+    const nplLoans=overdueLoans.filter(l=>Number(l._asof_days!=null?l._asof_days:l.overdue_days||0)>=180);
     const nplOutstanding=nplLoans.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
 
     // Build missed installment rows (flat)
@@ -4606,8 +4616,8 @@ async function renderOverdue(opts){
       overdueLoans.forEach(function(l){
         var arrears=Number(l._asof_arrears!=null?l._asof_arrears:l.arrears_amount||0);
         var d=Number(l._asof_days!=null?l._asof_days:l.overdue_days||0);
-        var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<=180?'91-180d':'NPL (>180d)';
-        var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<=180?'#dc2626':'#7f1d1d';
+        var bkt=d<=30?'1-30d':d<=60?'31-60d':d<=90?'61-90d':d<180?'91-179d':'NPL (180+d)';
+        var bktColor=d<=30?'#f59e0b':d<=60?'#f97316':d<=90?'#ef4444':d<180?'#dc2626':'#7f1d1d';
         var officerName=(window._staffMap && l.loan_officer_id && window._staffMap[l.loan_officer_id])||'Unassigned';
         summaryHtml += '<tr>' +
           '<td><strong>'+(l.loan_clients?.full_name||'-')+'</strong></td>' +
@@ -4695,7 +4705,7 @@ async function renderOverdue(opts){
       // Section 3: Loan summary (collapsed by default)
       makeSection('loansummary', '📊 Loan-Level Arrears Summary', overdueLoans.length, 'KES '+fmtMoney(totalArrears), summaryHtml, '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();downloadArrearsSummaryExcel()">⬇ Excel</button>') +
       // Section 4: NPL accounts (collapsed by default)
-      makeSection('npl', 'NPL Accounts (>180 Days)', nplLoans.length, 'KES '+fmtMoney(nplOutstanding)+' OLB', nplHtml) +
+      makeSection('npl', 'NPL Accounts (180+ Days)', nplLoans.length, 'KES '+fmtMoney(nplOutstanding)+' OLB', nplHtml) +
       // Section 5: PAR / Chart (collapsed by default)
       makeSection('parchart', '📈 Aging Buckets & PAR Metrics', null, 'PAR30: '+par30pct+'%  PAR60: '+par60pct+'%  PAR90: '+par90pct+'%', parHtml);
 
@@ -4710,7 +4720,7 @@ async function renderOverdue(opts){
     });
 
     const ctx=document.getElementById('chartAging');
-    if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-180d','NPL >180d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
+    if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-179d','NPL 180+d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
   }catch(e){console.error(e);toast(e.message,'error')}
 }
 
