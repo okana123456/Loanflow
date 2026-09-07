@@ -7388,7 +7388,7 @@ async function applyRolloverPenalties(){
     const{data:activeLoans}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id).eq('status','active');
     if(!activeLoans?.length)return;
 
-    const skippedClients = ["Judith Nyaranga", "Beatrice Akeyo", "Fredrick onyango", "Lensa Apiyo", "Irine Odinya", "Trizah Atieno"];
+    const skippedClients = ["Judith Nyaranga", "Fredrick onyango", "Lensa Apiyo", "Irine Odinya", "Trizah Atieno"];
 
     for(const loan of activeLoans){
       const currentBalance = Number(loan.outstanding_balance || 0);

@@ -18,21 +18,46 @@ begin
   with schedule_aging as (
     select
       l.id as loan_id,
-      least(
-        greatest(0, coalesce(l.outstanding_balance, 0)),
-        greatest(0, coalesce(sum(greatest(0, coalesce(s.total_due, 0) - coalesce(s.total_paid, 0)))
-          filter (where s.due_date < current_date), 0))
-      )::numeric as calculated_arrears,
-      min(s.due_date) filter (
-        where s.due_date < current_date
-          and greatest(0, coalesce(s.total_due, 0) - coalesce(s.total_paid, 0)) > 0.01
+      case
+        when coalesce(sum(greatest(0, coalesce(s.total_due, 0) - coalesce(s.total_paid, 0)))
+          filter (where s.due_date < current_date), 0) > 0.01
+          then least(
+            greatest(0, coalesce(l.outstanding_balance, 0)),
+            greatest(0, coalesce(sum(greatest(0, coalesce(s.total_due, 0) - coalesce(s.total_paid, 0)))
+              filter (where s.due_date < current_date), 0))
+          )
+        -- A previously rolled-over loan can legitimately have no remaining
+        -- schedule rows. Once its maturity date passes, its whole outstanding
+        -- balance is arrears under Bripta's one-rollover policy.
+        when l.maturity_date::date < current_date
+          and exists (
+            select 1 from public.loan_penalties lp
+            where lp.loan_id = l.id and lp.reason ilike '%rollover%'
+          )
+          then greatest(0, coalesce(l.outstanding_balance, 0))
+        else 0
+      end::numeric as calculated_arrears,
+      coalesce(
+        min(s.due_date::date) filter (
+          where s.due_date::date < current_date
+            and greatest(0, coalesce(s.total_due, 0) - coalesce(s.total_paid, 0)) > 0.01
+        ),
+        case
+          when l.maturity_date::date < current_date
+            and exists (
+              select 1 from public.loan_penalties lp
+              where lp.loan_id = l.id and lp.reason ilike '%rollover%'
+            )
+            then l.maturity_date::date
+          else null
+        end
       ) as oldest_unpaid_due
     from public.loans l
     left join public.loan_schedules s on s.loan_id = l.id
     where l.business_id = p_business_id
       and l.status = 'active'
       and coalesce(l.outstanding_balance, 0) > 0.01
-    group by l.id, l.outstanding_balance
+    group by l.id, l.outstanding_balance, l.maturity_date
   ), refreshed as (
     update public.loans l
     set
