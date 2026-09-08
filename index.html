@@ -2283,14 +2283,14 @@ function filterClients(q){
 async function openAddClientModal(){
   // Fetch staff for officer assignment dropdown
   const {data:staffList} = await sb('loan_staff').select('id,name,role').eq('business_id', currentUser.business_id).eq('is_active', true);
-  const officers = (staffList||[]).filter(s=>{ const roles=(s.role||'').split(','); return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r.trim())); });
+  const officers = (staffList||[]).filter(s=>{ const roles=(s.role||'').split(','); return roles.some(r=>r.trim()==='loan_officer'); });
   const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
   const officerDropdown = `
     <div class="form-group">
       <label>Assign to Loan Officer${hasRole('admin','branch_manager')?' *':''}</label>
       <select class="select" id="cAssignedOfficer" ${isOfficerOnly?'disabled':''}>
         <option value="">— Select Officer —</option>
-        ${officers.map(o=>`<option value="${o.id}" ${o.id===currentUser.id?'selected':''}>${o.name} (${(o.role||'').replace(/,/g,', ')})</option>`).join('')}
+        ${officers.map(o=>`<option value="${o.id}" ${o.id===currentUser.id&&isOfficerOnly?'selected':''}>${o.name} (${(o.role||'').replace(/,/g,', ')})</option>`).join('')}
       </select>
     </div>`;
   openModal(`
@@ -2338,7 +2338,12 @@ async function saveClient(){
 
     const todayStr=today();
     const userNotes=($('#cNotes').value||'').trim();
-    const assignedOfficerId = ($('#cAssignedOfficer')?.value || currentUser?.id || '').trim();
+    const isOfficerOnly=hasRole('loan_officer')&&!hasRole('admin','branch_manager');
+    const assignedOfficerId=($('#cAssignedOfficer')?.value||(isOfficerOnly?currentUser?.id:'')||'').trim();
+    if(!assignedOfficerId){
+      if(btn){btn.disabled=false;btn.textContent='Save Client';}
+      return toast('Please assign the client to a loan officer','warning');
+    }
     const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
     const taggedNotes=(userNotes?userNotes+' ':'')+officerTag;
     const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,loan_officer_id:assignedOfficerId||null,business_id:currentUser?.business_id,created_by:currentUser?.id};
@@ -6853,6 +6858,17 @@ async function renderAccounting() {
 
     const officerStats = {};
     const staffData = cachedData.staff || [];
+    const accountingStaffMap={};
+    (staffData||[]).forEach(s=>{accountingStaffMap[s.id]=s;});
+    const ensureAccountingOfficer=(offId)=>{
+      if(officerStats[offId])return officerStats[offId];
+      const staff=accountingStaffMap[offId];
+      officerStats[offId]={
+        name:staff?.name||(offId==='unassigned'?'Unassigned':'Former/Inactive Officer'),
+        reg:0,proc:0,interest:0,total:0
+      };
+      return officerStats[offId];
+    };
     (staffData || []).forEach(s => {
       // Exclude Admin from Officer Performance
       if (!(s.role || '').includes('admin')) {
@@ -6863,7 +6879,7 @@ async function renderAccounting() {
 
     filteredClients.forEach(c => {
       const offId = clientToOfficer[c.id] || 'unassigned';
-      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      ensureAccountingOfficer(offId);
       const regAmt = Number(parseRegFeeFromNotes(c.notes)?.amount || REGISTRATION_FEE);
       officerStats[offId].reg += regAmt;
       officerStats[offId].total += regAmt;
@@ -6871,7 +6887,7 @@ async function renderAccounting() {
 
     filteredLoans.forEach(l => {
       const offId = l.loan_officer_id || 'unassigned';
-      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      ensureAccountingOfficer(offId);
       const procAmt = Number(l.processing_fee||0);
       officerStats[offId].proc += procAmt;
       officerStats[offId].total += procAmt;
@@ -6880,7 +6896,7 @@ async function renderAccounting() {
     filteredReps.forEach(r => {
       const loan = loanMap[r.loan_id];
       const offId = loan?.loan_officer_id || 'unassigned';
-      if(!officerStats[offId]) officerStats[offId] = { name: 'Unknown', reg: 0, proc: 0, interest: 0, total: 0 };
+      ensureAccountingOfficer(offId);
       const intAmt = calcInterestPortionAcct(r);
       officerStats[offId].interest += intAmt;
       officerStats[offId].total += intAmt;
