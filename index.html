@@ -2036,8 +2036,17 @@ async function renderClients(page=1){
 
     window._staffMap = {};
     (staffData||[]).forEach(s=>window._staffMap[s.id]=s.name);
-    // Build _clientOffMap: most-recent loan per client takes precedence
+    // Prefer the client's explicit portfolio owner, then an active loan,
+    // then historical loan data.
     window._clientOffMap = {};
+    clients.forEach(c=>{
+      if(c.loan_officer_id) window._clientOffMap[c.id]=c.loan_officer_id;
+    });
+    loansData.filter(l=>l.status==='active').forEach(l=>{
+      if(l.loan_officer_id && !window._clientOffMap[l.client_id]) {
+        window._clientOffMap[l.client_id] = l.loan_officer_id;
+      }
+    });
     (loansData||[]).forEach(l=>{
       if(l.loan_officer_id && !window._clientOffMap[l.client_id]) {
         window._clientOffMap[l.client_id] = l.loan_officer_id;
@@ -2236,8 +2245,11 @@ async function confirmBulkTransfer(){
   let done=0,failed=0;
   for(const clientId of clientIds){
     try{
-      await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
-      await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
+      const{data:result,error}=await supabaseClient.rpc('bripta_assign_client_portfolio',{
+        p_client_id:clientId,p_officer_id:officerId,p_reason:reason||'Bulk portfolio transfer'
+      });
+      if(error)throw error;
+      if(!result?.ok)throw new Error(result?.message||'Portfolio transfer was not completed');
       await audit('client_transferred','loan_clients',clientId,null,{new_officer_id:officerId,reason,bulk:true});
       // Update local cache immediately
       if(window._clientOffMap) window._clientOffMap[clientId] = officerId;
@@ -2329,7 +2341,7 @@ async function saveClient(){
     const assignedOfficerId = ($('#cAssignedOfficer')?.value || currentUser?.id || '').trim();
     const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
     const taggedNotes=(userNotes?userNotes+' ':'')+officerTag;
-    const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,business_id:currentUser?.business_id,created_by:currentUser?.id};
+    const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,loan_officer_id:assignedOfficerId||null,business_id:currentUser?.business_id,created_by:currentUser?.id};
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
     // Store officer assignment in caches
@@ -2547,21 +2559,13 @@ async function confirmTransferClient(clientId, clientName){
   const btn=document.getElementById('btnConfirmTransfer');
   if(btn){btn.disabled=true;btn.textContent='Transferring...';}
   try{
-    // Update all active loans for this client to new officer
-    await sb('loans').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id).eq('status','active');
-    // Update all applications too
-    await sb('loan_applications').update({loan_officer_id:officerId}).eq('client_id',clientId).eq('business_id',currentUser.business_id);
-    // Update local cache immediately so renderClients reflects the change
-    if(window._clientOffMap) window._clientOffMap[clientId] = officerId;
-    // Fetch current officer before overwriting, so we can record the full history
-    const{data:curClient}=await sb('loan_clients').select('notes,loan_officer_id').eq('id',clientId).single();
-    const prevOfficerId=window._clientOffMap?.[clientId]||curClient?.loan_officer_id||null;
-    const prevOfficerName=(window._staffMap&&prevOfficerId)?window._staffMap[prevOfficerId]:'Unknown';
-    const newOfficerName=(window._staffMap&&officerId)?window._staffMap[officerId]:officerId;
-    const transferStamp=`[TRANSFER ${today()}: ${prevOfficerName} → ${newOfficerName}${reason?'. Reason: '+reason:''}]`;
-    // Append transfer history to client notes so it is never lost
-    const updatedNotes=((curClient?.notes||'')+' '+transferStamp).trim();
-    await sb('loan_clients').update({notes:updatedNotes}).eq('id',clientId);
+    const prevOfficerId=window._clientOffMap?.[clientId]||null;
+    const{data:result,error}=await supabaseClient.rpc('bripta_assign_client_portfolio',{
+      p_client_id:clientId,p_officer_id:officerId,p_reason:reason||'Manual portfolio transfer'
+    });
+    if(error)throw error;
+    if(!result?.ok)throw new Error(result?.message||'Portfolio transfer was not completed');
+    if(window._clientOffMap) window._clientOffMap[clientId]=officerId;
     await audit('client_transferred','loan_clients',clientId,null,{client_name:clientName,prev_officer_id:prevOfficerId,new_officer_id:officerId,reason});
     toast(`${clientName} transferred successfully`,'success');
     closeModal();
