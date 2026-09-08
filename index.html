@@ -6833,9 +6833,23 @@ async function renderAccounting() {
     // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
 
-    // Officer Revenue Breakdown — detailed by reg, proc, interest per officer
+    // Officer Revenue Breakdown — use the client's explicit portfolio owner
+    // first because registration fees can exist before the first loan.
     const clientToOfficer = {};
-    allLoansForMapping.forEach(l => { if(l.loan_officer_id && !clientToOfficer[l.client_id]) clientToOfficer[l.client_id] = l.loan_officer_id; });
+    (cachedData.clients||[]).forEach(c=>{
+      if(c.loan_officer_id) clientToOfficer[c.id]=c.loan_officer_id;
+    });
+    allLoansForMapping.filter(l=>l.status==='active').forEach(l=>{
+      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=l.loan_officer_id;
+    });
+    allLoansForMapping.forEach(l=>{
+      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=l.loan_officer_id;
+    });
+    (cachedData.clients||[]).forEach(c=>{
+      if(clientToOfficer[c.id])return;
+      const tagged=String(c.notes||'').match(/\[OFFICER:([^\]]+)\]/);
+      if(tagged)clientToOfficer[c.id]=tagged[1];
+    });
 
     const officerStats = {};
     const staffData = cachedData.staff || [];

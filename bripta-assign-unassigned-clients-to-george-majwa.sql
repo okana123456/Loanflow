@@ -99,6 +99,52 @@ revoke all on function public.bripta_assign_client_portfolio(uuid, uuid, text)
 grant execute on function public.bripta_assign_client_portfolio(uuid, uuid, text)
   to authenticated, service_role;
 
+-- Backfill the explicit client portfolio owner from existing assignment data.
+-- This makes registration-fee attribution work even before a client has a loan.
+with assignment_candidates as (
+  select c.id as client_id, c.business_id, l.loan_officer_id as officer_id,
+         1 as priority, coalesce(l.disbursement_date::text, l.created_at::text, '') as assignment_date
+  from public.loan_clients c
+  join public.loans l on l.client_id = c.id and l.business_id = c.business_id
+  where l.status = 'active' and l.loan_officer_id is not null
+  union all
+  select c.id, c.business_id, l.loan_officer_id, 2,
+         coalesce(l.disbursement_date::text, l.created_at::text, '')
+  from public.loan_clients c
+  join public.loans l on l.client_id = c.id and l.business_id = c.business_id
+  where l.loan_officer_id is not null
+  union all
+  select c.id, c.business_id,
+         (regexp_match(c.notes, '\[OFFICER:([0-9a-fA-F-]{36})\]'))[1]::uuid,
+         3, ''
+  from public.loan_clients c
+  where coalesce(c.notes, '') ~ '\[OFFICER:[0-9a-fA-F-]{36}\]'
+  union all
+  select c.id, c.business_id, a.loan_officer_id, 4,
+         coalesce(a.created_at::text, '')
+  from public.loan_clients c
+  join public.loan_applications a
+    on a.client_id = c.id and a.business_id = c.business_id
+  where a.loan_officer_id is not null
+), valid_candidates as (
+  select candidate.*,
+         row_number() over (
+           partition by candidate.client_id
+           order by candidate.priority, candidate.assignment_date desc
+         ) as choice
+  from assignment_candidates candidate
+  join public.loan_staff staff
+    on staff.id = candidate.officer_id
+   and staff.business_id = candidate.business_id
+   and coalesce(staff.is_active, true) = true
+)
+update public.loan_clients c
+set loan_officer_id = source.officer_id
+from valid_candidates source
+where c.id = source.client_id
+  and c.loan_officer_id is null
+  and source.choice = 1;
+
 do $$
 declare
   v_george_id uuid;
