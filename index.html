@@ -346,6 +346,18 @@ const SERVICE_BILLING_FIRST_REMINDER_DATE = '2026-08-02';
 const SERVICE_BILLING_REMINDER_DAY = 2;
 const SERVICE_BILLING_LOCK_DAY = 4;
 
+// Bripta keeps operational audit identities separate from portfolio ownership.
+// When this admin performs loan work, credit the designated loan officer while
+// retaining created_by / approved_by / collected_by as the actual actor.
+const BRIPTA_OFFICER_REDIRECTS = {
+  'BIZ-B3F5E5D9': {
+    '1fb41aa9-e878-400e-a959-54c6a8e794a5': 'd1479025-fad1-4178-a147-a0faf97764ac'
+  }
+};
+function canonicalLoanOfficerId(staffId){
+  return BRIPTA_OFFICER_REDIRECTS[currentUser?.business_id]?.[staffId] || staffId || null;
+}
+
 // Low-egress local cache. It keeps heavy business tables on the device and
 // later syncs only rows changed through updated_at tracking.
 const BRIPTA_CACHE_VERSION = 1;
@@ -2339,7 +2351,7 @@ async function saveClient(){
     const todayStr=today();
     const userNotes=($('#cNotes').value||'').trim();
     const isOfficerOnly=hasRole('loan_officer')&&!hasRole('admin','branch_manager');
-    const assignedOfficerId=($('#cAssignedOfficer')?.value||(isOfficerOnly?currentUser?.id:'')||'').trim();
+    const assignedOfficerId=canonicalLoanOfficerId(($('#cAssignedOfficer')?.value||(isOfficerOnly?currentUser?.id:'')||'').trim());
     if(!assignedOfficerId){
       if(btn){btn.disabled=false;btn.textContent='Save Client';}
       return toast('Please assign the client to a loan officer','warning');
@@ -2921,13 +2933,13 @@ async function submitApplication(){
     // If the client already has a loan (and therefore an assigned officer),
     // keep that officer on the new application — UNLESS the person submitting
     // is themselves a loan officer (in which case it's their own client now).
-    let appOfficerId = currentUser?.id;
+    let appOfficerId = canonicalLoanOfficerId(currentUser?.id);
     if(prevLoanCheck && prevLoanCheck.length > 0 && prevLoanCheck[0].loan_officer_id){
       const isOfficerSubmitting = hasRole('loan_officer') && !hasRole('admin','branch_manager');
       if(!isOfficerSubmitting){
         // Admin/manager submitting on behalf of a client — keep the client's
         // existing assigned officer instead of attributing it to the admin
-        appOfficerId = prevLoanCheck[0].loan_officer_id;
+        appOfficerId = canonicalLoanOfficerId(prevLoanCheck[0].loan_officer_id);
       }
     }
     const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:appOfficerId,business_id:currentUser?.business_id,loan_type:loanType};
@@ -3148,12 +3160,12 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // most recent previous loan's officer, (3) fallback to currentUser.
     // This prevents an admin disbursing on behalf of a client from
     // overwriting the officer assignment.
-    let disbOfficerId = currentUser?.id;
+    let disbOfficerId = canonicalLoanOfficerId(currentUser?.id);
     const{data:appOfficerRow}=await sb('loan_applications').select('loan_officer_id').eq('id',appId).single();
     if(appOfficerRow?.loan_officer_id){
-      disbOfficerId = appOfficerRow.loan_officer_id;
+      disbOfficerId = canonicalLoanOfficerId(appOfficerRow.loan_officer_id);
     } else if(isReturningClient && prevLoans[0]?.loan_officer_id){
-      disbOfficerId = prevLoans[0].loan_officer_id;
+      disbOfficerId = canonicalLoanOfficerId(prevLoans[0].loan_officer_id);
     }
     // Full principal is disbursed; automatic fee diversion is disabled.
     const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:0,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
@@ -6302,9 +6314,9 @@ async function renderOfficerPerformance(){
     window._perfRows = []; // reset
     const rows = filteredOfficers.map(o=>{
       // Match loans where loan_officer_id === o.id (also include apps later)
-      const oLoans = allLoans.filter(l=>l.loan_officer_id===o.id);
+      const oLoans = allLoans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id);
       const oActive = oLoans.filter(l=>l.status==='active');
-      const oApps = allApps.filter(a=>a.loan_officer_id===o.id);
+      const oApps = allApps.filter(a=>canonicalLoanOfficerId(a.loan_officer_id)===o.id);
       const oAppsMonth = oApps.filter(a=>a.created_at && a.created_at.startsWith(nowM));
       const oLoansMonth = oLoans.filter(l=>l.disbursement_date && l.disbursement_date.startsWith(nowM));
       const oClientIds = new Set(oLoans.map(l=>l.client_id));
@@ -6842,13 +6854,13 @@ async function renderAccounting() {
     // first because registration fees can exist before the first loan.
     const clientToOfficer = {};
     (cachedData.clients||[]).forEach(c=>{
-      if(c.loan_officer_id) clientToOfficer[c.id]=c.loan_officer_id;
+      if(c.loan_officer_id) clientToOfficer[c.id]=canonicalLoanOfficerId(c.loan_officer_id);
     });
     allLoansForMapping.filter(l=>l.status==='active').forEach(l=>{
-      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=l.loan_officer_id;
+      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=canonicalLoanOfficerId(l.loan_officer_id);
     });
     allLoansForMapping.forEach(l=>{
-      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=l.loan_officer_id;
+      if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=canonicalLoanOfficerId(l.loan_officer_id);
     });
     (cachedData.clients||[]).forEach(c=>{
       if(clientToOfficer[c.id])return;
@@ -6886,7 +6898,7 @@ async function renderAccounting() {
     });
 
     filteredLoans.forEach(l => {
-      const offId = l.loan_officer_id || 'unassigned';
+      const offId = canonicalLoanOfficerId(l.loan_officer_id) || 'unassigned';
       ensureAccountingOfficer(offId);
       const procAmt = Number(l.processing_fee||0);
       officerStats[offId].proc += procAmt;
@@ -6895,7 +6907,7 @@ async function renderAccounting() {
 
     filteredReps.forEach(r => {
       const loan = loanMap[r.loan_id];
-      const offId = loan?.loan_officer_id || 'unassigned';
+      const offId = canonicalLoanOfficerId(loan?.loan_officer_id) || 'unassigned';
       ensureAccountingOfficer(offId);
       const intAmt = calcInterestPortionAcct(r);
       officerStats[offId].interest += intAmt;
@@ -7847,7 +7859,7 @@ async function handleExcelImport(ev){
               applied_term_weeks:termWeeksCalc||1,
               purpose:ln.loan_product||'Imported loan',
               status:'disbursed',
-              loan_officer_id:currentUser?.id,
+              loan_officer_id:canonicalLoanOfficerId(currentUser?.id),
               business_id:currentUser.business_id,
               application_date:ln.application_date||ln.disbursement_date||null,
               approved_at:ln.disbursement_date||null,
@@ -7893,7 +7905,7 @@ async function handleExcelImport(ev){
           arrears_amount:0,
           overdue_days:0,
           disbursement_method:'cash',
-          loan_officer_id:currentUser?.id,
+          loan_officer_id:canonicalLoanOfficerId(currentUser?.id),
           business_id:currentUser.business_id
         };
         Object.keys(loanRec).forEach(k=>loanRec[k]===undefined&&delete loanRec[k]);
