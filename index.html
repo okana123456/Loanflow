@@ -362,7 +362,8 @@ function canonicalLoanOfficerId(staffId){
 // Low-egress local cache. It keeps heavy business tables on the device and
 // later syncs only rows changed through updated_at tracking.
 const BRIPTA_CACHE_VERSION = 1;
-const BRIPTA_FULL_SYNC_MS = 14 * 24 * 60 * 60 * 1000;
+const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
+const BRIPTA_MIN_SYNC_MS = 60 * 1000;
 const BRIPTA_SYNC_OVERLAP_MS = 5 * 60 * 1000;
 const BRIPTA_CACHE_MAP = {
   loan_clients: 'clients',
@@ -417,12 +418,12 @@ async function writeBriptaCache(table, rows, fullSyncAt){
     });
   }catch(e){}
 }
-async function fetchPagedBusinessRows(table, configureQuery){
+async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   const pageSize = 1000;
   const maxRows = 100000;
   const rows = [];
   for(let from=0; from<maxRows; from+=pageSize){
-    let query = sb(table).select('*').range(from, from + pageSize - 1);
+    let query = sb(table).select(columns).range(from, from + pageSize - 1);
     if(currentUser?.business_id) query = query.eq('business_id', currentUser.business_id);
     if(configureQuery) query = configureQuery(query);
     const {data,error} = await query;
@@ -434,6 +435,9 @@ async function fetchPagedBusinessRows(table, configureQuery){
 }
 async function fetchBriptaTableOptimized(table){
   const cached = await readBriptaCache(table);
+  if(cached && Array.isArray(cached.rows) && Date.now() - Number(cached.savedAt || 0) < BRIPTA_MIN_SYNC_MS){
+    return {data: cached.rows, error: null, fromCache: true, syncSkipped: true};
+  }
   const needsFull = !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= BRIPTA_FULL_SYNC_MS;
   if(needsFull){
     const result = await fetchPagedBusinessRows(table);
@@ -848,7 +852,7 @@ async function saveCroppedClientPhoto(){
     const safeBiz = String(currentUser?.business_id || 'business').replace(/[^a-zA-Z0-9_-]/g,'');
     const path = `${safeBiz}/${clientId}-${Date.now()}.jpg`;
     const oldPath = clientPhotoCropState.oldPath;
-    const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:false, cacheControl:'3600'});
+    const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:false, cacheControl:'604800'});
     if(uploadError) throw uploadError;
     const {error:updateError} = await sb('loan_clients').update({photo_path:path}).eq('id',clientId).eq('business_id',currentUser.business_id);
     if(updateError) throw updateError;
@@ -6775,25 +6779,30 @@ async function renderAccounting() {
     const qFetchStart=shiftISODate(qStart,-1);
     const qEndFull = shiftISODate(qEnd,1) + 'T23:59:59+00:00';
 
-    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_penalties','loan_staff']);
+    const [loanResult,repResult,clientResult,staffResult] = await Promise.all([
+      fetchPagedBusinessRows('loans', q=>q.gte('disbursement_date',qFetchStart).lte('disbursement_date',qEnd),
+        'id,client_id,loan_officer_id,processing_fee,disbursed_amount,principal_amount,total_interest,total_payable,disbursement_date,status'),
+      fetchPagedBusinessRows('loan_repayments', q=>q.gte('payment_date',qFetchStart).lte('payment_date',qEndFull),
+        'id,loan_id,amount,loan_portion,interest_portion,penalty_portion,payment_method,payment_date,created_at,loans(id,client_id,loan_officer_id,total_interest,total_payable,status)'),
+      fetchPagedBusinessRows('loan_clients', q=>q.gte('created_at',`${qFetchStart}T00:00:00+00:00`).lte('created_at',qEndFull),
+        'id,loan_officer_id,notes,created_at'),
+      fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active')
+    ]);
+    const failed=[loanResult,repResult,clientResult,staffResult].find(result=>result.error);
+    if(failed) throw failed.error;
 
-    const allLoans = (cachedData.loans||[]).filter(l=>{
-      const d=String(l.disbursement_date||'');
-      return d && d>=qFetchStart && d<=qEndFull;
-    }).sort((a,b)=>String(b.disbursement_date||'').localeCompare(String(a.disbursement_date||'')));
-    const allLoansForMapping = cachedData.loans||allLoans;
-    const allReps = (cachedData.repayments||[]).filter(r=>{
-      const d=String(r.payment_date||'');
-      return d && d>=qFetchStart && d<=qEndFull;
-    }).sort((a,b)=>String(b.payment_date||'').localeCompare(String(a.payment_date||'')));
-    const allClients = (cachedData.clients||[]).filter(c=>{
-      const d=String(c.created_at||'');
-      return d && d>=qFetchStart && d<=qEndFull;
-    }).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
-    const allPenalties = (cachedData.penalties||[]).filter(p=>{
-      const d=String(p.date_charged||'');
-      return !p.is_waived && d && d>=qFetchStart && d<=qEndFull;
-    }).sort((a,b)=>String(b.date_charged||'').localeCompare(String(a.date_charged||'')));
+    const allLoans = (loanResult.data||[])
+      .sort((a,b)=>String(b.disbursement_date||'').localeCompare(String(a.disbursement_date||'')));
+    const allReps = (repResult.data||[])
+      .sort((a,b)=>String(b.payment_date||'').localeCompare(String(a.payment_date||'')));
+    const allClients = (clientResult.data||[])
+      .sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+    const staffData = staffResult.data||[];
+    const allLoansForMapping = [...allLoans];
+    allReps.forEach(rep=>{
+      const related=rep.loans;
+      if(related && !allLoansForMapping.some(loan=>loan.id===related.id)) allLoansForMapping.push(related);
+    });
 
     // Build loan lookup map for fast interest ratio calculation
     const loanMap = {};
@@ -6807,8 +6816,6 @@ async function renderAccounting() {
       return (method.includes('mpesa')||method.includes('m-pesa'))&&r.created_at?r.created_at:r.payment_date;
     }, f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
-    const filteredPenalties = filterByDate(allPenalties.filter(p=>p.date_charged), 'date_charged', f);
-
     // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
     // Bripta collects these charges separately from loan repayments. Recognize
@@ -6854,7 +6861,7 @@ async function renderAccounting() {
     // Officer Revenue Breakdown — use the client's explicit portfolio owner
     // first because registration fees can exist before the first loan.
     const clientToOfficer = {};
-    (cachedData.clients||[]).forEach(c=>{
+    allClients.forEach(c=>{
       if(c.loan_officer_id) clientToOfficer[c.id]=canonicalLoanOfficerId(c.loan_officer_id);
     });
     allLoansForMapping.filter(l=>l.status==='active').forEach(l=>{
@@ -6863,14 +6870,13 @@ async function renderAccounting() {
     allLoansForMapping.forEach(l=>{
       if(l.loan_officer_id&&!clientToOfficer[l.client_id]) clientToOfficer[l.client_id]=canonicalLoanOfficerId(l.loan_officer_id);
     });
-    (cachedData.clients||[]).forEach(c=>{
+    allClients.forEach(c=>{
       if(clientToOfficer[c.id])return;
       const tagged=String(c.notes||'').match(/\[OFFICER:([^\]]+)\]/);
       if(tagged)clientToOfficer[c.id]=tagged[1];
     });
 
     const officerStats = {};
-    const staffData = cachedData.staff || [];
     const accountingStaffMap={};
     (staffData||[]).forEach(s=>{accountingStaffMap[s.id]=s;});
     const ensureAccountingOfficer=(offId)=>{
