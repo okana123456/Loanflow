@@ -351,7 +351,8 @@ const SERVICE_BILLING_LOCK_DAY = 4;
 // retaining created_by / approved_by / collected_by as the actual actor.
 const BRIPTA_OFFICER_REDIRECTS = {
   'BIZ-B3F5E5D9': {
-    '1fb41aa9-e878-400e-a959-54c6a8e794a5': 'd1479025-fad1-4178-a147-a0faf97764ac'
+    '1fb41aa9-e878-400e-a959-54c6a8e794a5': 'd1479025-fad1-4178-a147-a0faf97764ac',
+    '910139c3-36b8-49bf-915b-764d7095a3ec': '74b5e8ca-fabf-4890-b17b-5f6fc80e0d99'
   }
 };
 function canonicalLoanOfficerId(staffId){
@@ -6882,8 +6883,9 @@ async function renderAccounting() {
       return officerStats[offId];
     };
     (staffData || []).forEach(s => {
-      // Exclude Admin from Officer Performance
-      if (!(s.role || '').includes('admin')) {
+      const roles=(s.role||'').split(',').map(role=>role.trim());
+      // Revenue performance is exclusively for active loan officers.
+      if (s.is_active!==false && roles.includes('loan_officer')) {
         officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
       }
     });
