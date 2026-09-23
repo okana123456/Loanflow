@@ -1456,7 +1456,7 @@ function buildSidebar() {
     { id: 'officer_dashboard', icon: '◉', label: 'My Dashboard', roles: ['loan_officer'] },
     { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager'] },
     { id: 'sms_center', icon: 'M', label: 'SMS Centre', roles: ['admin', 'branch_manager'] },
-    { id: 'suspense', icon: '?', label: 'Suspense Account', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'suspense', icon: '?', label: 'Suspense Account', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'] },
     { id: 'excess_charges', icon: 'E', label: 'Excess & Charges', roles: ['admin'] },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
     { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer'] },
@@ -4008,6 +4008,7 @@ async function confirmMpesaPayment(queueId,billRef,amount,transId){
 }
 
 async function dismissMpesaPayment(queueId){
+  if(!requireSuspenseManage())return;
   if(!await confirm_('Dismiss this M-Pesa payment? It will be removed from suspense without recording a repayment.'))return;
   try{
     const dismissedAt=new Date().toISOString();
@@ -5775,15 +5776,29 @@ async function settleBriptaCharge(chargeId,action){
 const selectedSuspenseEntries=new Set();
 let visibleSuspenseEntries=[];
 
+function canManageSuspense(){
+  return hasRole('admin','branch_manager','cashier');
+}
+
+function requireSuspenseManage(){
+  if(canManageSuspense())return true;
+  toast('Your Suspense Account access is view only','warning');
+  return false;
+}
+
 async function renderSuspense(){
   const main=$('#mainContent');
+  const canManage=canManageSuspense();
+  if(!canManage)selectedSuspenseEntries.clear();
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
     const[queueR,loansR,suspR]=await Promise.all([
       sb('mpesa_callback_queue').select('*').order('created_at',{ascending:false}).limit(3000),
-      sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
-        .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0),
+      canManage
+        ? sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
+            .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
+        : Promise.resolve({data:[],error:null}),
       sb('unmatched_payments').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false})
     ]);
 
@@ -5810,39 +5825,39 @@ async function renderSuspense(){
     main.innerHTML=`
       <div class="page-header">
         <h1>💼 Suspense Account</h1>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${canManage?`<div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-outline btn-sm" onclick="selectAllVisibleSuspense()">Select all</button>
           <button class="btn btn-outline btn-sm" onclick="clearSuspenseSelection()">Clear selection</button>
           <button class="btn btn-outline btn-sm" id="bulkDismissSuspenseBtn" onclick="bulkDismissSuspense()" disabled>Dismiss selected (0)</button>
           <button class="btn btn-outline btn-sm" onclick="openAddSuspenseModal()">+ Add Unmatched Payment</button>
-        </div>
+        </div>`:'<span class="badge badge-blue">View only</span>'}
       </div>
       <div class="card" style="margin-bottom:14px;background:rgba(217,119,6,0.08);border-color:rgba(217,119,6,0.3)">
         <div style="display:flex;gap:24px;flex-wrap:wrap">
           <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Unmatched Payments</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${queue.length+pendingManualSuspense.length}</div></div>
           <div><div style="font-size:10px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px">Total Suspense Amount</div><div style="font-size:22px;font-weight:800;color:var(--accent-yellow)">${fmtMoney(totalSuspense)}</div></div>
         </div>
-        <p style="font-size:11px;color:var(--text-secondary);margin-top:6px">These are M-Pesa payments received that could not be automatically matched to a loan account. Match each payment to the correct client loan below.</p>
+        <p style="font-size:11px;color:var(--text-secondary);margin-top:6px">${canManage?'These are M-Pesa payments received that could not be automatically matched to a loan account. Match each payment to the correct client loan below.':'These are payments waiting for authorized finance staff to review and match. Your account can view these records but cannot change them.'}</p>
       </div>
 
       <h3 class="dash-h3">Unmatched M-Pesa (Daraja Queue)</h3>
       <div class="table-wrap" style="margin-bottom:14px">
         <table>
-          <thead><tr><th style="width:34px"><input type="checkbox" aria-label="Select all M-Pesa suspense rows" onchange="toggleSuspenseTypeSelection('mpesa',this.checked)"></th><th>Date</th><th>M-Pesa Ref</th><th>Phone</th><th>Account Ref</th><th>Amount</th><th>Actions</th></tr></thead>
+          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all M-Pesa suspense rows" onchange="toggleSuspenseTypeSelection(\'mpesa\',this.checked)"></th>':''}<th>Date</th><th>M-Pesa Ref</th><th>Phone</th><th>Account Ref</th><th>Amount</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
           <tbody>
             ${queue.length?queue.map(q=>`
               <tr>
-                <td><input type="checkbox" aria-label="Select M-Pesa payment ${escapeHtml(q.trans_id||'')}" ${selectedSuspenseEntries.has(`mpesa:${q.id}`)?'checked':''} onchange="toggleSuspenseSelection('mpesa','${q.id}',this.checked)"></td>
+                ${canManage?`<td><input type="checkbox" aria-label="Select M-Pesa payment ${escapeHtml(q.trans_id||'')}" ${selectedSuspenseEntries.has(`mpesa:${q.id}`)?'checked':''} onchange="toggleSuspenseSelection('mpesa','${q.id}',this.checked)"></td>`:''}
                 <td>${fmtDateTime(q.created_at)}</td>
                 <td><strong>${escapeHtml(q.trans_id||'-')}</strong></td>
                 <td>${paymentPhoneHtml(q)}</td>
                 <td>${escapeHtml(q.bill_ref_number||'-')}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(q.trans_amount)}</strong></td>
-                <td style="display:flex;gap:4px;flex-wrap:wrap">
+                ${canManage?`<td style="display:flex;gap:4px;flex-wrap:wrap">
                   <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}','${q.loan_id||''}')">Match to Loan</button>
                   <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>
-                </td>
-              </tr>`).join(''):'<tr><td colspan="7"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No unmatched M-Pesa payments</div></td></tr>'}
+                </td>`:'<td><span class="badge badge-blue">View only</span></td>'}
+              </tr>`).join(''):`<tr><td colspan="${canManage?7:6}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No unmatched M-Pesa payments</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -5850,23 +5865,23 @@ async function renderSuspense(){
       <h3 class="dash-h3">Manual Suspense Entries</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th style="width:34px"><input type="checkbox" aria-label="Select all manual suspense rows" onchange="toggleSuspenseTypeSelection('unmatched',this.checked)"></th><th>Date</th><th>Reference</th><th>Description</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all manual suspense rows" onchange="toggleSuspenseTypeSelection(\'unmatched\',this.checked)"></th>':''}<th>Date</th><th>Reference</th><th>Description</th><th>Amount</th><th>Status</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
           <tbody>
             ${pendingManualSuspense.length?pendingManualSuspense.map(r=>`
               <tr>
-                <td><input type="checkbox" aria-label="Select manual suspense entry" ${selectedSuspenseEntries.has(`unmatched:${r.id}`)?'checked':''} onchange="toggleSuspenseSelection('unmatched','${r.id}',this.checked)"></td>
+                ${canManage?`<td><input type="checkbox" aria-label="Select manual suspense entry" ${selectedSuspenseEntries.has(`unmatched:${r.id}`)?'checked':''} onchange="toggleSuspenseSelection('unmatched','${r.id}',this.checked)"></td>`:''}
                 <td>${fmtDate(r.created_at)}</td>
                 <td>${r.mpesa_reference||r.invoice_id||'-'}</td>
                 <td>${r.payer_name||'-'} · ${r.payer_phone||'-'} · Acct: ${r.account_number||'-'}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(r.amount)}</strong></td>
                 <td>${!r.resolved?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
-                <td>${!r.resolved?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button><button class="btn btn-outline btn-sm" onclick="dismissManualSuspense('${r.id}')">Dismiss</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'}</td>
-              </tr>`).join(''):'<tr><td colspan="7"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>'}
+                <td>${canManage?(!r.resolved?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button><button class="btn btn-outline btn-sm" onclick="dismissManualSuspense('${r.id}')">Dismiss</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'):'<span class="badge badge-blue">View only</span>'}</td>
+              </tr>`).join(''):`<tr><td colspan="${canManage?7:6}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>`}
           </tbody>
         </table>
       </div>
     `;
-    updateSuspenseBulkControls();
+    if(canManage)updateSuspenseBulkControls();
   }catch(e){
     main.innerHTML=`<div class="empty-state"><p>Error: ${e.message}</p></div>`;
     toast(e.message,'error');
@@ -5909,6 +5924,7 @@ function updateSuspenseBulkControls(){
 }
 
 async function bulkDismissSuspense(){
+  if(!requireSuspenseManage())return;
   const selected=visibleSuspenseEntries.filter(entry=>selectedSuspenseEntries.has(entry.key));
   if(!selected.length)return toast('Select at least one suspense amount','warning');
   const total=selected.reduce((sum,entry)=>sum+entry.amount,0);
@@ -5957,6 +5973,7 @@ async function bulkDismissSuspense(){
 }
 
 async function openAddSuspenseModal(){
+  if(!requireSuspenseManage())return;
   openModal(`
     <h2>Add Unmatched Payment to Suspense</h2>
     <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Record a cash or M-Pesa payment that you cannot yet match to a specific loan.</p>
@@ -5974,6 +5991,7 @@ async function openAddSuspenseModal(){
 }
 
 async function saveSuspenseEntry(){
+  if(!requireSuspenseManage())return;
   const amt=Number($('#suspAmt').value);
   if(!amt||amt<=0)return toast('Enter a valid amount','warning');
   try{
@@ -5994,6 +6012,7 @@ async function saveSuspenseEntry(){
 }
 
 async function dismissManualSuspense(entryId){
+  if(!requireSuspenseManage())return;
   if(!await confirm_('Dismiss this suspense amount? It will be removed from the pending suspense total without creating a repayment.'))return;
   try{
     const dismissedAt=new Date().toISOString();
@@ -6015,6 +6034,7 @@ async function dismissManualSuspense(entryId){
 }
 
 async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){
+  if(!requireSuspenseManage())return;
   const{data:loans}=await sb('loans')
     .select('id,loan_no,client_id,outstanding_balance,registration_fee_due,registration_fee_paid,processing_fee,processing_fee_paid,loan_clients(full_name,phone,id_number)')
     .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
@@ -6084,6 +6104,7 @@ function previewSuspenseMatch(amount){
 }
 
 async function confirmSuspenseMatch(entryId, entryType, amount, ref){
+  if(!requireSuspenseManage())return;
   const loanId=document.getElementById('suspMatchLoan')?.value;
   if(!loanId)return toast('Please select a loan','warning');
   const btn=[...document.querySelectorAll('.modal-actions .btn-primary')].find(b=>/Confirm Match/i.test(b.textContent||''));
