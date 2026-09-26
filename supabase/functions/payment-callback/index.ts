@@ -6,21 +6,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function phoneVariants(value: unknown) {
-  const digits = String(value || "").replace(/\D/g, "");
-  const out = new Set<string>();
-  if (!digits) return [];
-  out.add(digits);
-  if (digits.length >= 9) out.add(digits.slice(-9));
-  if (digits.length === 12 && digits.startsWith("254")) out.add("0" + digits.slice(3));
-  if (digits.length === 10 && digits.startsWith("0")) out.add("254" + digits.slice(1));
-  if (digits.length === 9 && /^[17]/.test(digits)) {
-    out.add("0" + digits);
-    out.add("254" + digits);
-  }
-  return [...out];
-}
-
 function digitsOnly(value: unknown) {
   return String(value || "").replace(/\D/g, "");
 }
@@ -152,63 +137,25 @@ serve(async (req) => {
       return accepted;
     }
 
-    const candidates = [...new Set([
-      ...phoneVariants(accountNumber),
-      ...phoneVariants(payerPhone),
-    ])];
-
     let client: { id: string; business_id: string; full_name: string | null; account_credit?: number | null } | null = null;
-    for (const candidateBusiness of configuredBusinesses) {
-      for (const phone of candidates) {
+    // Bripta instructs clients to use their National ID as the Paybill account.
+    // Never infer the borrower from the sender phone: somebody else may pay on
+    // a client's behalf, and masked phone values are not valid identifiers.
+    // Short or incomplete references such as "50" must remain in suspense.
+    const accountDigits = digitsOnly(accountNumber);
+    if (accountDigits.length >= 5 && accountDigits.length <= 12) {
+      const accountMatches: Array<{ id: string; business_id: string; full_name: string | null; account_credit?: number | null }> = [];
+      for (const candidateBusiness of configuredBusinesses) {
         const { data } = await supabase
           .from("loan_clients")
           .select("id, business_id, full_name, account_credit")
           .eq("business_id", candidateBusiness)
-          .eq("phone", phone)
-          .limit(1)
-          .maybeSingle();
-        if (data) {
-          client = data;
-          break;
-        }
-      }
-      if (client) break;
-    }
-
-    if (!client && candidates.length) {
-      const tails = [...new Set(candidates.map((candidate) => candidate.replace(/\D/g, "").slice(-9)).filter(Boolean))];
-      for (const candidateBusiness of configuredBusinesses) {
-        for (const tail of tails) {
-          if (client) break;
-          if (!tail) continue;
-          const { data } = await supabase
-            .from("loan_clients")
-            .select("id, business_id, full_name, phone, account_credit")
-            .eq("business_id", candidateBusiness)
-            .ilike("phone", `%${tail}`)
-            .limit(1)
-            .maybeSingle();
-          if (data) client = data;
-        }
-        if (client) break;
-      }
-    }
-
-    const accountDigits = digitsOnly(accountNumber);
-    if (!client && accountDigits) {
-      for (const candidateBusiness of configuredBusinesses) {
-        const { data } = await supabase
-          .from("loan_clients")
-          .select("id, business_id, full_name, phone, id_number, account_credit")
-          .eq("business_id", candidateBusiness)
           .eq("id_number", accountDigits)
-          .limit(1)
-          .maybeSingle();
-        if (data) {
-          client = data;
-          break;
-        }
+          .limit(2);
+        for (const row of data || []) accountMatches.push(row);
       }
+      const uniqueMatches = [...new Map(accountMatches.map((row) => [row.id, row])).values()];
+      if (uniqueMatches.length === 1) client = uniqueMatches[0];
     }
 
     if (client) {
@@ -366,7 +313,7 @@ serve(async (req) => {
         processing_fee_portion: processingFeePortion,
         loan_portion: loanPortion,
         credit_portion: creditPortion,
-        notes: `Auto-confirmed via Daraja C2B. Matched by phone. Allocation: ${allocationNote || "none"}. Payer: ${payerName}`,
+        notes: `Auto-confirmed via Daraja C2B. Matched by National ID account. Allocation: ${allocationNote || "none"}. Payer: ${payerName}`,
       })
       .select("id")
       .single();
@@ -434,7 +381,7 @@ serve(async (req) => {
         total_paid: newTotalPaid,
         outstanding_balance: newBalance,
         status: newBalance <= 0 ? "completed" : loan.status,
-        arrears_amount: newBalance <= 0 ? 0 : Number(arrears.toFixed(2)),
+        arrears_amount: newBalance <= 0 ? 0 : Number(Math.min(newBalance, arrears).toFixed(2)),
         overdue_days: newBalance <= 0 ? 0 : overdueDays,
       })
       .eq("id", loan.id);
