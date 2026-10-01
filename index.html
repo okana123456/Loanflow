@@ -367,7 +367,9 @@ function canonicalLoanOfficerId(staffId){
 
 // Low-egress local cache. It keeps heavy business tables on the device and
 // later syncs only rows changed through updated_at tracking.
-const BRIPTA_CACHE_VERSION = 3;
+// Increment when database visibility rules change so an earlier partial/empty
+// RLS response cannot remain visible after the policy has been repaired.
+const BRIPTA_CACHE_VERSION = 4;
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
 const BRIPTA_MIN_SYNC_MS = 60 * 1000;

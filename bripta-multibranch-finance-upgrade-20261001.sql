@@ -228,8 +228,8 @@ end $$;
 
 create or replace function public.bripta_can_access_branch(p_branch uuid)
 returns boolean language sql stable security definer set search_path=public as $$
-  select exists(select 1 from public.loan_staff s where s.auth_user_id=auth.uid() and coalesce(s.is_active,true)
-    and (public.bripta_has_role('admin') or s.branch_id=p_branch))
+  select public.bripta_has_role('admin')
+    or ((public.bripta_current_staff()).id is not null and (public.bripta_current_staff()).branch_id=p_branch)
 $$;
 
 -- Automatically inherit branch from the relevant parent or the acting staff.
