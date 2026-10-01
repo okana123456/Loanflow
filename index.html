@@ -431,7 +431,7 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   for(let from=0; from<maxRows; from+=pageSize){
     let query = sb(table).select(columns).range(from, from + pageSize - 1);
     if(currentUser?.business_id) query = query.eq('business_id', currentUser.business_id);
-    if(selectedBranchId && table!=='loan_staff') query = query.eq('branch_id', selectedBranchId);
+    if(selectedBranchId && table!=='loan_staff' && currentSection!=='sms_center') query = query.eq('branch_id', selectedBranchId);
     if(configureQuery) query = configureQuery(query);
     const {data,error} = await query;
     if(error) return {data: rows, error};
@@ -1590,7 +1590,7 @@ function navigateTo(section){
     dashboard:renderDashboard,clients:renderClients,inactive_clients:renderInactiveClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,excess_charges:renderExcessCharges,
-    accounting:renderAccounting,expenses:renderExpenses,assets:renderAssets,branches:renderBranches,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
+    accounting:renderAccountingLegacy,expenses:renderExpenses,assets:renderAssets,branches:renderBranches,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
   if(renderers[section])renderers[section]();

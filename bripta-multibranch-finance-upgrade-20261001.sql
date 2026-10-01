@@ -24,14 +24,7 @@ create table if not exists public.bripta_branches (
 
 insert into public.bripta_branches (id,business_id,code,name,is_head_office,is_active)
 values ('00000000-0000-4000-8000-000000000001','SYSTEM','HO','Head Office',true,true)
-on conflict (id) do update set business_id='SYSTEM',name='Head Office',is_head_office=true,is_active=true;
-
--- Create a Head Office for every populated legacy business scope. Rows with a
--- blank business_id use the neutral SYSTEM scope instead of being rejected.
-insert into public.bripta_branches(business_id,code,name,is_head_office,is_active)
-select distinct s.business_id,'HO','Head Office',true,true
-from public.loan_staff s where nullif(trim(s.business_id),'') is not null
-on conflict(business_id,code) do update set is_head_office=true,is_active=true;
+on conflict (id) do update set business_id='SYSTEM',is_head_office=true,is_active=true;
 
 do $$
 declare t text;
@@ -52,7 +45,7 @@ end $$;
 alter table public.mpesa_callback_queue add column if not exists branch_id uuid references public.bripta_branches(id);
 update public.mpesa_callback_queue
 set branch_id='00000000-0000-4000-8000-000000000001'
-where branch_id is null;
+where branch_id is null or branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
 create index if not exists mpesa_callback_queue_branch_idx on public.mpesa_callback_queue(branch_id);
 
 -- Backfill without touching any financial amount or status.
@@ -66,9 +59,10 @@ begin
   ] loop
     if to_regclass('public.'||t) is not null then
       execute format($q$
-        update public.%I x set branch_id=b.id
-        from public.bripta_branches b
-        where x.branch_id is null and b.business_id=coalesce(nullif(trim(x.business_id),''),'SYSTEM') and b.is_head_office
+        update public.%I set branch_id='00000000-0000-4000-8000-000000000001'
+        where branch_id is null or branch_id in (
+          select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001'
+        )
       $q$,t);
       execute format('create index if not exists %I on public.%I (business_id,branch_id)',t||'_branch_idx',t);
     end if;
@@ -249,7 +243,7 @@ begin
     select branch_id into v_branch from public.loans where id=new.loan_id;
   end if;
   if v_branch is null then select branch_id into v_branch from public.loan_staff where auth_user_id=auth.uid() limit 1; end if;
-  if v_branch is null then select id into v_branch from public.bripta_branches where business_id=coalesce(nullif(trim(new.business_id),''),'SYSTEM') and is_head_office limit 1; end if;
+  if v_branch is null then select id into v_branch from public.bripta_branches where id='00000000-0000-4000-8000-000000000001'; end if;
   new.branch_id:=v_branch; return new;
 end $$;
 
@@ -261,6 +255,24 @@ do $$ declare t text; begin
     end if;
   end loop;
 end $$;
+
+-- Existing figures all belong to the single editable Head Office. Consolidate
+-- only duplicate legacy Head Office assignments; real future branches remain intact.
+do $$ declare t text; begin
+  foreach t in array array['bripta_staff_permissions','bripta_expenses','bripta_assets','bripta_asset_movements','bripta_accounting_entries','bripta_domain_audit'] loop
+    execute format($q$
+      update public.%I set branch_id='00000000-0000-4000-8000-000000000001'
+      where branch_id in (
+        select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001'
+      )
+    $q$,t);
+  end loop;
+end $$;
+update public.bripta_asset_movements set from_branch_id='00000000-0000-4000-8000-000000000001'
+where from_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
+update public.bripta_asset_movements set to_branch_id='00000000-0000-4000-8000-000000000001'
+where to_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
+delete from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001';
 
 create or replace function public.bripta_post_entry(
   p_business text,p_branch uuid,p_date date,p_code text,p_name text,p_type text,
