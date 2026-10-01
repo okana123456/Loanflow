@@ -518,13 +518,20 @@ create policy bripta_permissions_admin_write on public.bripta_staff_permissions 
 drop policy if exists bripta_assets_manage on public.bripta_assets;
 create policy bripta_assets_manage on public.bripta_assets for all to authenticated using(public.bripta_has_permission('manage_assets') and public.bripta_can_access_branch(branch_id)) with check(public.bripta_has_permission('manage_assets') and public.bripta_can_access_branch(branch_id));
 
+-- Safety boundary: legacy loans, repayments, reversals and balances are never
+-- imported or recalculated by this structural upgrade. Keeping this RPC as a
+-- no-op also makes older cached frontends safe if they still call it.
+create or replace function public.bripta_sync_accounting()
+returns jsonb language sql security definer set search_path=public as $$
+  select jsonb_build_object('ok',true,'skipped',true,'reason','Historical accounting synchronization is disabled to preserve existing figures')
+$$;
+
 revoke all on function public.bripta_sync_accounting() from public,anon;
 grant execute on function public.bripta_sync_accounting(),public.bripta_submit_expense(jsonb),public.bripta_decide_expense(uuid,text,text),public.bripta_delete_expense(uuid),public.bripta_suspense_to_equity(text,numeric,text,uuid),public.bripta_transfer_portfolio(uuid,uuid,uuid[],boolean),public.bripta_subscription_amount(date) to authenticated;
 grant select on public.bripta_branches,public.bripta_staff_permissions,public.bripta_expenses,public.bripta_assets,public.bripta_asset_movements,public.bripta_accounting_entries,public.bripta_domain_audit to authenticated;
 grant insert,update on public.bripta_branches,public.bripta_staff_permissions,public.bripta_assets,public.bripta_asset_movements to authenticated;
 
--- Populate the accounting ledger from historical sources without changing them.
-select public.bripta_sync_accounting();
+-- No historical accounting synchronization is run by this migration.
 
 commit;
 
