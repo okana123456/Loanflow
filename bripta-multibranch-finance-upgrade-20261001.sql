@@ -23,8 +23,8 @@ create table if not exists public.bripta_branches (
 );
 
 insert into public.bripta_branches (id,business_id,code,name,is_head_office,is_active)
-values ('00000000-0000-4000-8000-000000000001','SYSTEM','HO','Head Office',true,true)
-on conflict (id) do update set business_id='SYSTEM',is_head_office=true,is_active=true;
+values ('00000000-0000-4000-8000-000000000001','BIZ-B3F5E5D9','HO','Head Office',true,true)
+on conflict (id) do update set business_id='BIZ-B3F5E5D9',is_head_office=true,is_active=true;
 
 do $$
 declare t text;
@@ -60,9 +60,9 @@ begin
     if to_regclass('public.'||t) is not null then
       execute format($q$
         update public.%I set branch_id='00000000-0000-4000-8000-000000000001'
-        where branch_id is null or branch_id in (
+        where business_id='BIZ-B3F5E5D9' and (branch_id is null or branch_id in (
           select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001'
-        )
+        ))
       $q$,t);
       execute format('create index if not exists %I on public.%I (business_id,branch_id)',t||'_branch_idx',t);
     end if;
@@ -99,6 +99,7 @@ select s.id,coalesce(nullif(trim(s.business_id),''),'SYSTEM'),s.branch_id,
   position('admin' in coalesce(s.role,''))>0,
   position('admin' in coalesce(s.role,''))>0
 from public.loan_staff s
+where s.business_id='BIZ-B3F5E5D9'
 on conflict (staff_id) do nothing;
 
 create table if not exists public.bripta_expenses (
@@ -262,17 +263,16 @@ do $$ declare t text; begin
   foreach t in array array['bripta_staff_permissions','bripta_expenses','bripta_assets','bripta_asset_movements','bripta_accounting_entries','bripta_domain_audit'] loop
     execute format($q$
       update public.%I set branch_id='00000000-0000-4000-8000-000000000001'
-      where branch_id in (
+      where business_id='BIZ-B3F5E5D9' and branch_id in (
         select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001'
       )
     $q$,t);
   end loop;
 end $$;
 update public.bripta_asset_movements set from_branch_id='00000000-0000-4000-8000-000000000001'
-where from_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
+where business_id='BIZ-B3F5E5D9' and from_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
 update public.bripta_asset_movements set to_branch_id='00000000-0000-4000-8000-000000000001'
-where to_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
-delete from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001';
+where business_id='BIZ-B3F5E5D9' and to_branch_id in (select id from public.bripta_branches where is_head_office and id<>'00000000-0000-4000-8000-000000000001');
 
 create or replace function public.bripta_post_entry(
   p_business text,p_branch uuid,p_date date,p_code text,p_name text,p_type text,

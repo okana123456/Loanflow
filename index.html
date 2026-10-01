@@ -367,7 +367,8 @@ function canonicalLoanOfficerId(staffId){
 
 // Low-egress local cache. It keeps heavy business tables on the device and
 // later syncs only rows changed through updated_at tracking.
-const BRIPTA_CACHE_VERSION = 2;
+const BRIPTA_CACHE_VERSION = 3;
+const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
 const BRIPTA_MIN_SYNC_MS = 60 * 1000;
 const BRIPTA_SYNC_OVERLAP_MS = 5 * 60 * 1000;
@@ -430,8 +431,7 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   const rows = [];
   for(let from=0; from<maxRows; from+=pageSize){
     let query = sb(table).select(columns).range(from, from + pageSize - 1);
-    // This installation is one lending system. Legacy rows contain mixed or
-    // blank business identifiers, so branch and role policies define access.
+    query = query.eq('business_id', BRIPTA_BUSINESS_ID);
     if(selectedBranchId && table!=='loan_staff' && currentSection!=='sms_center') query = query.eq('branch_id', selectedBranchId);
     if(configureQuery) query = configureQuery(query);
     const {data,error} = await query;
@@ -2275,7 +2275,7 @@ function toggleAllClientCheckboxes(checked){
 async function openBulkTransferModal(){
   const checked=[...document.querySelectorAll('.client-chk:checked')];
   if(!checked.length)return toast('Select at least one client','warning');
-  const{data:staff}=await sb('loan_staff').select('id,name,role').eq('is_active',true);
+  const{data:staff}=await sb('loan_staff').select('id,name,role').eq('business_id',BRIPTA_BUSINESS_ID).eq('is_active',true);
   const officers=(staff||[]).filter(s=>{const roles=(s.role||'').split(',');return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r));});
   const names=checked.slice(0,5).map(c=>c.dataset.name).join(', ')+(checked.length>5?` +${checked.length-5} more`:'');
   openModal(`
@@ -2338,7 +2338,7 @@ function filterClients(q){
 
 async function openAddClientModal(){
   // Fetch staff for officer assignment dropdown
-  const {data:staffList} = await sb('loan_staff').select('id,name,role,branch_id').eq('is_active', true);
+  const {data:staffList} = await sb('loan_staff').select('id,name,role,branch_id').eq('business_id',BRIPTA_BUSINESS_ID).eq('is_active', true);
   const officers = (staffList||[]).filter(s=>{ const roles=(s.role||'').split(','); return roles.some(r=>r.trim()==='loan_officer'); });
   const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
   const officerDropdown = `
@@ -2594,7 +2594,7 @@ async function deleteClient(id){
 // ─── TRANSFER CLIENT ───
 async function openTransferClientModal(clientId, clientName){
   if(!hasRole('admin','branch_manager'))return toast('Admin/Manager access required','warning');
-  const{data:staff}=await sb('loan_staff').select('id,name,role,email').eq('is_active',true);
+  const{data:staff}=await sb('loan_staff').select('id,name,role,email').eq('business_id',BRIPTA_BUSINESS_ID).eq('is_active',true);
   const officers=(staff||[]).filter(s=>{const roles=(s.role||'').split(',');return roles.some(r=>['loan_officer','admin','branch_manager'].includes(r));});
   openModal(`
     <h2>Transfer Client</h2>
@@ -2644,7 +2644,7 @@ async function exportClientsExcel(){
     const[{data:clients},{data:loans},{data:staff}]=await Promise.all([
       sb('loan_clients').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}),
       sb('loans').select('id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,maturity_date,overdue_days,arrears_amount,loan_officer_id').eq('business_id',currentUser.business_id),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     // Group loans by client
@@ -5055,7 +5055,7 @@ async function loadReportData(id){
     const[{data:clients},{data:loans},{data:staff}]=await Promise.all([
       branchScoped('loan_clients','*').order('created_at',{ascending:false}),
       branchScoped('loans','id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,overdue_days,arrears_amount,loan_officer_id'),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const loansByClient={};
@@ -5113,7 +5113,7 @@ async function loadReportData(id){
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
       branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('payment_date',todayStr),
       branchScoped('loan_schedules','*').eq('due_date',todayStr),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerDly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5132,7 +5132,7 @@ async function loadReportData(id){
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
       branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').gte('payment_date',nowM+'-01'),
       branchScoped('loan_schedules','*').gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=parseLocalDate(nowM+'-01');d.setMonth(d.getMonth()+1);return localISODate(d)})()),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerMth = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5149,7 +5149,7 @@ async function loadReportData(id){
   if(id==='mpesa_payments'){
     const[{data:reps},{data:staffList}]=await Promise.all([
       branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('payment_method','mpesa').order('payment_date',{ascending:false}),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerMpesa = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5162,7 +5162,7 @@ async function loadReportData(id){
   if(id==='repayment_perf'){
     const[{data:reps},{data:staffList}]=await Promise.all([
       branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').order('payment_date',{ascending:false}),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerPerf = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5177,7 +5177,7 @@ async function loadReportData(id){
   if(id==='portfolio'){
     const[{data:loans},{data:staff}]=await Promise.all([
       branchScoped('loans','*,loan_clients(full_name,phone,id_number,address),loan_staff(name)').order('created_at',{ascending:false}),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerPort = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5214,7 +5214,7 @@ async function loadReportData(id){
   if(id==='disbursement'){
     const[{data:loans},{data:staff}]=await Promise.all([
       branchScoped('loans','*,loan_clients(full_name,phone,id_number,address)').order('disbursement_date',{ascending:false}),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerDisb = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -5250,7 +5250,7 @@ async function loadReportData(id){
   if(id==='aging'){
     const[{data:loans},{data:staff}]=await Promise.all([
       branchScoped('loans','*,loan_clients(full_name,phone,id_number,address)').eq('status','active'),
-      sb('loan_staff').select('id,name')
+      sb('loan_staff').select('id,name').eq('business_id',BRIPTA_BUSINESS_ID)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
     const isOnlyOfficerAge = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -6529,7 +6529,7 @@ async function triggerClientOnboardingSms(clientId){
 async function checkSmsWalletAlert(){
   if(!currentUser||!hasRole('admin','branch_manager'))return;
   try{
-    const{data:wallet}=await sb('bripta_sms_wallets').select('*').limit(1).maybeSingle();
+    const{data:wallet}=await sb('bripta_sms_wallets').select('*').eq('business_id',BRIPTA_BUSINESS_ID).maybeSingle();
     if(!wallet)return;
     const remaining=Math.max(0,Number(wallet.credits_purchased||0)-Number(wallet.credits_used||0));
     if(remaining>Number(wallet.low_balance_threshold||100))return;
@@ -6642,14 +6642,14 @@ async function renderSmsCenter(page=1){
   const to=from+pageSize-1;
   try{
     await loadBriptaTables(['loan_clients','loans','loan_staff']);
-    let msgQuery=sb('bripta_sms_outbox').select('*',{count:'exact'});
+    let msgQuery=sb('bripta_sms_outbox').select('*',{count:'exact'}).eq('business_id',BRIPTA_BUSINESS_ID);
     const range=smsDateRange(appFilters.sms);
     if(range.startIso&&range.endIso)msgQuery=msgQuery.gte('queued_at',range.startIso).lte('queued_at',range.endIso);
     const[{data:wallet,error:walletError},{data:messages,error:messagesError,count:messageCount},{data:topups},{data:requests}]=await Promise.all([
-      sb('bripta_sms_wallets').select('*').limit(1).maybeSingle(),
+      sb('bripta_sms_wallets').select('*').eq('business_id',BRIPTA_BUSINESS_ID).maybeSingle(),
       msgQuery.order('queued_at',{ascending:false}).range(from,to),
-      sb('bripta_sms_topups').select('*').order('created_at',{ascending:false}).limit(10),
-      sb('bripta_sms_bundle_requests').select('*').order('created_at',{ascending:false}).limit(10)
+      sb('bripta_sms_topups').select('*').eq('business_id',BRIPTA_BUSINESS_ID).order('created_at',{ascending:false}).limit(10),
+      sb('bripta_sms_bundle_requests').select('*').eq('business_id',BRIPTA_BUSINESS_ID).order('created_at',{ascending:false}).limit(10)
     ]);
     if(walletError)throw walletError;
     if(messagesError)throw messagesError;
@@ -7059,8 +7059,8 @@ async function renderBranches(){
   const main=$('#mainContent');
   const[{data:branches},{data:staff},{data:clients}]=await Promise.all([
     sb('bripta_branches').select('*').order('name'),
-    sb('loan_staff').select('id,branch_id'),
-    sb('loan_clients').select('id,branch_id')
+    sb('loan_staff').select('id,branch_id').eq('business_id',BRIPTA_BUSINESS_ID),
+    sb('loan_clients').select('id,branch_id').eq('business_id',BRIPTA_BUSINESS_ID)
   ]);
   branchList=branches||[];renderBranchContext();
   main.innerHTML=`<div class="page-header"><div><h1>Branch Management</h1><p style="color:var(--text-secondary)">Create and maintain branches without code changes.</p></div><button class="btn btn-primary" onclick="openBranchModal()">+ Add Branch</button></div>
@@ -7100,7 +7100,7 @@ async function renderStaff(){
   if(!hasRole('admin'))return toast('Admin access required','warning');
   const main=$('#mainContent');
   try{
-    const{data:staff}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').order('name');
+    const{data:staff}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id',BRIPTA_BUSINESS_ID).order('name');
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
