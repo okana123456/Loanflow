@@ -174,6 +174,12 @@ tr:hover{background:rgba(255,213,0,.18)}
 .dash-h3{font-size:11px;color:var(--text-secondary);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:5px;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
 .dash-rate-bar{height:7px;background:rgba(148,163,184,.18);border-radius:4px;overflow:hidden}
 .dash-rate-fill{height:100%;border-radius:4px;transition:width .4s ease}
+@media(min-width:641px){
+.main-content{flex:1;min-width:0;width:calc(100% - 180px)}
+}
+@media(min-width:1100px){
+.main-content:has(#dueSummaryCards) .kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
 @media(max-width:1024px){
 .dash-grid-3{grid-template-columns:repeat(2,1fr)}
 .kpi-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
@@ -369,7 +375,7 @@ function canonicalLoanOfficerId(staffId){
 // later syncs only rows changed through updated_at tracking.
 // Increment when database visibility rules change so an earlier partial/empty
 // RLS response cannot remain visible after the policy has been repaired.
-const BRIPTA_CACHE_VERSION = 4;
+const BRIPTA_CACHE_VERSION = 5;
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
 const BRIPTA_MIN_SYNC_MS = 60 * 1000;
@@ -7096,7 +7102,8 @@ async function renderStaff(){
   if(!hasRole('admin'))return toast('Admin access required','warning');
   const main=$('#mainContent');
   try{
-    const{data:staff}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id',BRIPTA_BUSINESS_ID).order('name');
+    const{data:staff,error}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id',BRIPTA_BUSINESS_ID).order('name');
+    if(error) throw error;
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
