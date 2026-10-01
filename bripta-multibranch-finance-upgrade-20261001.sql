@@ -484,10 +484,12 @@ create policy bripta_staff_branch_boundary on public.loan_staff as restrictive f
 using (
   public.bripta_has_role('admin') or id=(public.bripta_current_staff()).id
   or (public.bripta_has_role('branch_manager') and branch_id=(public.bripta_current_staff()).branch_id)
+  or lower(coalesce(email,''))=lower(coalesce(auth.jwt()->>'email',''))
 )
 with check (
   public.bripta_has_role('admin') or id=(public.bripta_current_staff()).id
   or (public.bripta_has_role('branch_manager') and branch_id=(public.bripta_current_staff()).branch_id)
+  or lower(coalesce(email,''))=lower(coalesce(auth.jwt()->>'email',''))
 );
 
 create or replace function public.bripta_audit_master_change()
