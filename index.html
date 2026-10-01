@@ -1300,33 +1300,27 @@ async function resolveUserRole(authUser, staffCache = null, pwd = null){
     
     if(!staff && authUser){
         // 1. Try to find by exact auth_user_id first
-        let { data: staffData } = await sb('loan_staff').select('*').eq('auth_user_id', authUser.id).limit(1);
+        let { data: staffData, error: staffIdError } = await sb('loan_staff').select('*').eq('auth_user_id', authUser.id).limit(1);
+        if(staffIdError) throw staffIdError;
         if (staffData && staffData.length > 0) {
             staff = staffData[0];
         }
 
         // 2. If not found by ID, try to link by email (case-insensitive)
         if(!staff && authUser.email){
-          const { data: byEmailData } = await sb('loan_staff').select('*').ilike('email', authUser.email).limit(1);
+          const { data: byEmailData, error: staffEmailError } = await sb('loan_staff').select('*').ilike('email', authUser.email).limit(1);
+          if(staffEmailError) throw staffEmailError;
           if(byEmailData && byEmailData.length > 0){
             staff = byEmailData[0];
             // Link their new auth ID to the pre-created staff record
-            await sb('loan_staff').update({auth_user_id: authUser.id, last_login: new Date().toISOString()}).eq('id', staff.id);
+            const{error:linkError}=await supabaseClient.rpc('bripta_link_current_staff');
+            if(linkError)throw linkError;
           }
         }
 
-        // 3. If STILL not found anywhere, treat as a brand new company signing up
+        // 3. This installation accepts only pre-created Bripta staff accounts.
         if(!staff){
-          const name = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Admin';
-          const newBizId = 'BIZ-' + crypto.randomUUID().split('-')[0].toUpperCase();
-          const { data: newStaffData, error: insertErr } = await sb('loan_staff').insert({
-            business_id: newBizId,
-            name, email: authUser.email, auth_user_id: authUser.id,
-            role: 'admin', is_active: true, last_login: new Date().toISOString()
-          }).select();
-          if(insertErr) throw insertErr;
-          staff = newStaffData[0];
-          toast(`Welcome, ${name}! Admin account created.`, 'success');
+          throw new Error('No active Bripta staff account matches this login email.');
         }
     }
 

@@ -492,6 +492,28 @@ with check (
   or lower(coalesce(email,''))=lower(coalesce(auth.jwt()->>'email',''))
 );
 
+drop policy if exists bripta_staff_login_bootstrap on public.loan_staff;
+create policy bripta_staff_login_bootstrap on public.loan_staff for select to authenticated
+using (
+  auth_user_id=auth.uid()
+  or lower(coalesce(email,''))=lower(coalesce(auth.jwt()->>'email',''))
+);
+
+create or replace function public.bripta_link_current_staff()
+returns uuid language plpgsql security definer set search_path=public as $$
+declare v_id uuid; v_email text:=lower(coalesce(auth.jwt()->>'email',''));
+begin
+  if auth.uid() is null or v_email='' then raise exception 'Authenticated email is required'; end if;
+  update public.loan_staff
+  set auth_user_id=auth.uid(),last_login=now()
+  where business_id='BIZ-B3F5E5D9' and lower(coalesce(email,''))=v_email and coalesce(is_active,true)
+  returning id into v_id;
+  if v_id is null then raise exception 'No active Bripta staff account matches this email'; end if;
+  return v_id;
+end $$;
+revoke all on function public.bripta_link_current_staff() from public,anon;
+grant execute on function public.bripta_link_current_staff() to authenticated;
+
 create or replace function public.bripta_audit_master_change()
 returns trigger language plpgsql security definer set search_path=public as $$
 declare payload jsonb; actor public.loan_staff; v_business text; v_branch uuid; v_id text;
