@@ -15,15 +15,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
---bg-dark:#0f172a;--bg-card:#1e293b;--sidebar:#0f172a;--border:#334155;
---accent-blue:#2563eb;--accent-green:#059669;--accent-yellow:#d97706;
+--bg-dark:#f6c945;--bg-card:#fffaf0;--sidebar:#efb90b;--border:#d79c00;
+--accent-blue:#6b4f00;--accent-green:#26734d;--accent-yellow:#b77900;
 --accent-red:#dc2626;--accent-purple:#7c3aed;--accent-orange:#ea580c;
---text-primary:#f8fafc;--text-secondary:#94a3b8;--radius:8px;
+--text-primary:#2b2100;--text-secondary:#725b16;--radius:8px;
 }
 .light{
---bg-dark:#f8fafc;--bg-card:#ffffff;--sidebar:#ffffff;--border:#e2e8f0;
---text-primary:#0f172a;--text-secondary:#64748b;
---accent-blue:#2563eb;--accent-green:#059669;--accent-yellow:#d97706;
+--bg-dark:#ffe58a;--bg-card:#fffdf5;--sidebar:#f4c430;--border:#d7a600;
+--text-primary:#2b2100;--text-secondary:#725b16;
+--accent-blue:#6b4f00;--accent-green:#26734d;--accent-yellow:#b77900;
 --accent-red:#dc2626;--accent-purple:#7c3aed;--accent-orange:#ea580c;
 }
 /* Light Mode Font Override */
@@ -38,7 +38,7 @@ a{color:var(--accent-blue);text-decoration:none}
 ::-webkit-scrollbar-track{background:var(--bg-dark)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 /* LOGIN */
-#loginScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#0a0e1a 0%,#1e1b4b 50%,#0a0e1a 100%)}
+#loginScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#f2b705 0%,#ffe58a 52%,#d99b00 100%)}
 .login-box{background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:48px;width:100%;max-width:420px;text-align:center}
 .login-box h1{font-size:32px;font-weight:800;margin-bottom:4px}
 .login-box .tagline{color:var(--text-secondary);margin-bottom:32px;font-size:14px}
@@ -300,6 +300,7 @@ tr:hover{background:rgba(37,99,235,.04)}
 <div class="sidebar-header">
 <h2>Bripta</h2>
 <span>Smart Lending. Clear Repayments.</span>
+<div id="branchContext"></div>
 </div>
 <nav class="sidebar-nav" id="sidebarNav"></nav>
 <div class="sidebar-footer">
@@ -341,7 +342,12 @@ let cachedData = {};
 let charts = {};
 let appSettings = null; 
 let serviceBilling = { status:'unknown', paid:false, locked:false, reminder:false, pending:false, cycleMonth:null, checkedAt:null };
-const SERVICE_BILLING_AMOUNT = 3000;
+let branchList = [];
+let selectedBranchId = null;
+let currentPermissions = {};
+function serviceBillingAmount(month=serviceBillingMonth()){
+  return month >= '2026-11-01' ? 7500 : 3000;
+}
 const SERVICE_BILLING_FIRST_REMINDER_DATE = '2026-08-02';
 const SERVICE_BILLING_REMINDER_DAY = 2;
 const SERVICE_BILLING_LOCK_DAY = 4;
@@ -391,7 +397,7 @@ function openBriptaCache(){
   });
 }
 function briptaCacheKey(table){
-  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${table}:v${BRIPTA_CACHE_VERSION}`;
+  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${selectedBranchId||'all'}:${table}:v${BRIPTA_CACHE_VERSION}`;
 }
 async function readBriptaCache(table){
   try{
@@ -425,6 +431,7 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   for(let from=0; from<maxRows; from+=pageSize){
     let query = sb(table).select(columns).range(from, from + pageSize - 1);
     if(currentUser?.business_id) query = query.eq('business_id', currentUser.business_id);
+    if(selectedBranchId && table!=='loan_staff') query = query.eq('branch_id', selectedBranchId);
     if(configureQuery) query = configureQuery(query);
     const {data,error} = await query;
     if(error) return {data: rows, error};
@@ -990,12 +997,13 @@ function renderServiceBillingOverlay(){
   if(!isServiceBillingUser() || serviceBilling.paid || (!serviceBilling.locked && !serviceBilling.reminder)) return;
   const minimized = !serviceBilling.locked && localStorage.getItem(serviceBillingMinKey()) === '1';
   const due = fmtDate(serviceBillingDueDate());
+  const billingAmount=serviceBillingAmount(serviceBilling.cycleMonth||serviceBillingMonth());
   if(minimized){
     const pill = document.createElement('div');
     pill.id = 'serviceBillingPill';
     pill.className = 'service-billing-pill';
     pill.onclick = () => { localStorage.removeItem(serviceBillingMinKey()); renderServiceBillingOverlay(); };
-    pill.innerHTML = `<strong>Subscription payment reminder</strong><span>KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')} due before ${due}</span>`;
+    pill.innerHTML = `<strong>Subscription payment reminder</strong><span>KES ${billingAmount.toLocaleString('en-KE')} due before ${due}</span>`;
     document.body.appendChild(pill);
     return;
   }
@@ -1009,7 +1017,7 @@ function renderServiceBillingOverlay(){
           <div class="service-billing-title">${serviceBilling.locked?'System locked until subscription is paid':'Subscription payment reminder'}</div>
           <div class="service-billing-muted">${serviceBilling.locked?'Payment is overdue. Pay to reopen admin access.':'Subscription payment is due. Please pay before '+due+' to avoid admin lock.'}</div>
         </div>
-        <div class="service-billing-amount">KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')}</div>
+        <div class="service-billing-amount">KES ${billingAmount.toLocaleString('en-KE')}</div>
       </div>
       <div class="form-group">
         <label>Phone number for payment prompt</label>
@@ -1017,7 +1025,7 @@ function renderServiceBillingOverlay(){
         <div class="service-billing-muted" style="margin-top:4px">Enter the Safaricom number that should receive the payment prompt.</div>
       </div>
       <div class="service-billing-actions">
-        <button class="btn btn-primary" onclick="startServiceBillingPayment(this)">Pay KES ${SERVICE_BILLING_AMOUNT.toLocaleString('en-KE')}</button>
+        <button class="btn btn-primary" onclick="startServiceBillingPayment(this)">Pay KES ${billingAmount.toLocaleString('en-KE')}</button>
         <button class="btn btn-outline" onclick="checkServiceBillingPayment(this)">Check payment</button>
         ${!serviceBilling.locked?`<button class="btn btn-outline" onclick="localStorage.setItem(serviceBillingMinKey(),'1');renderServiceBillingOverlay()">Minimize</button>`:''}
         <button class="btn btn-outline" onclick="handleLogout()">Sign out</button>
@@ -1409,6 +1417,7 @@ function showApp(){
   const displayRole = (currentUser.role||'viewer').split(',').map(r => r.replace(/_/g, ' ').toUpperCase()).join(', ');
   $('#sidebarUser').innerHTML=`<strong>${currentUser.name}</strong><br><span class="badge badge-blue" style="max-width:200px;white-space:normal;display:inline-block">${displayRole}</span>`;
   buildSidebar();
+  loadBranchContext().then(()=>{ buildSidebar(); if(currentSection)navigateTo(currentSection); }).catch(e=>console.warn('Branch context unavailable',e));
   
   // Restore previous section or navigate to default view based on roles
   // Strict role-based defaults: officers → officer_performance, cashiers → repayments
@@ -1449,15 +1458,18 @@ function buildSidebar() {
     { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier'] },
     { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'] },
     { id: 'overdue', icon: '!', label: 'Arrears', roles: ['admin', 'branch_manager', 'loan_officer'] },
+    { id: 'expenses', icon: 'X', label: 'Expenses', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'], permission: 'view_expenses' },
     
     { isHeader: true, label: 'Management', roles: ['admin', 'branch_manager'] },
     { id: 'reports', icon: '+', label: 'Reports', roles: ['admin', 'branch_manager'] },
     { id: 'officer_performance', icon: '★', label: 'Officer Performance', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'officer_dashboard', icon: '◉', label: 'My Dashboard', roles: ['loan_officer'] },
-    { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager'] },
+    { id: 'accounting', icon: '%', label: 'Accounting', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'], permission: 'view_accounting' },
+    { id: 'assets', icon: 'V', label: 'Company Assets', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'], permission: 'manage_assets' },
+    { id: 'branches', icon: 'B', label: 'Branches', roles: ['admin'], permission: 'manage_branches' },
     { id: 'sms_center', icon: 'M', label: 'SMS Centre', roles: ['admin', 'branch_manager'] },
     { id: 'suspense', icon: '?', label: 'Suspense Account', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'] },
-    { id: 'excess_charges', icon: 'E', label: 'Excess & Charges', roles: ['admin'] },
+    { id: 'excess_charges', icon: 'E', label: 'Excess & Charges', roles: ['admin', 'branch_manager'], permission: 'adjust_charges_excess' },
     { id: 'staff', icon: 'S', label: 'Staff', roles: ['admin'] },
     { id: 'calculator', icon: '#', label: 'Calculator', roles: ['admin', 'branch_manager', 'loan_officer'] },
     
@@ -1466,7 +1478,7 @@ function buildSidebar() {
     { id: 'auditlog', icon: '~', label: 'Audit Log', roles: ['admin'] }
   ];
 
-  nav.innerHTML = menu.filter(item => item.roles.some(r => userRoles.includes(r))).map(item => {
+  nav.innerHTML = menu.filter(item => item.roles.some(r => userRoles.includes(r)) && (!item.permission || hasPermission(item.permission))).map(item => {
     if (item.isHeader) return `<div class="nav-section-label">${item.label}</div>`;
     return `<div class="nav-item ${currentSection===item.id?'active':''}" data-section="${item.id}" onclick="navigateTo('${item.id}')"><span class="icon">${item.icon}</span>${item.label}</div>`;
   }).join('');
@@ -1578,7 +1590,7 @@ function navigateTo(section){
     dashboard:renderDashboard,clients:renderClients,inactive_clients:renderInactiveClients,products:renderProducts,
     applications:renderApplications,disbursement:renderDisbursement,loans:renderLoans,
     repayments:renderRepayments,overdue:renderOverdue,reports:renderReports,officer_performance:renderOfficerPerformance,officer_dashboard:renderOfficerDashboard,suspense:renderSuspense,excess_charges:renderExcessCharges,
-    accounting:renderAccounting,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
+    accounting:renderAccounting,expenses:renderExpenses,assets:renderAssets,branches:renderBranches,sms_center:renderSmsCenter,staff:renderStaff,calculator:renderCalculator,
     settings:renderSettings,auditlog:renderAuditLog
   };
   if(renderers[section])renderers[section]();
@@ -2032,6 +2044,40 @@ function activeUnpaidLoansForClient(clientId, loans=cachedData.loans||[]){
   );
 }
 
+function branchScoped(table,columns='*'){
+  let q=sb(table).select(columns).eq('business_id',currentUser.business_id);
+  if(selectedBranchId)q=q.eq('branch_id',selectedBranchId);
+  return q;
+}
+
+function hasPermission(name){
+  return hasRole('admin') || currentPermissions?.[name] === true;
+}
+
+async function loadBranchContext(){
+  if(!currentUser?.business_id)return;
+  const[{data:branches},{data:permission}]=await Promise.all([
+    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
+    sb('bripta_staff_permissions').select('*').eq('staff_id',currentUser.id).maybeSingle()
+  ]);
+  branchList=branches||[]; currentPermissions=permission||{};
+  if(hasRole('admin')){
+    const saved=localStorage.getItem('bripta_selected_branch');
+    selectedBranchId=branchList.some(b=>b.id===saved)?saved:null;
+  }else selectedBranchId=currentUser.branch_id||branchList[0]?.id||null;
+  renderBranchContext();
+}
+
+function branchName(id){return branchList.find(b=>b.id===id)?.name||'Unassigned';}
+function branchOptions(value='',includeAll=false){return `${includeAll&&hasRole('admin')?'<option value="">All Branches</option>':''}${branchList.filter(b=>b.is_active!==false||b.id===value).map(b=>`<option value="${b.id}" ${b.id===value?'selected':''}>${escapeHtml(b.name)}</option>`).join('')}`;}
+function renderBranchContext(){
+  const el=document.getElementById('branchContext');if(!el)return;
+  el.innerHTML=hasRole('admin')?`<select class="select" style="margin-top:8px" onchange="changeBranchContext(this.value)">${branchOptions(selectedBranchId,true)}</select>`:`<div style="margin-top:7px;font-size:10px;font-weight:700">${escapeHtml(branchName(selectedBranchId))}</div>`;
+}
+function changeBranchContext(id){
+  selectedBranchId=id||null;localStorage.setItem('bripta_selected_branch',selectedBranchId||'');cachedData={};renderBranchContext();navigateTo(currentSection);
+}
+
 function loanHistoryForClient(clientId, loans=cachedData.loans||[]){
   return (loans||[]).filter(l=>String(l.client_id)===String(clientId));
 }
@@ -2259,23 +2305,15 @@ async function confirmBulkTransfer(){
   const btn=document.getElementById('btnConfirmBulkTransfer');
   if(btn){btn.disabled=true;btn.textContent='Transferring...';}
   const clientIds=checked.map(c=>c.value);
-  let done=0,failed=0;
-  for(const clientId of clientIds){
-    try{
-      const{data:result,error}=await supabaseClient.rpc('bripta_assign_client_portfolio',{
-        p_client_id:clientId,p_officer_id:officerId,p_reason:reason||'Bulk portfolio transfer'
-      });
-      if(error)throw error;
-      if(!result?.ok)throw new Error(result?.message||'Portfolio transfer was not completed');
-      await audit('client_transferred','loan_clients',clientId,null,{new_officer_id:officerId,reason,bulk:true});
-      // Update local cache immediately
-      if(window._clientOffMap) window._clientOffMap[clientId] = officerId;
-      done++;
-    }catch(e){ failed++; console.error('Bulk transfer failed for',clientId,e); }
-  }
-  closeModal();
-  if(failed>0) toast(`${done} transferred, ${failed} failed. Check console for details.`,'warning');
-  else toast(`${done} client${done>1?'s':''} transferred successfully`,'success');
+  try{
+    const fromIds=[...new Set(clientIds.map(id=>window._clientOffMap?.[id]).filter(Boolean))];
+    if(fromIds.length!==1)throw new Error('Selected clients must currently belong to the same officer. Transfer each officer portfolio separately.');
+    const{data:result,error}=await supabaseClient.rpc('bripta_transfer_portfolio',{p_from:fromIds[0],p_to:officerId,p_client_ids:clientIds,p_move_all:false});
+    if(error)throw error;
+    clientIds.forEach(id=>{if(window._clientOffMap)window._clientOffMap[id]=officerId});
+    await audit('clients_bulk_transferred','loan_clients',null,null,{client_ids:clientIds,new_officer_id:officerId,reason});
+    closeModal();toast(`${result?.clients_moved||clientIds.length} clients transferred successfully`,'success');
+  }catch(e){if(btn){btn.disabled=false;btn.textContent='Transfer Clients'}return toast(e.message,'error')}
   renderClients();
 }
 
@@ -2299,7 +2337,7 @@ function filterClients(q){
 
 async function openAddClientModal(){
   // Fetch staff for officer assignment dropdown
-  const {data:staffList} = await sb('loan_staff').select('id,name,role').eq('business_id', currentUser.business_id).eq('is_active', true);
+  const {data:staffList} = await sb('loan_staff').select('id,name,role,branch_id').eq('business_id', currentUser.business_id).eq('is_active', true);
   const officers = (staffList||[]).filter(s=>{ const roles=(s.role||'').split(','); return roles.some(r=>r.trim()==='loan_officer'); });
   const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
   const officerDropdown = `
@@ -2322,6 +2360,7 @@ async function openAddClientModal(){
     <div class="form-row"><div class="form-group"><label>Guarantor Full Name</label><input class="input" id="cNokName"></div><div class="form-group"><label>Guarantor Phone</label><input class="input" id="cNokPhone"></div></div>
     <div class="form-group"><label>Guarantor Relationship</label><input class="input" id="cNokRel" placeholder="e.g. Spouse, Sibling, Friend"></div>
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
+    ${hasRole('admin','branch_manager')?`<div class="form-group"><label>Branch *</label><select class="select" id="cBranch">${branchOptions(selectedBranchId||currentUser.branch_id)}</select></div>`:''}
     ${officerDropdown}
     <div style="padding:10px 12px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:8px;margin-bottom:12px;font-size:13px;display:flex;justify-content:space-between;align-items:center">
       <span>The one-time <strong>Registration Fee</strong> is tracked separately and will not be deducted from loan repayments.</span>
@@ -2363,7 +2402,7 @@ async function saveClient(){
     }
     const officerTag = assignedOfficerId ? ` [OFFICER:${assignedOfficerId}]` : '';
     const taggedNotes=(userNotes?userNotes+' ':'')+officerTag;
-    const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,loan_officer_id:assignedOfficerId||null,business_id:currentUser?.business_id,created_by:currentUser?.id};
+    const rec={full_name:name,id_number:idNo,phone,email:$('#cEmail').value,gender:$('#cGender').value,dob:$('#cDob').value||null,address:$('#cAddress').value,occupation:$('#cOccupation').value,employer:$('#cEmployer').value,monthly_income:Number($('#cIncome').value)||0,next_of_kin_name:$('#cNokName').value,next_of_kin_phone:$('#cNokPhone').value,next_of_kin_relation:$('#cNokRel').value,notes:taggedNotes,loan_officer_id:assignedOfficerId||null,branch_id:$('#cBranch')?.value||currentUser.branch_id||selectedBranchId,business_id:currentUser?.business_id,created_by:currentUser?.id};
     const{data,error}=await sb('loan_clients').insert(rec).select().single();
     if(error)throw error;
     // Store officer assignment in caches
@@ -2739,7 +2778,9 @@ let appPage=1;
 async function renderApplications(page=1){
   appPage=page;const main=$('#mainContent');
   try{
-    const{data:apps}=await sb('loan_applications').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
+    let query=sb('loan_applications').select('*,loan_clients(full_name,phone,id_number)').eq('business_id', currentUser.business_id).order('created_at',{ascending:false});
+    if(selectedBranchId)query=query.eq('branch_id',selectedBranchId);
+    const{data:apps}=await query;
     cachedData.applications=apps||[];
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
     if(isOnlyOfficer) cachedData.applications = cachedData.applications.filter(a => a.loan_officer_id === currentUser.id);
@@ -3026,10 +3067,10 @@ async function rejectApp(id){
 async function renderDisbursement(){
   const main=$('#mainContent');
   try{
-    const[{data:apps,error:appsError},{data:activeLoans,error:loansError}]=await Promise.all([
-      sb('loan_applications').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id).eq('status','approved').order('approved_at',{ascending:false}),
-      sb('loans').select('id,client_id,loan_no,outstanding_balance').eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0.01)
-    ]);
+    let appsQuery=sb('loan_applications').select('*,loan_clients(full_name,phone)').eq('business_id', currentUser.business_id).eq('status','approved').order('approved_at',{ascending:false});
+    let loansQuery=sb('loans').select('id,client_id,loan_no,outstanding_balance').eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0.01);
+    if(selectedBranchId){appsQuery=appsQuery.eq('branch_id',selectedBranchId);loansQuery=loansQuery.eq('branch_id',selectedBranchId)}
+    const[{data:apps,error:appsError},{data:activeLoans,error:loansError}]=await Promise.all([appsQuery,loansQuery]);
     if(appsError)throw appsError;
     if(loansError)throw loansError;
     const activeClientIds=new Set((activeLoans||[]).map(l=>String(l.client_id)));
@@ -5011,8 +5052,8 @@ async function loadReportData(id){
   const biz=currentUser.business_id;
   if(id==='clients_report'){
     const[{data:clients},{data:loans},{data:staff}]=await Promise.all([
-      sb('loan_clients').select('*').eq('business_id',biz).order('created_at',{ascending:false}),
-      sb('loans').select('id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,overdue_days,arrears_amount,loan_officer_id').eq('business_id',biz),
+      branchScoped('loan_clients','*').order('created_at',{ascending:false}),
+      branchScoped('loans','id,client_id,loan_no,status,principal_amount,outstanding_balance,disbursement_date,overdue_days,arrears_amount,loan_officer_id'),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5069,8 +5110,8 @@ async function loadReportData(id){
   if(id==='collection_daily'){
     const todayStr=today();
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_date',todayStr),
-      sb('loan_schedules').select('*').eq('business_id',biz).eq('due_date',todayStr),
+      branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('payment_date',todayStr),
+      branchScoped('loan_schedules','*').eq('due_date',todayStr),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5088,8 +5129,8 @@ async function loadReportData(id){
   if(id==='collection_monthly'){
     const nowM=localISODate().slice(0,7);
     const[{data:reps},{data:scheds},{data:staffList}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).gte('payment_date',nowM+'-01'),
-      sb('loan_schedules').select('*').eq('business_id',biz).gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=parseLocalDate(nowM+'-01');d.setMonth(d.getMonth()+1);return localISODate(d)})()),
+      branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').gte('payment_date',nowM+'-01'),
+      branchScoped('loan_schedules','*').gte('due_date',nowM+'-01').lt('due_date',(()=>{const d=parseLocalDate(nowM+'-01');d.setMonth(d.getMonth()+1);return localISODate(d)})()),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5106,7 +5147,7 @@ async function loadReportData(id){
   }
   if(id==='mpesa_payments'){
     const[{data:reps},{data:staffList}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).eq('payment_method','mpesa').order('payment_date',{ascending:false}),
+      branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('payment_method','mpesa').order('payment_date',{ascending:false}),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5119,7 +5160,7 @@ async function loadReportData(id){
   }
   if(id==='repayment_perf'){
     const[{data:reps},{data:staffList}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(loan_no,loan_officer_id,loan_clients(full_name))').eq('business_id',biz).order('payment_date',{ascending:false}),
+      branchScoped('loan_repayments','*,loans(loan_no,loan_officer_id,loan_clients(full_name))').order('payment_date',{ascending:false}),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staffList||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5134,7 +5175,7 @@ async function loadReportData(id){
   }
   if(id==='portfolio'){
     const[{data:loans},{data:staff}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone,id_number,address),loan_staff(name)').eq('business_id',biz).order('created_at',{ascending:false}),
+      branchScoped('loans','*,loan_clients(full_name,phone,id_number,address),loan_staff(name)').order('created_at',{ascending:false}),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5171,7 +5212,7 @@ async function loadReportData(id){
   }
   if(id==='disbursement'){
     const[{data:loans},{data:staff}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone,id_number,address)').eq('business_id',biz).order('disbursement_date',{ascending:false}),
+      branchScoped('loans','*,loan_clients(full_name,phone,id_number,address)').order('disbursement_date',{ascending:false}),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5207,7 +5248,7 @@ async function loadReportData(id){
   }
   if(id==='aging'){
     const[{data:loans},{data:staff}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name,phone,id_number,address)').eq('business_id',biz).eq('status','active'),
+      branchScoped('loans','*,loan_clients(full_name,phone,id_number,address)').eq('status','active'),
       sb('loan_staff').select('id,name').eq('business_id',biz)
     ]);
     const staffMap={};(staff||[]).forEach(s=>{staffMap[s.id]=s.name;});
@@ -5239,9 +5280,9 @@ async function loadReportData(id){
   }
   if(id==='income'){
     const[{data:reps},{data:clients},{data:feeLoans}]=await Promise.all([
-      sb('loan_repayments').select('*,loans(principal_amount,total_interest,total_payable,loan_no)').eq('business_id',biz),
-      sb('loan_clients').select('id,full_name,created_at,notes').eq('business_id',biz),
-      sb('loans').select('id,principal_amount,total_interest,total_payable,processing_fee,disbursement_date,loan_no,loan_clients(full_name)').eq('business_id',biz)
+      branchScoped('loan_repayments','*,loans(principal_amount,total_interest,total_payable,loan_no)'),
+      branchScoped('loan_clients','id,full_name,created_at,notes'),
+      branchScoped('loans','id,principal_amount,total_interest,total_payable,processing_fee,disbursement_date,loan_no,loan_clients(full_name)')
     ]);
     // For repayments missing interest_portion, derive it from the loan's interest ratio
     const calcInterestPortion=(r)=>{
@@ -5281,8 +5322,8 @@ async function loadReportData(id){
   }
   if(id==='portfolio_summary'){
     const[{data:loans},{data:clients}]=await Promise.all([
-      sb('loans').select('*,loan_clients(full_name)').eq('business_id',biz).eq('status','active'),
-      sb('loan_clients').select('*').eq('business_id',biz)
+      branchScoped('loans','*,loan_clients(full_name)').eq('status','active'),
+      branchScoped('loan_clients','*')
     ]);
     const withArrears=(loans||[]).filter(l=>Number(l.arrears_amount||0)>0);
     const totalPrincipal=(loans||[]).reduce((s,l)=>s+Number(l.principal_amount||0),0);
@@ -5649,9 +5690,9 @@ async function renderExcessCharges(){
   try{
     const biz=currentUser.business_id;
     const [excessRes,chargesRes,allocRes]=await Promise.all([
-      sb('bripta_excess_ledger').select('*,loan_clients(full_name,phone),loans(loan_no)').eq('business_id',biz).order('created_at',{ascending:false}).limit(2000),
-      sb('bripta_charges').select('*,loan_clients(full_name,phone),loans(loan_no)').eq('business_id',biz).order('charge_date',{ascending:false}).limit(2000),
-      sb('bripta_excess_allocations').select('*,bripta_excess_ledger(loan_clients(full_name)),bripta_charges(description)').eq('business_id',biz).order('created_at',{ascending:false}).limit(250)
+      branchScoped('bripta_excess_ledger','*,loan_clients(full_name,phone),loans(loan_no)').order('created_at',{ascending:false}).limit(2000),
+      branchScoped('bripta_charges','*,loan_clients(full_name,phone),loans(loan_no)').order('charge_date',{ascending:false}).limit(2000),
+      branchScoped('bripta_excess_allocations','*,bripta_excess_ledger(loan_clients(full_name)),bripta_charges(description)').order('created_at',{ascending:false}).limit(250)
     ]);
     if(excessRes.error||chargesRes.error||allocRes.error){
       const err=excessRes.error||chargesRes.error||allocRes.error;
@@ -5793,13 +5834,14 @@ async function renderSuspense(){
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
+    let queueQuery=sb('mpesa_callback_queue').select('*').order('created_at',{ascending:false}).limit(3000);
+    if(selectedBranchId)queueQuery=queueQuery.eq('branch_id',selectedBranchId);
     const[queueR,loansR,suspR]=await Promise.all([
-      sb('mpesa_callback_queue').select('*').order('created_at',{ascending:false}).limit(3000),
+      queueQuery,
       canManage
-        ? sb('loans').select('id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)')
-            .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
+        ? branchScoped('loans','id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)').eq('status','active').gt('outstanding_balance',0)
         : Promise.resolve({data:[],error:null}),
-      sb('unmatched_payments').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false})
+      branchScoped('unmatched_payments','*').order('created_at',{ascending:false})
     ]);
 
     const shortcode = String(appSettings?.mpesa_shortcode || '').trim();
@@ -6772,7 +6814,7 @@ async function startSmsBundlePayment(btn){
   }
 }
 
-async function renderAccounting() {
+async function renderAccountingLegacy() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
   // Ensure filter is initialized
@@ -7010,16 +7052,58 @@ async function renderAccounting() {
   }
 }
 
+// ═══ MULTI-BRANCH, EXPENSES, ACCOUNTING & ASSETS ═══
+async function renderBranches(){
+  if(!hasRole('admin')&&!hasPermission('manage_branches'))return toast('Branch management permission required','warning');
+  const main=$('#mainContent');
+  const[{data:branches},{data:staff},{data:clients}]=await Promise.all([
+    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
+    sb('loan_staff').select('id,branch_id').eq('business_id',currentUser.business_id),
+    sb('loan_clients').select('id,branch_id').eq('business_id',currentUser.business_id)
+  ]);
+  branchList=branches||[];renderBranchContext();
+  main.innerHTML=`<div class="page-header"><div><h1>Branch Management</h1><p style="color:var(--text-secondary)">Create and maintain branches without code changes.</p></div><button class="btn btn-primary" onclick="openBranchModal()">+ Add Branch</button></div>
+  <div class="table-wrap"><table><thead><tr><th>Code</th><th>Branch</th><th>Contact</th><th>Staff</th><th>Clients</th><th>Status</th><th>Actions</th></tr></thead><tbody>${branchList.map(b=>`<tr><td><strong>${escapeHtml(b.code)}</strong></td><td>${escapeHtml(b.name)} ${b.is_head_office?'<span class="badge badge-yellow">Head Office</span>':''}<div style="color:var(--text-secondary)">${escapeHtml(b.address||'')}</div></td><td>${escapeHtml(b.phone||b.email||'-')}</td><td>${(staff||[]).filter(x=>x.branch_id===b.id).length}</td><td>${(clients||[]).filter(x=>x.branch_id===b.id).length}</td><td><span class="badge ${b.is_active?'badge-green':'badge-gray'}">${b.is_active?'Active':'Inactive'}</span></td><td><button class="btn btn-outline btn-sm" onclick='openBranchModal(${JSON.stringify(b).replace(/'/g,"&#39;")})'>Edit</button> ${!b.is_head_office?`<button class="btn btn-outline btn-sm" onclick="toggleBranch('${b.id}',${!b.is_active})">${b.is_active?'Deactivate':'Activate'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function openBranchModal(b={}){openModal(`<h2>${b.id?'Edit':'Add'} Branch</h2><div class="form-row"><div class="form-group"><label>Code</label><input class="input" id="brCode" value="${escapeHtml(b.code||'')}"></div><div class="form-group"><label>Name</label><input class="input" id="brName" value="${escapeHtml(b.name||'')}"></div></div><div class="form-group"><label>Address</label><input class="input" id="brAddress" value="${escapeHtml(b.address||'')}"></div><div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="brPhone" value="${escapeHtml(b.phone||'')}"></div><div class="form-group"><label>Email</label><input class="input" id="brEmail" value="${escapeHtml(b.email||'')}"></div></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveBranch('${b.id||''}')">Save</button></div>`)}
+async function saveBranch(id){const rec={business_id:currentUser.business_id,code:$('#brCode').value.trim().toUpperCase(),name:$('#brName').value.trim(),address:$('#brAddress').value.trim()||null,phone:$('#brPhone').value.trim()||null,email:$('#brEmail').value.trim()||null,updated_at:new Date().toISOString()};if(!rec.code||!rec.name)return toast('Code and name are required','warning');const q=id?sb('bripta_branches').update(rec).eq('id',id):sb('bripta_branches').insert({...rec,created_by:currentUser.id});const{error}=await q;if(error)return toast(error.message,'error');await audit(id?'branch_updated':'branch_created','bripta_branches',id||null,null,rec);closeModal();await loadBranchContext();renderBranches()}
+async function toggleBranch(id,active){const{error}=await sb('bripta_branches').update({is_active:active,updated_at:new Date().toISOString()}).eq('id',id).eq('is_head_office',false);if(error)return toast(error.message,'error');await audit(active?'branch_activated':'branch_deactivated','bripta_branches',id,null,{is_active:active});await loadBranchContext();renderBranches()}
+
+async function renderExpenses(){
+  const main=$('#mainContent');if(!hasPermission('view_expenses')&&!hasRole('branch_manager','admin','cashier'))return toast('Expense access required','warning');
+  let q=sb('bripta_expenses').select('*,bripta_branches(name),loan_staff!bripta_expenses_initiated_by_fkey(name)').eq('business_id',currentUser.business_id).order('expense_date',{ascending:false});if(selectedBranchId)q=q.eq('branch_id',selectedBranchId);const{data,error}=await q;if(error){toast(error.message,'error');return}
+  const rows=data||[],approved=rows.filter(x=>x.status==='approved'),pending=rows.filter(x=>x.status==='pending');
+  main.innerHTML=`<div class="page-header"><div><h1>Expenses</h1><p style="color:var(--text-secondary)">${selectedBranchId?escapeHtml(branchName(selectedBranchId)):'All Branches'}</p></div>${hasPermission('initiate_expenses')||hasRole('branch_manager')?'<button class="btn btn-primary" onclick="openExpenseModal()">+ New Expense</button>':''}</div><div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Approved Expenses</div><div class="kpi-value">${fmtMoney(approved.reduce((s,x)=>s+Number(x.amount),0))}</div></div><div class="kpi-card"><div class="kpi-label">Pending Approval</div><div class="kpi-value">${pending.length}</div></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>No.</th><th>Branch</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.map(e=>`<tr><td>${fmtDate(e.expense_date)}</td><td>${escapeHtml(e.expense_no)}</td><td>${escapeHtml(e.bripta_branches?.name||branchName(e.branch_id))}</td><td>${escapeHtml(e.custom_category||e.category)}</td><td>${escapeHtml(e.description)}</td><td><strong>${fmtMoney(e.amount)}</strong></td><td>${statusBadge(e.status)}</td><td><details style="position:relative"><summary class="btn btn-outline btn-sm">⋮</summary><div class="card" style="position:absolute;right:0;z-index:5;min-width:130px;padding:6px"><button class="btn btn-outline btn-sm" onclick='viewExpense(${JSON.stringify(e).replace(/'/g,"&#39;")})'>View</button> ${['draft','pending'].includes(e.status)?`<button class="btn btn-outline btn-sm" onclick='openExpenseModal(${JSON.stringify(e).replace(/'/g,"&#39;")})'>Edit</button>`:''} ${e.status==='pending'&&(hasPermission('approve_expenses')||hasRole('branch_manager'))?`<button class="btn btn-success btn-sm" onclick="decideExpense('${e.id}','approve')">Approve</button><button class="btn btn-danger btn-sm" onclick="decideExpense('${e.id}','reject')">Reject</button>`:''} ${['draft','pending','rejected'].includes(e.status)?`<button class="btn btn-danger btn-sm" onclick="deleteExpense('${e.id}')">Delete</button>`:''}</div></details></td></tr>`).join('')||'<tr><td colspan="8" style="text-align:center">No expenses</td></tr>'}</tbody></table></div>`;
+}
+function expenseCategories(){return ['fuel','airtime','rent','salaries','transport','office_supplies','repairs','utilities','imprest','custom']}
+function openExpenseModal(e={}){openModal(`<h2>${e.id?'Edit':'New'} Expense</h2><div class="form-row"><div class="form-group"><label>Date</label><input class="input" type="date" id="exDate" value="${e.expense_date||today()}"></div><div class="form-group"><label>Branch</label><select class="select" id="exBranch">${branchOptions(e.branch_id||selectedBranchId)}</select></div></div><div class="form-row"><div class="form-group"><label>Category</label><select class="select" id="exCategory">${expenseCategories().map(x=>`<option value="${x}" ${e.category===x?'selected':''}>${x.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-group"><label>Custom category</label><input class="input" id="exCustom" value="${escapeHtml(e.custom_category||'')}"></div></div><div class="form-group"><label>Description</label><input class="input" id="exDesc" value="${escapeHtml(e.description||'')}"></div><div class="form-row"><div class="form-group"><label>Amount</label><input class="input" type="number" id="exAmount" value="${e.amount||''}"></div><div class="form-group"><label>Payment method</label><select class="select" id="exMethod"><option>cash</option><option ${e.payment_method==='mpesa'?'selected':''}>mpesa</option><option ${e.payment_method==='bank'?'selected':''}>bank</option></select></div></div><div class="form-row"><div class="form-group"><label>Reference</label><input class="input" id="exRef" value="${escapeHtml(e.payment_reference||'')}"></div><div class="form-group"><label>Vendor</label><input class="input" id="exVendor" value="${escapeHtml(e.vendor||'')}"></div></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveExpense('${e.id||''}')">Submit</button></div>`)}
+async function saveExpense(id){const p={id:id||null,branch_id:$('#exBranch').value,expense_date:$('#exDate').value,category:$('#exCategory').value,custom_category:$('#exCustom').value||null,description:$('#exDesc').value,amount:Number($('#exAmount').value),payment_method:$('#exMethod').value,payment_reference:$('#exRef').value||null,vendor:$('#exVendor').value||null};const{error}=await supabaseClient.rpc('bripta_submit_expense',{p});if(error)return toast(error.message,'error');closeModal();toast('Expense submitted','success');renderExpenses()}
+function viewExpense(e){openModal(`<h2>${escapeHtml(e.expense_no)}</h2><div class="card"><p><strong>${escapeHtml(e.description)}</strong></p><p>${escapeHtml(e.custom_category||e.category)} · ${fmtMoney(e.amount)} · ${escapeHtml(e.status)}</p><p>${escapeHtml(e.vendor||'')} ${escapeHtml(e.payment_reference||'')}</p></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>`)}
+async function decideExpense(id,action){let reason='';if(action==='reject'){reason=prompt('Reason for rejection:')||'';if(!reason)return}const{error}=await supabaseClient.rpc('bripta_decide_expense',{p_id:id,p_action:action,p_reason:reason||null});if(error)return toast(error.message,'error');toast(`Expense ${action}d`,'success');renderExpenses()}
+async function deleteExpense(id){if(!await confirm_('Delete this expense?'))return;const{error}=await supabaseClient.rpc('bripta_delete_expense',{p_id:id});if(error)return toast(error.message,'error');toast('Expense deleted','success');renderExpenses()}
+
+async function renderAssets(){
+  if(!hasPermission('manage_assets')&&!hasRole('branch_manager','admin'))return toast('Asset permission required','warning');const main=$('#mainContent');let q=sb('bripta_assets').select('*,bripta_branches(name),loan_staff(name)').eq('business_id',currentUser.business_id).order('created_at',{ascending:false});if(selectedBranchId)q=q.eq('branch_id',selectedBranchId);const{data,error}=await q;if(error)return toast(error.message,'error');const rows=data||[];main.innerHTML=`<div class="page-header"><div><h1>Company Assets</h1><p style="color:var(--text-secondary)">Asset register and custody</p></div><button class="btn btn-primary" onclick="openAssetModal()">+ Add Asset</button></div><div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Current Asset Value</div><div class="kpi-value">${fmtMoney(rows.filter(x=>x.status!=='disposed').reduce((s,x)=>s+Number(x.current_value),0))}</div></div><div class="kpi-card"><div class="kpi-label">Registered Assets</div><div class="kpi-value">${rows.length}</div></div></div><div class="table-wrap"><table><thead><tr><th>Asset</th><th>Category</th><th>Branch</th><th>Custodian</th><th>Initial</th><th>Current</th><th>Condition</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.map(a=>`<tr><td><strong>${escapeHtml(a.asset_no)}</strong><div>${escapeHtml(a.description)}</div><small>${escapeHtml(a.serial_registration_no||'')}</small></td><td>${escapeHtml(a.custom_category||a.category)}</td><td>${escapeHtml(a.bripta_branches?.name||branchName(a.branch_id))}</td><td>${escapeHtml(a.loan_staff?.name||'-')}</td><td>${fmtMoney(a.initial_price)}</td><td>${fmtMoney(a.current_value)}</td><td>${escapeHtml(a.condition)}</td><td>${statusBadge(a.status)}</td><td><button class="btn btn-outline btn-sm" onclick='openAssetModal(${JSON.stringify(a).replace(/'/g,"&#39;")})'>Edit / Transfer</button> ${a.status!=='disposed'?`<button class="btn btn-danger btn-sm" onclick="disposeAsset('${a.id}')">Dispose</button>`:''}</td></tr>`).join('')}</tbody></table></div>`}
+function assetCategories(){return ['motorcycle','vehicle','furniture_and_fittings','electronics','printer','computer','custom']}
+async function openAssetModal(a={}){const{data:staff}=await sb('loan_staff').select('id,name,branch_id').eq('business_id',currentUser.business_id).eq('is_active',true);openModal(`<h2>${a.id?'Edit / Transfer':'Add'} Asset</h2><div class="form-row"><div class="form-group"><label>Category</label><select class="select" id="asCat">${assetCategories().map(x=>`<option value="${x}" ${a.category===x?'selected':''}>${x.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-group"><label>Custom category</label><input class="input" id="asCustom" value="${escapeHtml(a.custom_category||'')}"></div></div><div class="form-group"><label>Description</label><input class="input" id="asDesc" value="${escapeHtml(a.description||'')}"></div><div class="form-row"><div class="form-group"><label>Model / Type</label><input class="input" id="asModel" value="${escapeHtml(a.model_type||'')}"></div><div class="form-group"><label>Serial / Registration</label><input class="input" id="asSerial" value="${escapeHtml(a.serial_registration_no||'')}"></div></div><div class="form-row"><div class="form-group"><label>Purchase date</label><input class="input" type="date" id="asDate" value="${a.purchase_date||''}"></div><div class="form-group"><label>Branch</label><select class="select" id="asBranch">${branchOptions(a.branch_id||selectedBranchId)}</select></div></div><div class="form-row"><div class="form-group"><label>Initial price</label><input class="input" type="number" id="asInitial" value="${a.initial_price||0}"></div><div class="form-group"><label>Current value</label><input class="input" type="number" id="asCurrent" value="${a.current_value||0}"></div></div><div class="form-row"><div class="form-group"><label>Custodian</label><select class="select" id="asCust"><option value="">None</option>${(staff||[]).map(s=>`<option value="${s.id}" ${a.custodian_staff_id===s.id?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div><div class="form-group"><label>Condition</label><select class="select" id="asCondition">${['excellent','good','fair','poor','damaged'].map(x=>`<option ${a.condition===x?'selected':''}>${x}</option>`).join('')}</select></div></div><div class="form-group"><label>Notes</label><textarea class="textarea" id="asNotes">${escapeHtml(a.notes||'')}</textarea></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveAsset('${a.id||''}','${a.branch_id||''}','${a.custodian_staff_id||''}')">Save</button></div>`)}
+async function saveAsset(id,oldBranch,oldCust){const rec={business_id:currentUser.business_id,branch_id:$('#asBranch').value,category:$('#asCat').value,custom_category:$('#asCustom').value||null,description:$('#asDesc').value,model_type:$('#asModel').value||null,serial_registration_no:$('#asSerial').value||null,purchase_date:$('#asDate').value||null,initial_price:Number($('#asInitial').value),current_value:Number($('#asCurrent').value),custodian_staff_id:$('#asCust').value||null,condition:$('#asCondition').value,notes:$('#asNotes').value||null,updated_at:new Date().toISOString()};let result;if(id)result=await sb('bripta_assets').update(rec).eq('id',id);else result=await sb('bripta_assets').insert({...rec,asset_no:'AST-'+Date.now().toString().slice(-9),created_by:currentUser.id});if(result.error)return toast(result.error.message,'error');if(id&&(oldBranch!==rec.branch_id||oldCust!==(rec.custodian_staff_id||'')))await sb('bripta_asset_movements').insert({asset_id:id,business_id:currentUser.business_id,branch_id:rec.branch_id,from_branch_id:oldBranch||null,to_branch_id:rec.branch_id,from_custodian_id:oldCust||null,to_custodian_id:rec.custodian_staff_id,action:'transfer',performed_by:currentUser.id});await audit(id?'asset_updated':'asset_created','bripta_assets',id||null,null,rec);closeModal();renderAssets()}
+async function disposeAsset(id){if(!await confirm_('Mark this asset as disposed?'))return;const value=Number(prompt('Disposal value (KES):')||0);const{error}=await sb('bripta_assets').update({status:'disposed',disposed_at:new Date().toISOString(),disposal_value:value,updated_at:new Date().toISOString()}).eq('id',id);if(error)return toast(error.message,'error');await audit('asset_disposed','bripta_assets',id,null,{disposal_value:value});renderAssets()}
+
+async function renderAccounting(){
+  if(!hasPermission('view_accounting')&&!hasRole('branch_manager','admin'))return toast('Accounting permission required','warning');const main=$('#mainContent');if(!appFilters.accounting)appFilters.accounting={type:'this_month',start:'',end:''};await supabaseClient.rpc('bripta_sync_accounting');let q=sb('bripta_accounting_entries').select('*,bripta_branches(name)').eq('business_id',currentUser.business_id).order('entry_date',{ascending:false}).limit(10000);if(selectedBranchId)q=q.eq('branch_id',selectedBranchId);const{data,error}=await q;if(error)return toast(error.message,'error');const rows=filterByDate(data||[],'entry_date',appFilters.accounting);const income=rows.filter(x=>x.account_type==='income').reduce((s,x)=>s+Number(x.credit)-Number(x.debit),0),expenses=rows.filter(x=>x.account_type==='expense').reduce((s,x)=>s+Number(x.debit)-Number(x.credit),0),net=income-expenses;const accounts={};rows.forEach(x=>{accounts[x.account_name]=(accounts[x.account_name]||0)+Number(x.debit)-Number(x.credit)});main.innerHTML=`<div class="page-header"><div><h1>Detailed Accounting</h1><p style="color:var(--text-secondary)">${selectedBranchId?escapeHtml(branchName(selectedBranchId)):'All Branches'}</p></div><button class="btn btn-outline" onclick="openSuspenseEquityModal()">Suspense → Owner Equity</button></div>${getDateFilterHtml('accounting')}<div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Income</div><div class="kpi-value">${fmtMoney(income)}</div></div><div class="kpi-card"><div class="kpi-label">Approved Expenses</div><div class="kpi-value">${fmtMoney(expenses)}</div></div><div class="kpi-card"><div class="kpi-label">Net Profit / Loss</div><div class="kpi-value" style="color:${net>=0?'var(--accent-green)':'var(--accent-red)'}">${fmtMoney(net)}</div></div></div><div class="charts-grid"><div class="card"><h3>Account Balances</h3>${Object.entries(accounts).map(([n,v])=>`<div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:7px"><span>${escapeHtml(n)}</span><strong>${fmtMoney(Math.abs(v))} ${v>=0?'Dr':'Cr'}</strong></div>`).join('')}</div><div class="card"><h3>Profit & Loss</h3><div style="display:flex;justify-content:space-between;padding:8px"><span>Total income</span><strong>${fmtMoney(income)}</strong></div><div style="display:flex;justify-content:space-between;padding:8px"><span>Operating expenses</span><strong>${fmtMoney(expenses)}</strong></div><div style="display:flex;justify-content:space-between;padding:8px;border-top:2px solid var(--border)"><span>Net profit / loss</span><strong>${fmtMoney(net)}</strong></div></div></div><h3 class="dash-h3">Transaction Ledger</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Account</th><th>Description</th><th>Debit</th><th>Credit</th><th>Source</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${fmtDate(x.entry_date)}</td><td>${escapeHtml(x.bripta_branches?.name||branchName(x.branch_id))}</td><td>${escapeHtml(x.account_code+' '+x.account_name)}</td><td>${escapeHtml(x.description)}</td><td>${x.debit?fmtMoney(x.debit):'-'}</td><td>${x.credit?fmtMoney(x.credit):'-'}</td><td>${escapeHtml(x.source_table)} #${escapeHtml(x.source_id.slice(0,8))}</td></tr>`).join('')}</tbody></table></div>`}
+function openSuspenseEquityModal(){openModal(`<h2>Transfer Suspense to Owner Capital / Equity</h2><div class="form-group"><label>Branch</label><select class="select" id="eqBranch">${branchOptions(selectedBranchId)}</select></div><div class="form-row"><div class="form-group"><label>Suspense reference</label><input class="input" id="eqRef"></div><div class="form-group"><label>Amount</label><input class="input" type="number" id="eqAmount"></div></div><div class="form-group"><label>Description / authorization</label><input class="input" id="eqDesc"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveSuspenseEquity()">Transfer</button></div>`)}
+async function saveSuspenseEquity(){const{error}=await supabaseClient.rpc('bripta_suspense_to_equity',{p_source_id:$('#eqRef').value,p_amount:Number($('#eqAmount').value),p_description:$('#eqDesc').value,p_branch:$('#eqBranch').value});if(error)return toast(error.message,'error');closeModal();toast('Transferred to Owner Equity','success');renderAccounting()}
+
 // ═══ STAFF ═══
 async function renderStaff(){
   if(!hasRole('admin'))return toast('Admin access required','warning');
   const main=$('#mainContent');
   try{
-    const{data:staff}=await sb('loan_staff').select('*').eq('business_id', currentUser.business_id).order('name');
+    const{data:staff}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id', currentUser.business_id).order('name');
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
-      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
+      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
       </tbody></table></div>
       <div class="card" style="margin-top:20px"><h3 style="font-size:14px;margin-bottom:8px">Role Permissions</h3>
         <div style="font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
@@ -7044,10 +7128,13 @@ function openAddStaffModal(s){
       <div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div>
       <div class="form-group"><label>Email *</label><input class="input" id="stEmail" value="${s.email||''}"></div>
     </div>
+    <div class="form-group"><label>Assigned Branch *</label><select class="select" id="stBranch">${branchOptions(s.branch_id||selectedBranchId)}</select></div>
     <div class="form-row">
       <div class="form-group"><label>Phone</label><input class="input" id="stPhone" value="${s.phone||''}"></div>
       <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
     </div>
+    <div class="form-group"><label>Explicit Permissions</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--bg-dark);padding:10px;border:1px solid var(--border);border-radius:8px">${[['view_accounting','View accounting'],['view_expenses','View expenses'],['initiate_expenses','Initiate expenses'],['approve_expenses','Approve expenses'],['manage_assets','Manage assets'],['manage_branches','Manage branches'],['transfer_portfolios','Transfer portfolios'],['adjust_charges_excess','Adjust Charges & Excess']].map(([k,l])=>`<label><input type="checkbox" class="st-perm-cb" value="${k}" ${s.bripta_staff_permissions?.[0]?.[k]?'checked':''}> ${l}</label>`).join('')}</div></div>
+    ${s.id?'<label style="display:flex;gap:7px;align-items:center;margin:10px 0"><input type="checkbox" id="stMovePortfolio"> Move this officer’s entire portfolio to the selected branch</label>':''}
     
     ${!s.id ? `
     <div class="form-group">
@@ -7116,7 +7203,7 @@ async function saveStaff(id){
         }
     }
 
-    const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true'};
+    const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value||null};
     
     if(id){
       await sb('loan_staff').update(rec).eq('id',id);
@@ -7125,6 +7212,11 @@ async function saveStaff(id){
       if (authUserId) rec.auth_user_id = authUserId;
       await sb('loan_staff').insert(rec);
     }
+    const staffId=id||((await sb('loan_staff').select('id').eq('business_id',currentUser.business_id).eq('email',email).maybeSingle()).data?.id);
+    const perms={staff_id:staffId,business_id:currentUser.business_id,branch_id:rec.branch_id,updated_by:currentUser.id,updated_at:new Date().toISOString()};
+    ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>perms[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
+    if(staffId)await sb('bripta_staff_permissions').upsert(perms,{onConflict:'staff_id'});
+    if(id&&document.getElementById('stMovePortfolio')?.checked)await supabaseClient.rpc('bripta_transfer_portfolio',{p_from:id,p_to:id,p_client_ids:null,p_move_all:true});
     await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email:rec.email});
     toast('Staff saved successfully','success');closeModal();renderStaff();
   }catch(e){
@@ -7155,7 +7247,7 @@ async function deleteStaff(id) {
     } catch(e) { toast(e.message, 'error'); }
 }
 
-async function editStaff(id){const{data:s}=await sb('loan_staff').select('*').eq('id',id).single();if(s)openAddStaffModal(s)}
+async function editStaff(id){const{data:s}=await sb('loan_staff').select('*,bripta_staff_permissions(*)').eq('id',id).single();if(s)openAddStaffModal(s)}
 
 // ═══ CALCULATOR ═══
 function renderCalculator(){

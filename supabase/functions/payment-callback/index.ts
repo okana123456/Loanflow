@@ -35,6 +35,10 @@ function subscriptionAccountRef(businessId: string) {
   return `BRIPTA${String(businessId).replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase()}`.slice(0, 12);
 }
 
+function subscriptionAmount(month: string) {
+  return String(month).slice(0, 10) >= "2026-11-01" ? 7500 : 3000;
+}
+
 function compactAccount(value: unknown) {
   return String(value || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
 }
@@ -117,8 +121,9 @@ serve(async (req) => {
     const subscriptionBusinessId = subscriptionCandidates.find((candidateBusiness) =>
       compactAccount(accountNumber) === compactAccount(subscriptionAccountRef(candidateBusiness))
     );
-    if (subscriptionBusinessId && amount >= 3000) {
-      const billingMonth = billingMonthFromPaymentDate(paymentDate);
+    const directBillingMonth = billingMonthFromPaymentDate(paymentDate);
+    if (subscriptionBusinessId && amount >= subscriptionAmount(directBillingMonth)) {
+      const billingMonth = directBillingMonth;
       const paidUntil = nextPaidUntil(billingMonth);
       const { error: billingError } = await supabase
         .from("loan_billing_cycles")

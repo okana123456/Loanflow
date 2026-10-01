@@ -36,6 +36,10 @@ function billingMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
+function billingAmount(month = billingMonth()) {
+  return month >= "2026-11-01" ? 7500 : 3000;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ ok: false, message: "Use POST" }, 405);
@@ -92,7 +96,9 @@ serve(async (req) => {
       return json({ ok: false, message: "Only admins can renew the system subscription." }, 403);
     }
 
-    const amount = Math.max(1, Number(Deno.env.get("SERVICE_BILLING_AMOUNT") || Deno.env.get("BILLING_AMOUNT") || 3000));
+    // Server-authoritative effective date. Environment values cannot charge the
+    // November price during an earlier billing cycle.
+    const amount = billingAmount();
     const shortcode = env("SERVICE_SHORTCODE");
     const consumerKey = env("SERVICE_CONSUMER_KEY");
     const consumerSecret = env("SERVICE_CONSUMER_SECRET");
