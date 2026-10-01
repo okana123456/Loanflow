@@ -23,8 +23,15 @@ create table if not exists public.bripta_branches (
 );
 
 insert into public.bripta_branches (id,business_id,code,name,is_head_office,is_active)
-values ('00000000-0000-4000-8000-000000000001','BIZ-B3F5E5D9','HO','Head Office',true,true)
-on conflict (id) do update set name='Head Office',is_head_office=true,is_active=true;
+values ('00000000-0000-4000-8000-000000000001','SYSTEM','HO','Head Office',true,true)
+on conflict (id) do update set business_id='SYSTEM',name='Head Office',is_head_office=true,is_active=true;
+
+-- Create a Head Office for every populated legacy business scope. Rows with a
+-- blank business_id use the neutral SYSTEM scope instead of being rejected.
+insert into public.bripta_branches(business_id,code,name,is_head_office,is_active)
+select distinct s.business_id,'HO','Head Office',true,true
+from public.loan_staff s where nullif(trim(s.business_id),'') is not null
+on conflict(business_id,code) do update set is_head_office=true,is_active=true;
 
 do $$
 declare t text;
@@ -61,7 +68,7 @@ begin
       execute format($q$
         update public.%I x set branch_id=b.id
         from public.bripta_branches b
-        where x.branch_id is null and b.business_id=x.business_id and b.is_head_office
+        where x.branch_id is null and b.business_id=coalesce(nullif(trim(x.business_id),''),'SYSTEM') and b.is_head_office
       $q$,t);
       execute format('create index if not exists %I on public.%I (business_id,branch_id)',t||'_branch_idx',t);
     end if;
@@ -88,7 +95,7 @@ insert into public.bripta_staff_permissions (
   staff_id,business_id,branch_id,view_accounting,view_expenses,initiate_expenses,
   approve_expenses,manage_assets,manage_branches,transfer_portfolios,adjust_charges_excess
 )
-select s.id,s.business_id,s.branch_id,
+select s.id,coalesce(nullif(trim(s.business_id),''),'SYSTEM'),s.branch_id,
   position('admin' in coalesce(s.role,''))>0 or position('branch_manager' in coalesce(s.role,''))>0,
   position('admin' in coalesce(s.role,''))>0 or position('branch_manager' in coalesce(s.role,''))>0,
   position('admin' in coalesce(s.role,''))>0 or position('branch_manager' in coalesce(s.role,''))>0,
@@ -232,7 +239,7 @@ declare v_branch uuid;
 begin
   if new.branch_id is not null then return new; end if;
   if tg_table_name='mpesa_callback_queue' then
-    select id into v_branch from public.bripta_branches where business_id='BIZ-B3F5E5D9' and is_head_office limit 1;
+    select id into v_branch from public.bripta_branches where business_id='SYSTEM' and is_head_office limit 1;
     new.branch_id:=v_branch;
     return new;
   end if;
@@ -242,7 +249,7 @@ begin
     select branch_id into v_branch from public.loans where id=new.loan_id;
   end if;
   if v_branch is null then select branch_id into v_branch from public.loan_staff where auth_user_id=auth.uid() limit 1; end if;
-  if v_branch is null then select id into v_branch from public.bripta_branches where business_id=new.business_id and is_head_office limit 1; end if;
+  if v_branch is null then select id into v_branch from public.bripta_branches where business_id=coalesce(nullif(trim(new.business_id),''),'SYSTEM') and is_head_office limit 1; end if;
   new.branch_id:=v_branch; return new;
 end $$;
 
@@ -261,7 +268,7 @@ create or replace function public.bripta_post_entry(
   p_source_id text,p_key text,p_loan uuid default null,p_expense uuid default null,p_asset uuid default null,p_user uuid default null
 ) returns void language sql security definer set search_path=public as $$
   insert into public.bripta_accounting_entries(business_id,branch_id,entry_date,account_code,account_name,account_type,debit,credit,description,source_table,source_id,entry_key,loan_id,expense_id,asset_id,created_by)
-  values(p_business,p_branch,p_date,p_code,p_name,p_type,round(coalesce(p_debit,0),2),round(coalesce(p_credit,0),2),p_description,p_source_table,p_source_id,p_key,p_loan,p_expense,p_asset,p_user)
+  values(coalesce(nullif(trim(p_business),''),'SYSTEM'),p_branch,p_date,p_code,p_name,p_type,round(coalesce(p_debit,0),2),round(coalesce(p_credit,0),2),p_description,p_source_table,p_source_id,p_key,p_loan,p_expense,p_asset,p_user)
   on conflict(business_id,source_table,source_id,entry_key) do update set debit=excluded.debit,credit=excluded.credit,description=excluded.description,branch_id=excluded.branch_id,entry_date=excluded.entry_date
 $$;
 
@@ -321,10 +328,10 @@ begin
   if not public.bripta_can_access_branch(v_branch) then raise exception 'Branch access denied'; end if;
   select to_jsonb(e) into oldrow from public.bripta_expenses e where e.id=v_id;
   insert into public.bripta_expenses(id,business_id,branch_id,expense_no,expense_date,category,custom_category,description,amount,payment_method,payment_reference,vendor,status,initiated_by)
-  values(v_id,s.business_id,v_branch,coalesce(p->>'expense_no','EXP-'||to_char(clock_timestamp(),'YYYYMMDDHH24MISSMS')),(p->>'expense_date')::date,p->>'category',p->>'custom_category',p->>'description',(p->>'amount')::numeric,coalesce(p->>'payment_method','cash'),p->>'payment_reference',p->>'vendor','pending',s.id)
+  values(v_id,coalesce(nullif(trim(s.business_id),''),'SYSTEM'),v_branch,coalesce(p->>'expense_no','EXP-'||to_char(clock_timestamp(),'YYYYMMDDHH24MISSMS')),(p->>'expense_date')::date,p->>'category',p->>'custom_category',p->>'description',(p->>'amount')::numeric,coalesce(p->>'payment_method','cash'),p->>'payment_reference',p->>'vendor','pending',s.id)
   on conflict(id) do update set branch_id=excluded.branch_id,expense_date=excluded.expense_date,category=excluded.category,custom_category=excluded.custom_category,description=excluded.description,amount=excluded.amount,payment_method=excluded.payment_method,payment_reference=excluded.payment_reference,vendor=excluded.vendor,updated_at=now()
   where public.bripta_expenses.status in ('draft','pending');
-  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,entity_id,old_value,new_value) values(s.business_id,v_branch,s.id,case when oldrow is null then 'expense_created' else 'expense_edited' end,'expense',v_id::text,oldrow,p);
+  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,entity_id,old_value,new_value) values(coalesce(nullif(trim(s.business_id),''),'SYSTEM'),v_branch,s.id,case when oldrow is null then 'expense_created' else 'expense_edited' end,'expense',v_id::text,oldrow,p);
   return v_id;
 end $$;
 
@@ -368,9 +375,9 @@ begin
   if s.id is null or not public.bripta_has_permission('view_accounting') or not public.bripta_can_access_branch(p_branch) then raise exception 'Accounting transfer is not permitted'; end if;
   if p_amount<=0 then raise exception 'Amount must be positive'; end if;
   v_key:='suspense_equity_'||p_source_id;
-  perform public.bripta_post_entry(s.business_id,p_branch,current_date,'2200','Suspense','liability',p_amount,0,p_description,'suspense_equity',p_source_id,v_key||'_debit',null,null,null,s.id);
-  perform public.bripta_post_entry(s.business_id,p_branch,current_date,'3000','Owner Capital / Equity','equity',0,p_amount,p_description,'suspense_equity',p_source_id,v_key||'_credit',null,null,null,s.id);
-  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,entity_id,new_value) values(s.business_id,p_branch,s.id,'suspense_transferred_to_equity','accounting_transfer',p_source_id,jsonb_build_object('amount',p_amount,'description',p_description));
+  perform public.bripta_post_entry(coalesce(nullif(trim(s.business_id),''),'SYSTEM'),p_branch,current_date,'2200','Suspense','liability',p_amount,0,p_description,'suspense_equity',p_source_id,v_key||'_debit',null,null,null,s.id);
+  perform public.bripta_post_entry(coalesce(nullif(trim(s.business_id),''),'SYSTEM'),p_branch,current_date,'3000','Owner Capital / Equity','equity',0,p_amount,p_description,'suspense_equity',p_source_id,v_key||'_credit',null,null,null,s.id);
+  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,entity_id,new_value) values(coalesce(nullif(trim(s.business_id),''),'SYSTEM'),p_branch,s.id,'suspense_transferred_to_equity','accounting_transfer',p_source_id,jsonb_build_object('amount',p_amount,'description',p_description));
   return jsonb_build_object('ok',true);
 end $$;
 
@@ -380,15 +387,15 @@ declare s public.loan_staff; target public.loan_staff; n int:=0;
 begin
   select * into s from public.loan_staff where auth_user_id=auth.uid() and coalesce(is_active,true) limit 1;
   if s.id is null or not public.bripta_has_permission('transfer_portfolios') then raise exception 'Portfolio transfer is not permitted'; end if;
-  select * into target from public.loan_staff where id=p_to and business_id=s.business_id and coalesce(is_active,true);
+  select * into target from public.loan_staff where id=p_to and coalesce(is_active,true);
   if target.id is null then raise exception 'Target officer not found'; end if;
   with moved as (
     update public.loan_clients set loan_officer_id=p_to,branch_id=coalesce(target.branch_id,branch_id),updated_at=now()
-    where business_id=s.business_id and loan_officer_id=p_from and (p_move_all or id=any(coalesce(p_client_ids,array[]::uuid[]))) returning id
+    where loan_officer_id=p_from and public.bripta_can_access_branch(branch_id) and (p_move_all or id=any(coalesce(p_client_ids,array[]::uuid[]))) returning id
   ) select count(*) into n from moved;
-  update public.loan_applications a set loan_officer_id=p_to,branch_id=coalesce(target.branch_id,a.branch_id),updated_at=now() where a.client_id in(select id from public.loan_clients where business_id=s.business_id and loan_officer_id=p_to);
-  update public.loans l set loan_officer_id=p_to,branch_id=coalesce(target.branch_id,l.branch_id),updated_at=now() where l.client_id in(select id from public.loan_clients where business_id=s.business_id and loan_officer_id=p_to);
-  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,new_value) values(s.business_id,target.branch_id,s.id,'portfolio_transferred','loan_clients',jsonb_build_object('from',p_from,'to',p_to,'clients',n));
+  update public.loan_applications a set loan_officer_id=p_to,branch_id=coalesce(target.branch_id,a.branch_id),updated_at=now() where a.client_id in(select id from public.loan_clients where loan_officer_id=p_to and public.bripta_can_access_branch(branch_id));
+  update public.loans l set loan_officer_id=p_to,branch_id=coalesce(target.branch_id,l.branch_id),updated_at=now() where l.client_id in(select id from public.loan_clients where loan_officer_id=p_to and public.bripta_can_access_branch(branch_id));
+  insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,new_value) values(coalesce(nullif(trim(s.business_id),''),'SYSTEM'),target.branch_id,s.id,'portfolio_transferred','loan_clients',jsonb_build_object('from',p_from,'to',p_to,'clients',n));
   return jsonb_build_object('ok',true,'clients_moved',n);
 end $$;
 
@@ -472,7 +479,7 @@ declare payload jsonb; actor public.loan_staff; v_business text; v_branch uuid; 
 begin
   payload:=case when tg_op='DELETE' then to_jsonb(old) else to_jsonb(new) end;
   select * into actor from public.loan_staff where auth_user_id=auth.uid() limit 1;
-  v_business:=coalesce(payload->>'business_id',actor.business_id);
+  v_business:=coalesce(nullif(trim(payload->>'business_id'),''),nullif(trim(actor.business_id),''),'SYSTEM');
   v_branch:=coalesce((payload->>'branch_id')::uuid,actor.branch_id);
   v_id:=coalesce(payload->>'id',payload->>'staff_id','unknown');
   insert into public.bripta_domain_audit(business_id,branch_id,actor_staff_id,action,entity_type,entity_id,old_value,new_value)
@@ -490,14 +497,13 @@ end $$;
 do $$ declare t text; begin
   foreach t in array array['bripta_staff_permissions','bripta_expenses','bripta_assets','bripta_asset_movements','bripta_accounting_entries','bripta_domain_audit'] loop
     execute format('drop policy if exists %I on public.%I',t||'_read',t);
-    execute format('create policy %I on public.%I for select to authenticated using (business_id=(select business_id from public.loan_staff where auth_user_id=auth.uid() and coalesce(is_active,true) limit 1) and (public.bripta_has_role(''admin'') or branch_id is null or public.bripta_can_access_branch(branch_id)))',t||'_read',t);
+    execute format('create policy %I on public.%I for select to authenticated using (coalesce(nullif(trim(business_id),''''),''SYSTEM'')=coalesce(nullif(trim((select business_id from public.loan_staff where auth_user_id=auth.uid() and coalesce(is_active,true) limit 1)),''''),''SYSTEM'') and (public.bripta_has_role(''admin'') or branch_id is null or public.bripta_can_access_branch(branch_id)))',t||'_read',t);
   end loop;
 end $$;
 
 drop policy if exists bripta_branches_read on public.bripta_branches;
 create policy bripta_branches_read on public.bripta_branches for select to authenticated using (
-  business_id=(select business_id from public.loan_staff where auth_user_id=auth.uid() and coalesce(is_active,true) limit 1)
-  and (public.bripta_has_role('admin') or id=(select branch_id from public.loan_staff where auth_user_id=auth.uid() limit 1))
+  (public.bripta_has_role('admin') or id=(public.bripta_current_staff()).branch_id)
 );
 
 drop policy if exists bripta_branches_admin_write on public.bripta_branches;
@@ -518,11 +524,11 @@ select public.bripta_sync_accounting();
 commit;
 
 -- Verification result set.
-select 'head_office_branches' check_name,count(*)::numeric result from public.bripta_branches where business_id='BIZ-B3F5E5D9' and is_head_office
-union all select 'clients_without_branch',count(*) from public.loan_clients where business_id='BIZ-B3F5E5D9' and branch_id is null
-union all select 'loans_without_branch',count(*) from public.loans where business_id='BIZ-B3F5E5D9' and branch_id is null
-union all select 'repayments_without_branch',count(*) from public.loan_repayments where business_id='BIZ-B3F5E5D9' and branch_id is null
-union all select 'staff_without_branch',count(*) from public.loan_staff where business_id='BIZ-B3F5E5D9' and branch_id is null
+select 'head_office_branches' check_name,count(*)::numeric result from public.bripta_branches where is_head_office
+union all select 'clients_without_branch',count(*) from public.loan_clients where branch_id is null
+union all select 'loans_without_branch',count(*) from public.loans where branch_id is null
+union all select 'repayments_without_branch',count(*) from public.loan_repayments where branch_id is null
+union all select 'staff_without_branch',count(*) from public.loan_staff where branch_id is null
 union all select 'ledger_unbalanced_sources',count(*) from (select source_table,source_id,sum(debit) d,sum(credit) c from public.bripta_accounting_entries group by source_table,source_id having abs(sum(debit)-sum(credit))>0.01)x
 union all select 'october_subscription_amount',public.bripta_subscription_amount('2026-10-01')
 union all select 'november_subscription_amount',public.bripta_subscription_amount('2026-11-01');

@@ -2057,7 +2057,7 @@ function hasPermission(name){
 async function loadBranchContext(){
   if(!currentUser?.business_id)return;
   const[{data:branches},{data:permission}]=await Promise.all([
-    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
+    sb('bripta_branches').select('*').order('name'),
     sb('bripta_staff_permissions').select('*').eq('staff_id',currentUser.id).maybeSingle()
   ]);
   branchList=branches||[]; currentPermissions=permission||{};
@@ -7057,7 +7057,7 @@ async function renderBranches(){
   if(!hasRole('admin')&&!hasPermission('manage_branches'))return toast('Branch management permission required','warning');
   const main=$('#mainContent');
   const[{data:branches},{data:staff},{data:clients}]=await Promise.all([
-    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
+    sb('bripta_branches').select('*').order('name'),
     sb('loan_staff').select('id,branch_id').eq('business_id',currentUser.business_id),
     sb('loan_clients').select('id,branch_id').eq('business_id',currentUser.business_id)
   ]);

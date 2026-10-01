@@ -1,6 +1,6 @@
 # Bripta multi-branch finance upgrade deployment
 
-This release is scoped to Supabase project `nngscmpsxtqqjzcnsrbi` and business `BIZ-B3F5E5D9`.
+This release is scoped to Supabase project `nngscmpsxtqqjzcnsrbi`. It discovers all populated business scopes in this project; legacy rows with no business identifier use the neutral `SYSTEM` scope.
 
 ## Deployment order
 
