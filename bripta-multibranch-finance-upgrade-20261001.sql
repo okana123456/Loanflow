@@ -268,7 +268,12 @@ create or replace function public.bripta_post_entry(
   p_source_id text,p_key text,p_loan uuid default null,p_expense uuid default null,p_asset uuid default null,p_user uuid default null
 ) returns void language sql security definer set search_path=public as $$
   insert into public.bripta_accounting_entries(business_id,branch_id,entry_date,account_code,account_name,account_type,debit,credit,description,source_table,source_id,entry_key,loan_id,expense_id,asset_id,created_by)
-  values(coalesce(nullif(trim(p_business),''),'SYSTEM'),p_branch,p_date,p_code,p_name,p_type,round(coalesce(p_debit,0),2),round(coalesce(p_credit,0),2),p_description,p_source_table,p_source_id,p_key,p_loan,p_expense,p_asset,p_user)
+  values(
+    coalesce(nullif(trim(p_business),''),'SYSTEM'),p_branch,p_date,p_code,p_name,p_type,
+    round(greatest(coalesce(p_debit,0),0)+greatest(-coalesce(p_credit,0),0),2),
+    round(greatest(coalesce(p_credit,0),0)+greatest(-coalesce(p_debit,0),0),2),
+    p_description,p_source_table,p_source_id,p_key,p_loan,p_expense,p_asset,p_user
+  )
   on conflict(business_id,source_table,source_id,entry_key) do update set debit=excluded.debit,credit=excluded.credit,description=excluded.description,branch_id=excluded.branch_id,entry_date=excluded.entry_date
 $$;
 
