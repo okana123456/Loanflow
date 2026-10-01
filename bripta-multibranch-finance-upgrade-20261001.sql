@@ -31,7 +31,7 @@ declare t text;
 begin
   foreach t in array array[
     'loan_clients','loan_applications','loans','loan_schedules','loan_repayments',
-    'loan_staff','loan_penalties','unmatched_payments','mpesa_callback_queue',
+    'loan_staff','loan_penalties','unmatched_payments',
     'journal_entries','bripta_charges','bripta_excess_ledger','bripta_excess_allocations'
   ] loop
     if to_regclass('public.'||t) is not null then
@@ -40,13 +40,21 @@ begin
   end loop;
 end $$;
 
+-- The M-Pesa callback queue has business_short_code instead of business_id.
+-- This Supabase project is Bripta-only, so its existing queue belongs to Head Office.
+alter table public.mpesa_callback_queue add column if not exists branch_id uuid references public.bripta_branches(id);
+update public.mpesa_callback_queue
+set branch_id='00000000-0000-4000-8000-000000000001'
+where branch_id is null;
+create index if not exists mpesa_callback_queue_branch_idx on public.mpesa_callback_queue(branch_id);
+
 -- Backfill without touching any financial amount or status.
 do $$
 declare t text;
 begin
   foreach t in array array[
     'loan_clients','loan_applications','loans','loan_schedules','loan_repayments',
-    'loan_staff','loan_penalties','unmatched_payments','mpesa_callback_queue',
+    'loan_staff','loan_penalties','unmatched_payments',
     'journal_entries','bripta_charges','bripta_excess_ledger','bripta_excess_allocations'
   ] loop
     if to_regclass('public.'||t) is not null then
@@ -223,6 +231,11 @@ returns trigger language plpgsql security definer set search_path=public as $$
 declare v_branch uuid;
 begin
   if new.branch_id is not null then return new; end if;
+  if tg_table_name='mpesa_callback_queue' then
+    select id into v_branch from public.bripta_branches where business_id='BIZ-B3F5E5D9' and is_head_office limit 1;
+    new.branch_id:=v_branch;
+    return new;
+  end if;
   if tg_table_name in ('loan_applications','loans') and new.client_id is not null then
     select branch_id into v_branch from public.loan_clients where id=new.client_id;
   elsif tg_table_name in ('loan_schedules','loan_repayments','loan_penalties') and new.loan_id is not null then
@@ -234,7 +247,7 @@ begin
 end $$;
 
 do $$ declare t text; begin
-  foreach t in array array['loan_clients','loan_applications','loans','loan_schedules','loan_repayments','loan_penalties','unmatched_payments','journal_entries','bripta_charges','bripta_excess_ledger','bripta_excess_allocations'] loop
+  foreach t in array array['loan_clients','loan_applications','loans','loan_schedules','loan_repayments','loan_penalties','unmatched_payments','journal_entries','bripta_charges','bripta_excess_ledger','bripta_excess_allocations','mpesa_callback_queue'] loop
     if to_regclass('public.'||t) is not null then
       execute format('drop trigger if exists bripta_assign_branch_trg on public.%I',t);
       execute format('create trigger bripta_assign_branch_trg before insert on public.%I for each row execute function public.bripta_assign_branch()',t);
