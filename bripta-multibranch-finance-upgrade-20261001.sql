@@ -243,10 +243,14 @@ begin
     new.branch_id:=v_branch;
     return new;
   end if;
-  if tg_table_name in ('loan_applications','loans') and new.client_id is not null then
-    select branch_id into v_branch from public.loan_clients where id=new.client_id;
-  elsif tg_table_name in ('loan_schedules','loan_repayments','loan_penalties') and new.loan_id is not null then
-    select branch_id into v_branch from public.loans where id=new.loan_id;
+  if tg_table_name in ('loan_applications','loans') then
+    if new.client_id is not null then
+      select branch_id into v_branch from public.loan_clients where id=new.client_id;
+    end if;
+  elsif tg_table_name in ('loan_schedules','loan_repayments','loan_penalties') then
+    if new.loan_id is not null then
+      select branch_id into v_branch from public.loans where id=new.loan_id;
+    end if;
   end if;
   if v_branch is null then select branch_id into v_branch from public.loan_staff where auth_user_id=auth.uid() limit 1; end if;
   if v_branch is null then select id into v_branch from public.bripta_branches where id='00000000-0000-4000-8000-000000000001'; end if;
