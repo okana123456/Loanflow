@@ -83,7 +83,7 @@ serve(async (req) => {
     const amount = Number(body?.TransAmount || 0);
     const payerPhone = String(body?.MSISDN || "").trim();
     const payerName = `${body?.FirstName || ""} ${body?.MiddleName || ""} ${body?.LastName || ""}`.replace(/\s+/g, " ").trim();
-    const paymentDate = mpesaDate(body?.TransTime);
+    let paymentDate = mpesaDate(body?.TransTime);
 
     if (!shortcode || !amount || amount <= 0) return accepted;
 
@@ -105,6 +105,11 @@ serve(async (req) => {
       .filter(Boolean))];
     let businessId = configuredBusinesses.length === 1 ? configuredBusinesses[0] : null;
     let autoConfirm = configuredBusinesses.length === 1 && !!settingsRows?.[0]?.mpesa_auto_confirm;
+    if (businessId === "BIZ-B3F5E5D9") {
+      paymentDate = /^\d{14}$/.test(String(body?.TransTime || ""))
+        ? `${paymentDate}+03:00`
+        : new Date().toISOString();
+    }
 
     const { data: existingRepayment } = await supabase
       .from("loan_repayments")
@@ -143,14 +148,24 @@ serve(async (req) => {
     }
 
     let client: { id: string; business_id: string; full_name: string | null; account_credit?: number | null } | null = null;
-    // Bripta instructs clients to use their National ID as the Paybill account.
-    // Never infer the borrower from the sender phone: somebody else may pay on
-    // a client's behalf, and masked phone values are not valid identifiers.
-    // Short or incomplete references such as "50" must remain in suspense.
+    // Bripta uses the borrower's registered PHONE in the Paybill account field.
+    // The sender phone is never used to infer the borrower. Short references,
+    // shared phone numbers and explicitly held payments remain in suspense.
+    let clientLookupError: unknown = null;
     const accountDigits = digitsOnly(accountNumber);
     if (accountDigits.length >= 5 && accountDigits.length <= 12) {
       const accountMatches: Array<{ id: string; business_id: string; full_name: string | null; account_credit?: number | null }> = [];
       for (const candidateBusiness of configuredBusinesses) {
+        if (candidateBusiness === "BIZ-B3F5E5D9") {
+          const { data, error } = await supabase.rpc("bripta_callback_phone_candidates", {
+            p_account_reference: accountNumber,
+            p_transaction_code: transId,
+          });
+          if (error) clientLookupError = error;
+          for (const row of data || []) accountMatches.push(row);
+          continue;
+        }
+        // Preserve the existing matching rule for other businesses.
         const { data } = await supabase
           .from("loan_clients")
           .select("id, business_id, full_name, account_credit")
@@ -168,7 +183,21 @@ serve(async (req) => {
       autoConfirm = !!(settingsRows || []).find((row) => row.business_id === businessId)?.mpesa_auto_confirm;
     }
 
-    const { data: queue } = await supabase
+    // Reuse saved callbacks on provider retries, including payments held for review.
+    const { data: previousQueue, error: previousQueueError } = businessId === "BIZ-B3F5E5D9"
+      ? await supabase
+        .from("mpesa_callback_queue")
+        .select("id,confirmed")
+        .eq("business_short_code", businessId)
+        .eq("trans_id", transId)
+        .limit(1)
+        .maybeSingle()
+      : { data: null, error: null };
+    if (previousQueueError) throw previousQueueError;
+    if (previousQueue?.confirmed) return accepted;
+    const { data: queue, error: queueError } = previousQueue
+      ? { data: previousQueue, error: null }
+      : await supabase
       .from("mpesa_callback_queue")
       .insert({
         transaction_type: body?.TransactionType || "C2B",
@@ -187,23 +216,46 @@ serve(async (req) => {
       .select("id")
       .maybeSingle();
 
-    const queueId = queue?.id;
+    let queueId = queue?.id;
+    if (queueError) {
+      console.error("Could not store M-Pesa callback in queue", transId, queueError);
+      // Daraja may retry an existing callback. Reuse its queue row rather
+      // than creating a second suspense record for the same transaction.
+      const { data: existingQueue, error: queueLookupError } = await supabase
+        .from("mpesa_callback_queue")
+        .select("id")
+        .eq("trans_id", transId)
+        .limit(1)
+        .maybeSingle();
+      if (queueLookupError) console.error("Could not look up M-Pesa callback", transId, queueLookupError);
+      queueId = existingQueue?.id;
+    }
+    if (clientLookupError) {
+      // Persist the callback first so a temporary lookup/deployment failure
+      // cannot discard a received payment.
+      throw clientLookupError;
+    }
 
     if (!client || !businessId) {
       if (!businessId) {
         console.error("Could not identify the Bripta business for payment", transId, shortcode, payerPhone);
         return accepted;
       }
-      await supabase.from("unmatched_payments").insert({
-        amount,
-        account_number: accountNumber,
-        business_id: businessId,
-        mpesa_reference: transId,
-        payer_phone: payerPhone,
-        payer_name: payerName,
-        raw_payload: body,
-        resolved: false,
-      }).catch(() => {});
+      // The queue is the live M-Pesa suspense register. Store a fallback only
+      // if queue persistence failed; writing both would double its UI total.
+      if (!queueId) {
+        const { error: unmatchedError } = await supabase.from("unmatched_payments").insert({
+          amount,
+          account_number: accountNumber,
+          business_id: businessId,
+          mpesa_reference: transId,
+          payer_phone: payerPhone,
+          payer_name: payerName,
+          raw_payload: body,
+          resolved: false,
+        });
+        if (unmatchedError) throw unmatchedError;
+      }
       return accepted;
     }
 
@@ -258,16 +310,19 @@ serve(async (req) => {
         return accepted;
       }
 
-      await supabase.from("unmatched_payments").insert({
-        amount,
-        account_number: accountNumber,
-        business_id: businessId,
-        mpesa_reference: transId,
-        payer_phone: payerPhone,
-        payer_name: payerName,
-        raw_payload: body,
-        resolved: false,
-      }).catch(() => {});
+      if (!queueId) {
+        const { error: unmatchedError } = await supabase.from("unmatched_payments").insert({
+          amount,
+          account_number: accountNumber,
+          business_id: businessId,
+          mpesa_reference: transId,
+          payer_phone: payerPhone,
+          payer_name: payerName,
+          raw_payload: body,
+          resolved: false,
+        });
+        if (unmatchedError) throw unmatchedError;
+      }
       return accepted;
     }
     if (!autoConfirm) {
@@ -318,7 +373,7 @@ serve(async (req) => {
         processing_fee_portion: processingFeePortion,
         loan_portion: loanPortion,
         credit_portion: creditPortion,
-        notes: `Auto-confirmed via Daraja C2B. Matched by National ID account. Allocation: ${allocationNote || "none"}. Payer: ${payerName}`,
+        notes: `Auto-confirmed via Daraja C2B. Matched by ${businessId === "BIZ-B3F5E5D9" ? "borrower phone account" : "National ID account"}. Allocation: ${allocationNote || "none"}. Payer: ${payerName}`,
       })
       .select("id")
       .single();

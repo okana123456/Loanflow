@@ -1,0 +1,2 @@
+# Disposable local database used to test payment recovery without Supabase.
+.recovery-test-runtime/

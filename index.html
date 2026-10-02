@@ -327,6 +327,7 @@ tr:hover{background:rgba(255,213,0,.18)}
 <div class="modal" id="modalBox"></div>
 </div>
 
+<script src="bripta-reporting.js"></script>
 <script>
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
@@ -369,6 +370,26 @@ const BRIPTA_OFFICER_REDIRECTS = {
 };
 function canonicalLoanOfficerId(staffId){
   return BRIPTA_OFFICER_REDIRECTS[currentUser?.business_id]?.[staffId] || staffId || null;
+}
+async function assignedLoanOfficerForClient(clientId,preferredIds=[]){
+  const{data:client,error:clientError}=await sb('loan_clients')
+    .select('id,branch_id,loan_officer_id').eq('id',clientId)
+    .eq('business_id',currentUser.business_id).single();
+  if(clientError)throw clientError;
+  const candidates=[...new Set([client.loan_officer_id,...preferredIds,
+    hasRole('loan_officer')&&!hasRole('admin','branch_manager')?currentUser.id:null]
+    .map(canonicalLoanOfficerId).filter(Boolean))];
+  if(!candidates.length)throw new Error('Assign this client to an active loan officer before issuing a loan.');
+  const{data:staff,error:staffError}=await sb('loan_staff')
+    .select('id,role,is_active,branch_id').eq('business_id',currentUser.business_id).in('id',candidates);
+  if(staffError)throw staffError;
+  const officer=candidates.map(id=>(staff||[]).find(s=>s.id===id)).find(s=>{
+    if(!s||s.is_active===false||s.branch_id!==client.branch_id)return false;
+    const roles=(s.role||'').split(',').map(r=>r.trim());
+    return roles.includes('loan_officer')&&!roles.includes('admin')&&!roles.includes('branch_manager');
+  });
+  if(!officer)throw new Error('No active loan officer assigned in this client’s branch. Update the client’s officer assignment first.');
+  return officer.id;
 }
 
 // Low-egress local cache. It keeps heavy business tables on the device and
@@ -449,9 +470,9 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   }
   return {data: rows, error: null};
 }
-async function fetchBriptaTableOptimized(table){
+async function fetchBriptaTableOptimized(table,force=false){
   const cached = await readBriptaCache(table);
-  if(cached && Array.isArray(cached.rows) && Date.now() - Number(cached.savedAt || 0) < BRIPTA_MIN_SYNC_MS){
+  if(!force && cached && Array.isArray(cached.rows) && Date.now() - Number(cached.savedAt || 0) < BRIPTA_MIN_SYNC_MS){
     return {data: cached.rows, error: null, fromCache: true, syncSkipped: true};
   }
   const needsFull = !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= BRIPTA_FULL_SYNC_MS;
@@ -467,7 +488,7 @@ async function fetchBriptaTableOptimized(table){
     if(!result.error) await writeBriptaCache(table, result.data, Date.now());
     return result;
   }
-  if(result.error) return {data: cached.rows || [], error: null, stale: true};
+  if(result.error) return {data: cached.rows || [], error: result.error, stale: true};
   const merged = new Map((cached.rows || []).filter(r=>r?.id).map(r=>[r.id,r]));
   (result.data || []).filter(r=>r?.id).forEach(r=>merged.set(r.id,r));
   const rows = [...merged.values()];
@@ -477,17 +498,17 @@ async function fetchBriptaTableOptimized(table){
 function hydrateBriptaRelations(){
   const clientsById = new Map((cachedData.clients || []).map(c=>[c.id,c]));
   (cachedData.loans || []).forEach(l => {
-    l.loan_clients = l.loan_clients || clientsById.get(l.client_id) || null;
+    l.loan_clients = clientsById.get(l.client_id) || l.loan_clients || null;
   });
   const loansById = new Map((cachedData.loans || []).map(l=>[l.id,l]));
   (cachedData.repayments || []).forEach(r => {
     const loan = loansById.get(r.loan_id);
-    if(loan) r.loans = r.loans || loan;
+    if(loan) r.loans = loan;
   });
 }
-async function loadBriptaTables(tables){
+async function loadBriptaTables(tables,{force=false}={}){
   const uniqueTables = [...new Set(tables)];
-  const results = await Promise.all(uniqueTables.map(t=>fetchBriptaTableOptimized(t)));
+  const results = await Promise.all(uniqueTables.map(t=>fetchBriptaTableOptimized(t,force)));
   results.forEach((res,i)=>{
     const table = uniqueTables[i];
     if(res.error) throw res.error;
@@ -496,6 +517,29 @@ async function loadBriptaTables(tables){
   });
   hydrateBriptaRelations();
   return cachedData;
+}
+async function refreshBriptaReports(section){
+  try{
+    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_schedules','loan_staff','loan_applications'],{force:true});
+    navigateTo(section);
+  }catch(e){toast('Could not refresh: '+e.message,'error');}
+}
+async function refreshBriptaArrears(){
+  try{
+    const db=await openBriptaCache();
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction('tables','readwrite');
+      const table=tx.objectStore('tables');
+      ['loan_clients','loans','loan_schedules','loan_staff'].forEach(name=>table.delete(briptaCacheKey(name)));
+      tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error);
+    });
+    navigateTo('overdue');
+  }catch(e){toast('Could not refresh arrears: '+e.message,'error');}
+}
+function reportingOfficerVisible(s){
+  const roles=(s.role||'').split(',').map(r=>r.trim());
+  return s.is_active!==false && roles.includes('loan_officer') && !roles.some(r=>['admin','branch_manager'].includes(r))
+    && (!selectedBranchId || s.branch_id===selectedBranchId || (cachedData.loans||[]).some(l=>canonicalLoanOfficerId(l.loan_officer_id)===s.id));
 }
 
 // ═══ KEEP ALIVE PING ═══
@@ -677,14 +721,16 @@ function fmtPaymentDateTime(value){
 function repaymentDisplayDateTime(repayment){
   const method=String(repayment?.payment_method||'').toLowerCase();
   const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
-  return fmtPaymentDateTime(isMpesa&&repayment?.created_at
+  const corrected=/\[BRIPTA_RECOVERY_20261002\]|Matched by borrower phone account/.test(repayment?.notes||'');
+  return fmtPaymentDateTime(isMpesa&&!corrected&&repayment?.created_at
     ? repayment.created_at
     : repayment?.payment_date||repayment?.created_at);
 }
 function repaymentBusinessDate(repayment){
   const method=String(repayment?.payment_method||'').toLowerCase();
   const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
-  return kenyaDateISO(isMpesa&&repayment?.created_at
+  const corrected=/\[BRIPTA_RECOVERY_20261002\]|Matched by borrower phone account/.test(repayment?.notes||'');
+  return kenyaDateISO(isMpesa&&!corrected&&repayment?.created_at
     ? repayment.created_at
     : repayment?.payment_date||repayment?.created_at);
 }
@@ -1445,7 +1491,7 @@ function showApp(){
 }
 
 function buildSidebar() {
-  const userRoles = (currentUser.role || 'viewer').split(',');
+  const userRoles = (currentUser.role || 'viewer').split(',').map(r=>r.trim());
   const nav = document.getElementById('sidebarNav');
   
   const menu = [
@@ -1457,7 +1503,7 @@ function buildSidebar() {
     { id: 'inactive_clients', icon: 'I', label: 'Inactive Clients', roles: ['admin', 'branch_manager', 'loan_officer'] },
     { id: 'products', icon: 'P', label: 'Loan Products', roles: ['admin', 'branch_manager'] },
     { id: 'applications', icon: 'A', label: 'Applications', roles: ['admin', 'branch_manager', 'loan_officer'] },
-    { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager', 'cashier'] },
+    { id: 'disbursement', icon: '$', label: 'Disbursement', roles: ['admin', 'branch_manager'] },
     { id: 'loans', icon: 'L', label: 'Active Loans', roles: ['admin', 'branch_manager', 'loan_officer', 'cashier'] },
     { id: 'repayments', icon: 'R', label: 'Repayments', roles: ['admin', 'branch_manager', 'cashier', 'loan_officer'] },
     { id: 'overdue', icon: '!', label: 'Arrears', roles: ['admin', 'branch_manager', 'loan_officer'] },
@@ -1488,7 +1534,7 @@ function buildSidebar() {
 }
 
 function hasRole(...roles){
-    const userRoles = (currentUser?.role || '').split(',');
+    const userRoles = (currentUser?.role || '').split(',').map(r=>r.trim());
     return roles.some(r => userRoles.includes(r));
 }
 
@@ -1664,28 +1710,11 @@ async function getRegistrationFeeIncome(clients){
 // ═══ DASHBOARD ═══
 // ── Due Today Client Table Helper ──
 function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
-  const rows = dailyDueScheds.map(s => {
-    const loan = allLoans.find(l => l.id === s.loan_id);
-    if(!loan) return null;
-    // Only show active loans — exclude completed, defaulted, written_off
-    if(loan.status !== 'active') return null;
-    const paid = Number(s.total_paid || 0);
-    const remaining = Math.max(0, Number(s.total_due||0) - paid);
-    // Exclude fully paid installments — no point showing them
-    if(remaining === 0) return null;
-    return {
-      name: loan.loan_clients?.full_name || '-',
-      phone: loan.loan_clients?.phone || '-',
-      loan_no: loan.loan_no,
-      installment_no: s.installment_no,
-      total_due: Number(s.total_due||0),
-      paid, remaining,
-      arrears: Number(loan.arrears_amount || 0),
-      loan_balance: Number(loan.outstanding_balance || 0),
-      loan_id: loan.id,
-      loan_officer_id: loan.loan_officer_id || null
-    };
-  }).filter(Boolean).sort((a,b) => b.remaining - a.remaining);
+  const rows = BriptaReporting.dueClients(dailyDueScheds,allLoans).map(r=>({...r,
+    loan_no:r.loans.map(l=>l.loan_no).join(', '),installment_no:r.installments.join(', '),
+    loan_officer_id:r.loans[0]?.loan_officer_id,
+    officer_names:[...new Set(r.loans.map(l=>window._staffMap?.[canonicalLoanOfficerId(l.loan_officer_id)]||'Unassigned'))].join(', ')
+  }));
 
   if(!rows.length) return '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;padding:10px;background:var(--bg-card);border-radius:8px;text-align:center">✅ No installments scheduled for today</div>';
 
@@ -1711,13 +1740,13 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
         ? '<span class="badge" style="background:var(--accent-orange);color:#fff">Partial</span>'
         : '<span class="badge badge-red">Unpaid</span>';
     const payBtn = (!isPaid && hasRole('admin','branch_manager','cashier'))
-      ? '<button class="btn btn-success btn-sm" onclick="openPaymentModal(\'' + x.loan_id + '\')">Pay</button>'
+      ? x.loans.map(l=>'<button class="btn btn-success btn-sm" onclick="openPaymentModal(\''+l.id+'\')">Pay '+(x.loans.length>1?escapeHtml(l.loan_no):'')+'</button>').join(' ')
       : '';
     const arrearsCell = x.arrears > 0
       ? '<td style="color:var(--accent-red);font-weight:700">' + fmtMoney(x.arrears) + '</td>'
       : '<td><span style="color:var(--text-secondary)">—</span></td>';
     html += '<tr style="' + (isPaid?'opacity:0.55':'') + '">';
-    html += '<td><strong>' + x.name + '</strong></td>';
+    html += '<td><strong>' + escapeHtml(x.name) + '</strong></td>';
     html += '<td><a href="tel:' + x.phone + '" style="color:var(--accent-blue)">' + x.phone + '</a></td>';
     html += '<td>' + x.loan_no + '</td>';
     html += '<td style="text-align:center">#' + x.installment_no + '</td>';
@@ -1726,7 +1755,7 @@ function buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr){
     html += '<td style="color:' + (x.remaining > 0 ? 'var(--accent-red)' : 'var(--accent-green)') + ';font-weight:600">' + fmtMoney(x.remaining) + '</td>';
     html += arrearsCell;
     html += '<td style="color:var(--accent-yellow);font-weight:700">' + fmtMoney(x.loan_balance) + '</td>';
-    html += '<td><span class="badge badge-gray" style="text-transform:capitalize">' + ((window._staffMap && x.loan_officer_id && window._staffMap[x.loan_officer_id]) || 'Unassigned') + '</span></td>';
+    html += '<td><span class="badge badge-gray" style="text-transform:capitalize">' + escapeHtml(x.officer_names) + '</span></td>';
     html += '<td>' + badge + '</td>';
     html += '<td>' + payBtn + '</td>';
     html += '</tr>';
@@ -1742,14 +1771,8 @@ async function loadDueByDate(dateStr){
   const activeLoanIds = new Set(allLoans.map(l=>l.id));
   const allReps  = cachedData.repayments || [];
 
-  // Fetch schedules for the selected date directly from Supabase
-  const{data:scheds} = await sb('loan_schedules')
-    .select('*')
-    .eq('business_id', currentUser.business_id)
-    .eq('due_date', dateStr);
-
-  // Filter to active loans only — completed loans must never appear in due list
-  const scheds2 = (scheds||[]).filter(s=>activeLoanIds.has(s.loan_id));
+  const state=BriptaReporting.allocatedSchedules(allLoans,cachedData.schedules||[],allReps,today(),repaymentBusinessDate);
+  const scheds2=state.schedules.filter(s=>s.due_date===dateStr&&activeLoanIds.has(s.loan_id));
   const dueAmt  = scheds2.reduce((s,sc)=>s+Number(sc.total_due||0),0);
   const dueLoanIds = new Set(scheds2.map(s=>s.loan_id));
 
@@ -1770,7 +1793,7 @@ if(lbl) lbl.textContent = isToday ? `— Today, ${fmtLongDate(dateStr)}` : isFut
     '<div class="kpi-card" style="border-top:2px solid var(--accent-green)">' +
       '<div class="kpi-label">Total Due</div>' +
       '<div class="kpi-value" style="color:var(--accent-green)">' + fmtMoney(dueAmt) + '</div>' +
-      '<div class="kpi-sub">' + scheds2.length + ' installment' + (scheds2.length!==1?'s':'') + ' · ' + dueLoanIds.size + ' client' + (dueLoanIds.size!==1?'s':'') + '</div>' +
+      '<div class="kpi-sub">' + scheds2.length + ' installment' + (scheds2.length!==1?'s':'') + ' · ' + new Set(allLoans.filter(l=>dueLoanIds.has(l.id)).map(l=>l.client_id||l.id)).size + ' client' + (dueLoanIds.size!==1?'s':'') + '</div>' +
     '</div>' +
     '<div class="kpi-card" style="border-top:2px solid var(--accent-blue)">' +
       '<div class="kpi-label">' + (isFuture?'Expected':'Collected') + '</div>' +
@@ -1805,10 +1828,7 @@ async function renderDashboard(){
 
     // Dynamically filter EVERYTHING based on the date picker
     const filteredDisbursed = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
-    const filteredReps = filterByDate(allReps, r=>{
-      const method=String(r.payment_method||'').toLowerCase();
-      return (method.includes('mpesa')||method.includes('m-pesa'))&&r.created_at?r.created_at:r.payment_date;
-    }, f);
+    const filteredReps = filterByDate(allReps, repaymentBusinessDate, f);
     const filteredApps = filterByDate(allApps, 'created_at', f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
     const filteredScheds = filterByDate(allScheds.filter(s=>s.due_date), 'due_date', f);
@@ -1828,29 +1848,20 @@ async function renderDashboard(){
       .filter(s=>activeLoanIdSet.has(s.loan_id));
     const dailyDueAmt    = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
     const dailyDueLoanIds = new Set(dailyDueScheds.map(s=>s.loan_id));
-    // Fix #8: use the higher of (a) schedule total_paid or (b) actual repayments
-    // recorded today for loans that have dues today. This ensures payments that
-    // were recorded but didn't fully cascade into schedules still show up.
-    const schedDailyPaid = dailyDueScheds.reduce((s,sc)=>s+Number(sc.total_paid||0),0);
-    const repsDailyPaid  = (allReps||[])
-      .filter(r=>dailyDueLoanIds.has(r.loan_id) && (r.payment_date||'').slice(0,10)===todayStr)
-      .reduce((s,r)=>s+Number(r.amount||0),0);
-    const dailyPaidAmt   = Math.min(Math.max(schedDailyPaid, repsDailyPaid), dailyDueAmt);
+    const dailyState=BriptaReporting.allocatedSchedules(allLoans,allScheds,allReps,todayStr,repaymentBusinessDate);
+    const dailyPaidAmt=BriptaReporting.periodCollection(dailyState.schedules,s=>s.due_date===todayStr&&activeLoanIdSet.has(s.loan_id),todayStr).paid;
     const dailyRate      = dailyDueAmt>0 ? (dailyPaidAmt/dailyDueAmt)*100 : 0;
     const dailyUnpaid    = Math.max(0, dailyDueAmt - dailyPaidAmt);
 
-    // ── PERIOD COLLECTION — filter to active loans only ──
-    const filteredScheds_arrived = filteredScheds.filter(s=>s.due_date<=todayStr&&activeLoanIdSet.has(s.loan_id));
-    const periodDue        = filteredScheds_arrived.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    // Period Collected: payments inside the filter window that belong to those arrived-due schedules' loans
-    const periodArrivedLoanIds = new Set(filteredScheds_arrived.map(s=>s.loan_id));
-    // Use schedule total_paid capped at total_due — prevents overpayments inflating the rate
-    const periodCollectionRaw = filteredScheds_arrived.reduce((s,sc)=>s+Math.min(Number(sc.total_due||0),Number(sc.total_paid||0)),0);
-    // Cap so collections cannot exceed cumulative due (rate stays <= 100%)
-    const periodCollection = Math.min(periodCollectionRaw, periodDue);
-    const periodCollectionRate = periodDue>0 ? (periodCollection/periodDue)*100 : 0;
-    const unpaidDueAmt = Math.max(0, periodDue - periodCollection);
-    const totalDueCount = filteredScheds_arrived.length;
+    // Include loans completed during the period; late receipts settle their original dues.
+    const periodEnd=f.type==='yesterday'?shiftISODate(todayStr,-1):f.type==='custom'&&f.end&&f.end<todayStr?f.end:todayStr;
+    const collectionLoans=allLoans.filter(l=>['active','completed'].includes(l.status));
+    const periodState=BriptaReporting.allocatedSchedules(collectionLoans,allScheds,allReps,periodEnd,repaymentBusinessDate);
+    const selectedScheduleIds=new Set(filterByDate(periodState.schedules,'due_date',f).map(s=>s.id));
+    const periodStats=BriptaReporting.periodCollection(periodState.schedules,s=>selectedScheduleIds.has(s.id),periodEnd);
+    const filteredScheds_arrived=periodStats.arrived;
+    const periodDue=periodStats.due,periodCollection=periodStats.paid,periodCollectionRate=periodStats.rate;
+    const unpaidDueAmt=periodStats.unpaid,totalDueCount=filteredScheds_arrived.length;
 
     // Global Snapshots
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -1904,7 +1915,7 @@ async function renderDashboard(){
               <h1 style="margin:0">Dashboard</h1>
               <div style="font-size:13px;color:var(--text-secondary);margin-top:3px">${fmtLongDate(todayStr)}</div>
             </div>
-            <button class="btn btn-outline" onclick="navigateTo('dashboard')">Refresh</button>
+            <button class="btn btn-outline" onclick="refreshBriptaReports('dashboard')">Refresh</button>
         </div>
         ${getDateFilterHtml('dashboard')}
       </div>
@@ -1946,7 +1957,7 @@ async function renderDashboard(){
 
       <!-- Client list for selected date -->
       <div id="dueClientTable">
-        ${buildDueTodayTable(dailyDueScheds, allLoans, allReps, todayStr)}
+        ${buildDueTodayTable(dailyState.schedules.filter(s=>s.due_date===todayStr), allLoans, allReps, todayStr)}
       </div>
 
       <!-- ── PERIOD COLLECTION (cumulative) ── -->
@@ -1967,7 +1978,8 @@ async function renderDashboard(){
         <div class="kpi-card" style="border-top:2px solid var(--accent-red)">
           <div class="kpi-label">Unpaid in Period</div>
           <div class="kpi-value" style="color:var(--accent-red)">${fmtMoney(unpaidDueAmt)}</div>
-          <div class="kpi-sub">From cumulative due — not yet collected</div>
+          <div class="kpi-sub">Due in this period, less payments allocated by ${fmtDate(periodEnd)}, including late payments.</div>
+          ${periodState.reviewLoanIds.length?'<div class="kpi-sub">Some historical schedules need reconciliation; their recorded allocations are retained.</div>':''}
         </div>
         <div class="kpi-card" style="border-top:2px solid var(--accent-yellow)">
           <div class="kpi-label">Arrears Collected</div>
@@ -2952,7 +2964,8 @@ async function submitApplication(){
     const selectedClientId=$('#appClient').value;
 
     // ── Enforce one active loan per client ──────────────────────────────────
-    const{data:activeLoans}=await sb('loans').select('id,outstanding_balance').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).eq('status','active');
+    const{data:activeLoans,error:activeLoansError}=await sb('loans').select('id,outstanding_balance').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).eq('status','active');
+    if(activeLoansError)throw activeLoansError;
     // Auto-heal: if a loan shows active but balance is 0 or negative, mark it completed
     const trueActive=(activeLoans||[]).filter(l=>Number(l.outstanding_balance||0)>0.01);
     const zeroBalActive=(activeLoans||[]).filter(l=>Number(l.outstanding_balance||0)<=0.01);
@@ -2965,7 +2978,8 @@ async function submitApplication(){
       if(btn){ btn.disabled=false; btn.textContent='Submit Application'; }
       return;
     }
-    const{data:pendingApps}=await sb('loan_applications').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).in('status',['submitted','approved']).limit(1);
+    const{data:pendingApps,error:pendingAppsError}=await sb('loan_applications').select('id').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).in('status',['submitted','approved']).limit(1);
+    if(pendingAppsError)throw pendingAppsError;
     if(pendingApps&&pendingApps.length>0){
       toast('This client already has a pending or approved application. Resolve it before submitting a new one.','error');
       if(btn){ btn.disabled=false; btn.textContent='Submit Application'; }
@@ -2976,13 +2990,14 @@ async function submitApplication(){
     const appNo = generateUniqueNo('APP');
     const amt=Number($('#appAmount').value);
     // Determine loan type: 'new_loan' if this is the client's first ever loan, 'repeat_loan' otherwise
-    const{data:prevLoanCheck}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(1);
+    const{data:prevLoanCheck,error:prevLoanError}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',selectedClientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(1);
+    if(prevLoanError)throw prevLoanError;
     const loanType=(prevLoanCheck&&prevLoanCheck.length>0)?'repeat_loan':'new_loan';
     // ── Preserve assigned loan officer ──────────────────────────────────────
     // If the client already has a loan (and therefore an assigned officer),
     // keep that officer on the new application — UNLESS the person submitting
     // is themselves a loan officer (in which case it's their own client now).
-    let appOfficerId = canonicalLoanOfficerId(currentUser?.id);
+    let appOfficerId = null;
     if(prevLoanCheck && prevLoanCheck.length > 0 && prevLoanCheck[0].loan_officer_id){
       const isOfficerSubmitting = hasRole('loan_officer') && !hasRole('admin','branch_manager');
       if(!isOfficerSubmitting){
@@ -2991,6 +3006,7 @@ async function submitApplication(){
         appOfficerId = canonicalLoanOfficerId(prevLoanCheck[0].loan_officer_id);
       }
     }
+    appOfficerId=await assignedLoanOfficerForClient(selectedClientId,[appOfficerId]);
     const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:appOfficerId,business_id:currentUser?.business_id,loan_type:loanType};
     
     // Robust auto-tier → product mapping (case-insensitive, trims, fallbacks)
@@ -3047,7 +3063,12 @@ async function viewApplication(id){
 async function approveApp(id){
   if(!await confirm_('Approve this application?'))return;
   try{
-    await sb('loan_applications').update({status:'approved',approved_by:currentUser?.id,approved_at:new Date().toISOString()}).eq('id',id);
+    const{data:approved,error}=await sb('loan_applications')
+      .update({status:'approved',approved_by:currentUser?.id,approved_at:new Date().toISOString()})
+      .eq('id',id).eq('business_id',currentUser.business_id).eq('status','submitted')
+      .select('id,status').single();
+    if(error)throw error;
+    if(approved?.status!=='approved')throw new Error('Application approval was not confirmed. Refresh and review its status.');
     await audit('application_approved','loan_applications',id,null,null);
     toast('Application approved! Opening disbursement…','success');
     closeModal();
@@ -3086,11 +3107,12 @@ async function renderDisbursement(){
       ${queue.map(a=>`<tr><td>${a.application_no}</td><td><strong>${a.loan_clients?.full_name||'—'}</strong></td><td>${a.loan_clients?.phone||'-'}</td><td>${fmtMoney(a.applied_amount)}</td><td>${a.applied_term_weeks}w</td><td><span class="badge badge-blue">${getAutoTier(a.applied_amount)}</span></td><td>${fmtDate(a.approved_at)}</td><td><button class="btn btn-primary btn-sm" onclick="openDisburseModal('${a.id}')">Disburse</button></td></tr>`).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--text-secondary)">No approved applications awaiting disbursement</td></tr>'}
       </tbody></table></div>
     `;
-  }catch(e){toast(e.message,'error')}
+  }catch(e){main.innerHTML=`<div class="empty-state"><p>Could not load disbursements: ${escapeHtml(e.message)}</p></div>`;toast(e.message,'error')}
 }
 
 async function openDisburseModal(appId){
-  const{data:app}=await sb('loan_applications').select('*,loan_clients(full_name,phone)').eq('id',appId).single();
+  const{data:app,error:appError}=await sb('loan_applications').select('*,loan_clients(full_name,phone)').eq('id',appId).single();
+  if(appError)return toast(appError.message,'error');
   if(!app)return toast('Application not found','error');
   const amt=app.applied_amount;
   const rate=getAutoRate(amt);
@@ -3132,7 +3154,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
   if(btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try{
     const {data: appCheck,error:appCheckErr} = await sb('loan_applications')
-      .select('status,client_id,business_id')
+      .select('status,client_id,business_id,applied_term_weeks')
       .eq('id',appId)
       .eq('business_id',currentUser?.business_id)
       .single();
@@ -3149,6 +3171,11 @@ async function confirmDisburse(appId,clientId,termWeeks){
       .maybeSingle();
     if(existingLoanErr) throw existingLoanErr;
     if(existingLoan){
+      const{count:existingScheduleCount,error:existingSchedulesErr}=await sb('loan_schedules')
+        .select('id',{count:'exact',head:true}).eq('loan_id',existingLoan.id).eq('business_id',currentUser.business_id);
+      if(existingSchedulesErr)throw existingSchedulesErr;
+      if(existingScheduleCount!==Number(appCheck.applied_term_weeks))
+        throw new Error(`Loan ${existingLoan.loan_no||''} has ${existingScheduleCount||0} of ${appCheck.applied_term_weeks} installments. Review its schedule before marking the application disbursed.`);
       const{error:reconcileErr}=await sb('loan_applications')
         .update({status:'disbursed'})
         .eq('id',appId)
@@ -3177,15 +3204,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
       .maybeSingle();
     if(runningLoanErr)throw runningLoanErr;
     if(runningLoan){
-      const{error:statusErr}=await sb('loan_applications')
-        .update({status:'disbursed'})
-        .eq('id',appId)
-        .eq('business_id',currentUser?.business_id);
-      if(statusErr)throw statusErr;
-      toast(`This client already has running loan ${runningLoan.loan_no||''}. The application has been removed from disbursement.`, 'success');
-      closeModal();
-      renderDisbursement();
-      return;
+      throw new Error(`This client already has active loan ${runningLoan.loan_no||''}. Review it before disbursing another loan.`);
     }
 
     const amt=Number($('#dAmt').value);const term=Number(termWeeks);
@@ -3193,7 +3212,8 @@ async function confirmDisburse(appId,clientId,termWeeks){
     const c=calcLoan(amt,rate,'flat',term);
     const procFee=PROCESSING_FEE_FLAT;
     // Check if this client already has a previous loan — registration is one-time only
-    const{data:prevLoans}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',clientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(2);
+    const{data:prevLoans,error:prevLoansError}=await sb('loans').select('id,loan_officer_id,created_at').eq('client_id',clientId).eq('business_id',currentUser?.business_id).order('created_at',{ascending:false}).limit(2);
+    if(prevLoansError)throw prevLoansError;
     const isReturningClient=(prevLoans&&prevLoans.length>0);
     const regFee=isReturningClient?0:REGISTRATION_FEE;
     const disbDate=$('#dDate').value;const firstRep=$('#dFirstRep').value;
@@ -3209,13 +3229,15 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // most recent previous loan's officer, (3) fallback to currentUser.
     // This prevents an admin disbursing on behalf of a client from
     // overwriting the officer assignment.
-    let disbOfficerId = canonicalLoanOfficerId(currentUser?.id);
-    const{data:appOfficerRow}=await sb('loan_applications').select('loan_officer_id').eq('id',appId).single();
+    let disbOfficerId = null;
+    const{data:appOfficerRow,error:appOfficerError}=await sb('loan_applications').select('loan_officer_id').eq('id',appId).eq('business_id',currentUser.business_id).single();
+    if(appOfficerError)throw appOfficerError;
     if(appOfficerRow?.loan_officer_id){
       disbOfficerId = canonicalLoanOfficerId(appOfficerRow.loan_officer_id);
     } else if(isReturningClient && prevLoans[0]?.loan_officer_id){
       disbOfficerId = canonicalLoanOfficerId(prevLoans[0].loan_officer_id);
     }
+    disbOfficerId=await assignedLoanOfficerForClient(clientId,[disbOfficerId]);
     // Full principal is disbursed; automatic fee diversion is disabled.
     const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:0,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
 
@@ -3255,10 +3277,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
     });
     
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
-    if(sErr) {
-        console.error("Schedule insert failed:", sErr);
-        toast("Loan created, but schedule generation had an issue.", 'warning');
-    }
+    if(sErr)throw new Error(`Loan ${loanNo} was created, but its repayment schedule failed: ${sErr.message}. The application remains approved for review.`);
 
     const{data:updatedApp,error:appStatusErr}=await sb('loan_applications')
       .update({status:'disbursed'})
@@ -3873,7 +3892,7 @@ async function renderRepayments(page=1){
     // callbacks use created_at; manually recorded payments use payment_date.
     let filteredReps = filterByDate(reps||[], repaymentBusinessDate, f);
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
-    if (isOnlyOfficer) filteredReps = filteredReps.filter(r => r.loans?.loan_officer_id === currentUser.id);
+    if (isOnlyOfficer) filteredReps = filteredReps.filter(r => canonicalLoanOfficerId(r.loans?.loan_officer_id) === currentUser.id);
 
     // ── Compute running balance per payment row ──────────────────────────
     // Group ALL repayments (not just filtered) by loan_id to get full
@@ -3904,6 +3923,7 @@ async function renderRepayments(page=1){
             <div>
                 <span style="font-size:13px;color:var(--text-secondary);margin-right:12px">Period Total: <strong style="color:var(--accent-green)">${fmtMoney(periodTotal)}</strong></span>
                 <button class="btn btn-outline btn-sm" onclick="exportRepaymentsExcel()">Export Excel</button> 
+                <button class="btn btn-outline btn-sm" onclick="refreshBriptaReports('repayments')">Refresh</button>
                 ${canPay?`<button class="btn btn-primary btn-sm" onclick="openPaymentModal()">+ Record Payment</button>`:''}
             </div>
         </div>
@@ -4488,22 +4508,14 @@ async function renderOverdue(opts){
 
   const main=$('#mainContent');
   try{
-    // Refresh stored aging before reading the report. The database also runs
-    // this daily, while this call makes the latest classification immediate.
-    try{
-      await supabaseClient.rpc('bripta_refresh_my_loan_aging');
-      cachedData.loans=null;
-      cachedData.schedules=null;
-    }catch(agingError){
-      console.warn('Loan aging refresh unavailable:',agingError);
-    }
-
-    // For loan officers: filter to only their assigned loans
+    // Reading arrears must not write to every loan or wait on the aging job.
+    // The daily aging job maintains stored classifications; this page derives
+    // current arrears from visible loan schedules without modifying finance.
     const isOfficerOnly = hasRole('loan_officer') && !hasRole('admin','branch_manager');
 
     await loadBriptaTables(['loan_clients','loans','loan_schedules','loan_staff']);
     let loans = (cachedData.loans||[]).filter(l=>l.status==='active');
-    if(isOfficerOnly) loans = loans.filter(l=>l.loan_officer_id === currentUser.id);
+    if(isOfficerOnly) loans = loans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id) === currentUser.id);
     loans.sort((a,b)=>Number(b.overdue_days||0)-Number(a.overdue_days||0));
     const staffList = cachedData.staff || [];
 
@@ -4598,9 +4610,10 @@ async function renderOverdue(opts){
     missedRows.sort((a,b)=>b.daysOld-a.daysOld);
 
     // Store for download
-    // Also fetch dues for the selected date for the dues-by-date section
-    const{data:dueScheds}=await sb('loan_schedules')
-      .select('*').eq('business_id',currentUser.business_id).eq('due_date',asOfDate);
+    // Use the same visible schedule snapshot as the arrears totals. A second
+    // unscoped request can fail for officers or return only the first page.
+    const dueScheds=(cachedData.schedules||[])
+      .filter(s=>loanIdSet.has(s.loan_id) && s.due_date===asOfDate);
     const dueArrearsCutoff=asOfDate<todayStr?asOfDate:todayStr;
     const dueArrearsByLoan={};
     allScheds.filter(s=>s.due_date<dueArrearsCutoff).forEach(s=>{
@@ -4751,7 +4764,7 @@ async function renderOverdue(opts){
     var pageHtml =
       // Header
       '<div class="page-header" style="flex-direction:column;align-items:flex-start;gap:10px">' +
-        '<h1>Arrears Report</h1>' +
+        '<h1>Arrears Report</h1><button class="btn btn-outline btn-sm" onclick="refreshBriptaArrears()">Refresh</button>' +
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%">' +
           '<div style="display:flex;align-items:center;gap:6px">' +
             '<span style="font-size:12px;color:var(--text-secondary);white-space:nowrap">As of date:</span>' +
@@ -4797,7 +4810,7 @@ async function renderOverdue(opts){
 
     const ctx=document.getElementById('chartAging');
     if(ctx)charts.aging=new Chart(ctx,{type:'bar',data:{labels:['1-30d','31-60d','61-90d','91-179d','NPL 180+d'],datasets:[{data:buckets,backgroundColor:['#f59e0b','#f97316','#ef4444','#dc2626','#7f1d1d']}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8'}},y:{ticks:{color:'#94a3b8'}}}}});
-  }catch(e){console.error(e);toast(e.message,'error')}
+  }catch(e){console.error(e);main.innerHTML=`<div class="empty-state"><p>Could not load arrears: ${escapeHtml(e.message)}</p><button class="btn btn-outline" onclick="refreshBriptaArrears()">Refresh</button></div>`;toast(e.message,'error')}
 }
 
 function toggleSection(id){
@@ -4860,18 +4873,10 @@ async function loadArrearsDues(startDate, endDate){
   const activeLoanMap={};
   (cachedData.loans||[]).filter(l=>l.status==='active').forEach(l=>{activeLoanMap[l.id]=l;});
 
-  const loanIds=Object.keys(activeLoanMap);
-  let scheds=[];
-  let arrearsScheds=[];
-  if(loanIds.length){
-    const arrearsCutoff=endDate<today()?endDate:today();
-    const[dueResult,arrearsResult]=await Promise.all([
-      sb('loan_schedules').select('*').in('loan_id',loanIds).gte('due_date',startDate).lte('due_date',endDate),
-      sb('loan_schedules').select('loan_id,total_due,total_paid,due_date,status').in('loan_id',loanIds).lt('due_date',arrearsCutoff)
-    ]);
-    scheds=dueResult.data||[];
-    arrearsScheds=arrearsResult.data||[];
-  }
+  const arrearsCutoff=endDate<today()?endDate:today();
+  const visibleSchedules=(cachedData.schedules||[]).filter(s=>!!activeLoanMap[s.loan_id]);
+  const scheds=visibleSchedules.filter(s=>s.due_date>=startDate&&s.due_date<=endDate);
+  const arrearsScheds=visibleSchedules.filter(s=>s.due_date<arrearsCutoff);
 
   const arrearsByLoan={};
   arrearsScheds.forEach(s=>{
@@ -5424,18 +5429,15 @@ async function renderOfficerDashboard(){
     const allStaff=isAdmin
       ? (cachedData.staff||[]).filter(s=>s.is_active!==false)
       : [{id:currentUser.id,name:currentUser.name,role:currentUser.role}];
-    const officers=allStaff.filter(s=>{
-      const roles=(s.role||'').split(',').map(r=>r.trim());
-      return roles.some(r=>r==='loan_officer');
-    });
+    const officers=allStaff.filter(reportingOfficerVisible);
 
     // Determine which officer is selected (default = self for officers, first for admins)
-    const selOfficerId=window._odSelOfficer||(isAdmin?officers[0]?.id:currentUser.id);
+    const selOfficerId=isAdmin?(officers.some(o=>o.id===window._odSelOfficer)?window._odSelOfficer:officers[0]?.id):currentUser.id;
     window._odSelOfficer=selOfficerId;
     const selOfficer=officers.find(o=>o.id===selOfficerId)||officers[0];
     if(!selOfficer){main.innerHTML='<div class="empty-state"><p>No officer data found.</p></div>';return;}
 
-    const oLoans=(cachedData.loans||[]).filter(l=>l.loan_officer_id===selOfficerId);
+    const oLoans=(cachedData.loans||[]).filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===selOfficerId);
     const allReps=cachedData.repayments||[];
     const allScheds=cachedData.schedules||[];
     const allClients=cachedData.clients||[];
@@ -5444,24 +5446,9 @@ async function renderOfficerDashboard(){
     const oReps=allReps.filter(r=>oLoanIds.has(r.loan_id));
     const oScheds=allScheds.filter(s=>oLoanIds.has(s.loan_id));
 
-    const todayMs = new Date(`${todayStr}T00:00:00+03:00`).getTime();
-    const arrearsByLoan={};
-    oScheds.forEach(s=>{
-      const unpaid=Math.max(0,Number(s.total_due||0)-Number(s.total_paid||0));
-      if(unpaid<=0.01 || s.status==='paid' || !s.due_date || s.due_date>=todayStr) return;
-      if(!arrearsByLoan[s.loan_id]) arrearsByLoan[s.loan_id]={amount:0,oldest:s.due_date};
-      arrearsByLoan[s.loan_id].amount+=unpaid;
-      if(s.due_date<arrearsByLoan[s.loan_id].oldest) arrearsByLoan[s.loan_id].oldest=s.due_date;
-    });
-    const oActive=oLoans.filter(l=>l.status==='active').map(l=>{
-      const ar=arrearsByLoan[l.id]||{amount:0,oldest:null};
-      const overdueDays=ar.oldest?Math.max(0,Math.floor((todayMs-new Date(`${ar.oldest}T00:00:00+03:00`).getTime())/86400000)):0;
-      const cappedArrears=Math.min(
-        Math.max(0,Number(l.outstanding_balance||0)),
-        Math.max(0,Number(ar.amount||0))
-      );
-      return {...l,_current_arrears:Number(cappedArrears.toFixed(2)),_current_overdue_days:overdueDays};
-    });
+    const officerState=BriptaReporting.allocatedSchedules(oLoans,oScheds,oReps,todayStr,repaymentBusinessDate);
+    const officerQuality=BriptaReporting.portfolioQuality(oLoans,officerState.schedules,todayStr);
+    const oActive=officerQuality.active;
     const oClientIds=new Set(oLoans.map(l=>l.client_id));
 
     // New clients this month registered under loans of this officer
@@ -5478,7 +5465,7 @@ async function renderOfficerDashboard(){
 
     // Active clients (unique clients with active loans under this officer)
     const activeClientIds=new Set(oActive.map(l=>l.client_id));
-    const activeClients=activeClientIds.size;
+    const activeClients=officerQuality.clients;
 
     // Total clients (all unique clients ever under this officer)
     const totalClients=oClientIds.size;
@@ -5492,30 +5479,18 @@ async function renderOfficerDashboard(){
     const disbMonth=oLoans.filter(l=>(l.disbursement_date||'').startsWith(nowM))
       .reduce((s,l)=>s+Number(l.principal_amount||0),0);
 
-    // Daily collection rate — dues today vs paid today for this officer's loans
-    const todayDueScheds=oScheds.filter(s=>s.due_date===todayStr);
-    const dailyDue=todayDueScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    const schedDailyPaid=todayDueScheds.reduce((s,sc)=>s+Number(sc.total_paid||0),0);
-    const repsDailyPaid=oReps.filter(r=>(r.payment_date||'').slice(0,10)===todayStr)
-      .reduce((s,r)=>s+Number(r.amount||0),0);
-    const dailyPaid=Math.min(Math.max(schedDailyPaid,repsDailyPaid),dailyDue);
-    const dailyRate=dailyDue>0?(dailyPaid/dailyDue*100):0;
-
-    // Monthly collection rate — dues up to today this month vs paid
-    const monthScheds=oScheds.filter(s=>(s.due_date||'').startsWith(nowM)&&s.due_date<=todayStr);
-    const monthDue=monthScheds.reduce((s,sc)=>s+Number(sc.total_due||0),0);
-    const monthPaidRaw=monthScheds.reduce((s,sc)=>s+Math.min(Number(sc.total_due||0),Number(sc.total_paid||0)),0);
-    const monthRepsAmt=oReps.filter(r=>(r.payment_date||'').startsWith(nowM)).reduce((s,r)=>s+Number(r.amount||0),0);
-    const monthPaid=Math.min(Math.max(monthPaidRaw,monthRepsAmt),monthDue);
-    const monthlyRate=monthDue>0?(monthPaid/monthDue*100):0;
+    const dailyStats=BriptaReporting.periodCollection(officerState.schedules,s=>s.due_date===todayStr,todayStr);
+    const dailyDue=dailyStats.due,dailyPaid=dailyStats.paid,dailyRate=dailyStats.rate;
+    const monthlyStats=BriptaReporting.periodCollection(officerState.schedules,s=>s.due_date.startsWith(nowM),todayStr);
+    const monthDue=monthlyStats.due,monthPaid=monthlyStats.paid,monthlyRate=monthlyStats.rate;
 
     // Arrears collected this month (payments on overdue loans)
     const arrearsLoanIds=new Set(oActive.filter(l=>l._current_overdue_days>0||l._current_arrears>0).map(l=>l.id));
-    const arrearsCollected=oReps.filter(r=>(r.payment_date||'').startsWith(nowM)&&arrearsLoanIds.has(r.loan_id))
+    const arrearsCollected=oReps.filter(r=>repaymentBusinessDate(r).startsWith(nowM)&&arrearsLoanIds.has(r.loan_id))
       .reduce((s,r)=>s+Number(r.amount||0),0);
 
     // Book quality = (active clients - clients in arrears) / active clients × 100
-    const clientsInArrears=new Set(oActive.filter(l=>l._current_arrears>0||l._current_overdue_days>0).map(l=>l.client_id)).size;
+    const clientsInArrears=officerQuality.arrearsClients;
     const bookQuality=activeClients>0?((activeClients-clientsInArrears)/activeClients*100):100;
 
     // Build officer selector HTML (admin only)
@@ -5530,7 +5505,7 @@ async function renderOfficerDashboard(){
     const rateColor=(r)=>r>=80?'var(--accent-green)':r>=50?'var(--accent-yellow)':'var(--accent-red)';
 
     main.innerHTML=`
-      <div class="page-header"><h1>📊 Officer Dashboard</h1><button class="btn btn-outline btn-sm" onclick="renderOfficerDashboard()">Refresh</button></div>
+      <div class="page-header"><h1>📊 Officer Dashboard</h1><button class="btn btn-outline btn-sm" onclick="refreshBriptaReports('officer_dashboard')">Refresh</button></div>
       ${officerSel}
       <div class="card" style="margin-bottom:14px;background:rgba(37,99,235,0.07);border-color:rgba(37,99,235,0.25);padding:10px 14px">
         <span style="font-size:13px;font-weight:700">${selOfficer.name}</span>
@@ -5838,7 +5813,7 @@ async function renderSuspense(){
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
     // Unconfirmed M-Pesa queue entries — these are unmatched payments
-    let queueQuery=sb('mpesa_callback_queue').select('*').order('created_at',{ascending:false}).limit(3000);
+    let queueQuery=sb('mpesa_callback_queue').select('*').eq('confirmed',false).eq('dismissed',false).order('created_at',{ascending:false}).limit(3000);
     if(selectedBranchId)queueQuery=queueQuery.eq('branch_id',selectedBranchId);
     const[queueR,loansR,suspR]=await Promise.all([
       queueQuery,
@@ -5847,6 +5822,9 @@ async function renderSuspense(){
         : Promise.resolve({data:[],error:null}),
       branchScoped('unmatched_payments','*').order('created_at',{ascending:false})
     ]);
+    if(queueR.error)throw new Error('Could not load pending M-Pesa payments: '+queueR.error.message);
+    if(suspR.error)throw new Error('Could not load manual suspense entries: '+suspR.error.message);
+    if(loansR.error)throw new Error('Could not load active loans for matching: '+loansR.error.message);
 
     const shortcode = String(appSettings?.mpesa_shortcode || '').trim();
     const queue=(queueR.data||[]).filter(q=>{
@@ -6300,13 +6278,14 @@ function downloadOfficerPerformanceReport(){
   const data = rows.map(({o,oActive,oLoansMonth,outstanding,overdueLoans,collected})=>{
     const clientsInArr = new Set(overdueLoans.map(l=>l.client_id)).size;
     const totalArrAmt  = overdueLoans.reduce((s,l)=>s+Number(l._current_arrears||0),0);
-    const bq  = oActive.length>0 ? ((oActive.length-clientsInArr)/oActive.length*100) : 100;
+    const activeCount=new Set(oActive.map(l=>l.client_id||l.id)).size;
+    const bq  = activeCount>0 ? ((activeCount-clientsInArr)/activeCount*100) : 100;
     const par = outstanding>0 ? (totalArrAmt/outstanding*100) : 0;
     const disbMonth = oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
     return {
       'Officer':           o.name||o.email,
-      'Branch':            'Bripta001',
-      'Active Clients':    oActive.length,
+      'Branch':            branchName(selectedBranchId||o.branch_id),
+      'Active Clients':    activeCount,
       'ACC Arrears (Clients)': clientsInArr,
       'BQ %':              Number(bq.toFixed(2)),
       'OLB (KES)':         Number(outstanding.toFixed(2)),
@@ -6317,16 +6296,17 @@ function downloadOfficerPerformanceReport(){
     };
   });
 
-  // Totals row
+  // Ratios of combined totals, not averages of officer percentages.
+  const totals=BriptaReporting.qualityTotals(rows.flatMap(r=>r.oActive));
   data.push({
     'Officer':           'TOTALS',
     'Branch':            '',
-    'Active Clients':    rows.reduce((s,r)=>s+r.oActive.length,0),
-    'ACC Arrears (Clients)': rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0),
-    'BQ %':              '',
+    'Active Clients':    totals.clients,
+    'ACC Arrears (Clients)': totals.arrearsClients,
+    'BQ %':              Number(totals.bq.toFixed(2)),
     'OLB (KES)':         Number(rows.reduce((s,r)=>s+r.outstanding,0).toFixed(2)),
     'Arrears (KES)':     Number(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l._current_arrears||0),0),0).toFixed(2)),
-    'PAR %':             '',
+    'PAR %':             Number(totals.par.toFixed(2)),
     'Collections Month (KES)': Number(rows.reduce((s,r)=>s+r.collected,0).toFixed(2)),
     'Disbursed Month (KES)':   Number(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0).toFixed(2))
   });
@@ -6362,28 +6342,11 @@ async function renderOfficerPerformance(){
     const allApps=cachedData.applications||[];
     const allStaff=cachedData.staff||[];
 
-    const activeLoanIds=allLoans.filter(l=>l.status==='active').map(l=>l.id);
-    const activeLoanIdSet=new Set(activeLoanIds);
-    const pastDueSchedules=(cachedData.schedules||[])
-      .filter(s=>activeLoanIdSet.has(s.loan_id) && s.due_date<today())
-      .sort((a,b)=>String(a.due_date||'').localeCompare(String(b.due_date||'')));
-    const arrearsByLoan={};
-    pastDueSchedules.forEach(schedule=>{
-      const unpaid=Math.max(0,Number(schedule.total_due||0)-Number(schedule.total_paid||0));
-      if(unpaid<=0.01)return;
-      if(!arrearsByLoan[schedule.loan_id]) arrearsByLoan[schedule.loan_id]={amount:0,oldest:schedule.due_date};
-      arrearsByLoan[schedule.loan_id].amount+=unpaid;
-      if(schedule.due_date<arrearsByLoan[schedule.loan_id].oldest) arrearsByLoan[schedule.loan_id].oldest=schedule.due_date;
-    });
-
+    const performanceState=BriptaReporting.allocatedSchedules(allLoans,cachedData.schedules||[],allReps,today(),repaymentBusinessDate);
     // Filter to staff who have the loan_officer role ONLY.
     // Admins/branch managers should not appear in officer performance —
     // clients should always be attributed to a loan officer, never to admin.
-    const relevantRoles = ['loan_officer'];
-    const officers = allStaff.filter(s => {
-      const roles = (s.role||'').split(',').map(r=>r.trim());
-      return roles.some(r => relevantRoles.includes(r));
-    });
+    const officers = allStaff.filter(reportingOfficerVisible);
 
     // If loan_officer-only viewing their own dashboard, filter to self
     const viewSelf = hasRole('loan_officer') && !hasRole('admin','branch_manager');
@@ -6395,34 +6358,30 @@ async function renderOfficerPerformance(){
     const rows = filteredOfficers.map(o=>{
       // Match loans where loan_officer_id === o.id (also include apps later)
       const oLoans = allLoans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id);
-      const oActive = oLoans.filter(l=>l.status==='active');
+      const quality=BriptaReporting.portfolioQuality(oLoans,performanceState.schedules,today());
+      const oActive = quality.active;
       const oApps = allApps.filter(a=>canonicalLoanOfficerId(a.loan_officer_id)===o.id);
       const oAppsMonth = oApps.filter(a=>a.created_at && a.created_at.startsWith(nowM));
       const oLoansMonth = oLoans.filter(l=>l.disbursement_date && l.disbursement_date.startsWith(nowM));
       const oClientIds = new Set(oLoans.map(l=>l.client_id));
       const portfolio = oActive.reduce((s,l)=>s+Number(l.principal_amount||0),0);
       const outstanding = oActive.reduce((s,l)=>s+Number(l.outstanding_balance||0),0);
-      const overdueLoans = oActive.map(l=>{
-        const current=arrearsByLoan[l.id];
-        if(!current)return null;
-        const amount=Math.min(Number(l.outstanding_balance||0),Number(current.amount||0));
-        if(amount<=0.01)return null;
-        const overdueDays=Math.max(1,Math.floor((new Date(`${today()}T00:00:00Z`)-new Date(`${current.oldest}T00:00:00Z`))/(24*60*60*1000)));
-        return {...l,_current_arrears:amount,_current_overdue_days:overdueDays};
-      }).filter(Boolean);
+      const overdueLoans=quality.overdue;
       // Collections this month attributed to officer's loans
       const oLoanIds = new Set(oLoans.map(l=>l.id));
-      const oRepsMonth = allReps.filter(r=>r.loan_id && oLoanIds.has(r.loan_id) && r.payment_date && r.payment_date.startsWith(nowM));
+      const oRepsMonth = allReps.filter(r=>r.loan_id && oLoanIds.has(r.loan_id) && repaymentBusinessDate(r).startsWith(nowM));
       const collected = oRepsMonth.reduce((s,r)=>s+Number(r.amount||0),0);
-      const row = {o,oLoans,oActive,oApps,oAppsMonth,oLoansMonth,oClientIds,portfolio,outstanding,overdueLoans,collected};
+      const row = {quality,o,oLoans,oActive,oApps,oAppsMonth,oLoansMonth,oClientIds,portfolio,outstanding,overdueLoans,collected};
       window._perfRows.push(row);
       return row;
     });
 
+    const performanceTotals=BriptaReporting.qualityTotals(rows.flatMap(r=>r.oActive));
     main.innerHTML=`
       <div class="page-header">
         <h1>Officer Performance Dashboard</h1>
         <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="refreshBriptaReports('officer_performance')">Refresh</button>
           <button class="btn btn-outline btn-sm" onclick="navigateTo('officer_dashboard')">📊 Individual Dashboard</button>
           <button class="btn btn-primary btn-sm" onclick="downloadOfficerPerformanceReport()">⬇ Download Report</button>
         </div>
@@ -6440,15 +6399,16 @@ async function renderOfficerPerformance(){
             ${rows.map(({o,oLoans,oActive,oClientIds,portfolio,outstanding,overdueLoans,collected,oLoansMonth})=>{
               const clientsInArr=new Set(overdueLoans.map(l=>l.client_id)).size;
               const totalArrAmt=overdueLoans.reduce((s,l)=>s+Number(l._current_arrears||0),0);
-              const bq=oActive.length>0?((oActive.length-clientsInArr)/oActive.length*100):100;
+              const activeCount=new Set(oActive.map(l=>l.client_id||l.id)).size;
+              const bq=activeCount>0?((activeCount-clientsInArr)/activeCount*100):100;
               const par=outstanding>0?(totalArrAmt/outstanding*100):0;
               const disbMonth=oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
               const bqColor=bq>=80?'var(--accent-green)':bq>=60?'var(--accent-yellow)':'var(--accent-red)';
               const parColor=par<=5?'var(--accent-green)':par<=15?'var(--accent-yellow)':'var(--accent-red)';
               return '<tr>' +
                 '<td><strong>'+( o.name||o.email)+'</strong></td>' +
-                '<td><span class="badge badge-gray">Bripta001</span></td>' +
-                '<td><strong style="color:var(--accent-green)">'+oActive.length+'</strong></td>' +
+                '<td><span class="badge badge-gray">'+escapeHtml(branchName(selectedBranchId||o.branch_id))+'</span></td>' +
+                '<td><strong style="color:var(--accent-green)">'+activeCount+'</strong></td>' +
                 '<td><span class="badge badge-red">'+clientsInArr+'</span></td>' +
                 '<td><strong style="color:'+bqColor+'">'+bq.toFixed(1)+'%</strong></td>' +
                 '<td>'+fmtMoney(outstanding)+'</td>' +
@@ -6463,12 +6423,12 @@ async function renderOfficerPerformance(){
             <tr style="font-weight:700;background:rgba(255,255,255,0.04)">
               <td><strong>TOTALS</strong></td>
               <td></td>
-              <td><strong>${rows.reduce((s,r)=>s+r.oActive.length,0)}</strong></td>
-              <td><strong>${rows.reduce((s,r)=>s+new Set(r.overdueLoans.map(l=>l.client_id)).size,0)}</strong></td>
-              <td></td>
+              <td><strong>${performanceTotals.clients}</strong></td>
+              <td><strong>${performanceTotals.arrearsClients}</strong></td>
+              <td><strong>${performanceTotals.bq.toFixed(1)}%</strong></td>
               <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.outstanding,0))}</strong></td>
               <td><strong style="color:var(--accent-red)">${fmtMoney(rows.reduce((s,r)=>s+r.overdueLoans.reduce((x,l)=>x+Number(l._current_arrears||0),0),0))}</strong></td>
-              <td></td>
+              <td><strong>${performanceTotals.par.toFixed(1)}%</strong></td>
               <td><strong style="color:var(--accent-green)">${fmtMoney(rows.reduce((s,r)=>s+r.collected,0))}</strong></td>
               <td><strong>${fmtMoney(rows.reduce((s,r)=>s+r.oLoansMonth.reduce((x,l)=>x+Number(l.principal_amount||0),0),0))}</strong></td>
             </tr>
@@ -6886,10 +6846,7 @@ async function renderAccountingLegacy() {
     // JS-side filterByDate runs as a safety net for any edge-case drift
     // but the server has already done the heavy lifting above.
     const filteredLoans = filterByDate(allLoans.filter(l=>l.disbursement_date), 'disbursement_date', f);
-    const filteredReps = filterByDate(allReps, r=>{
-      const method=String(r.payment_method||'').toLowerCase();
-      return (method.includes('mpesa')||method.includes('m-pesa'))&&r.created_at?r.created_at:r.payment_date;
-    }, f);
+    const filteredReps = filterByDate(allReps, repaymentBusinessDate, f);
     const filteredClients = filterByDate(allClients.filter(c=>c.created_at), 'created_at', f);
     // Principal disbursed
     const principalDisbursed = filteredLoans.reduce((s,l)=>s+Number(l.disbursed_amount||l.principal_amount||0),0);
@@ -7530,12 +7487,17 @@ async function renderAuditLog(page=1){
   if(!hasRole('admin'))return toast('Admin access required','warning');
   auditPage=page;const main=$('#mainContent');
   try{
-    const{data:logs}=await sb('loan_audit_log').select('*').eq('business_id', currentUser.business_id).order('created_at',{ascending:false}).limit(500);
+    const [logResult,staffResult]=await Promise.all([
+      sb('loan_audit_log').select('*').eq('business_id',currentUser.business_id).order('created_at',{ascending:false}).limit(500),
+      sb('loan_staff').select('id,auth_user_id,name').eq('business_id',currentUser.business_id)
+    ]);
+    if(logResult.error||staffResult.error)throw logResult.error||staffResult.error;
+    const logs=logResult.data||[],auditStaff=staffResult.data||[];
     const p=paginate(logs||[],page);
     main.innerHTML=`
       <div class="page-header"><h1>Audit Log</h1></div>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Table</th><th>Details</th></tr></thead><tbody>
-      ${p.items.map(l=>`<tr><td style="white-space:nowrap">${fmtDateTime(l.created_at)}</td><td>${l.user_id?.slice(0,8)||'system'}</td><td><span class="badge badge-blue">${l.action}</span></td><td>${l.table_name||'-'}</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${l.new_value?JSON.stringify(l.new_value).slice(0,80):'-'}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No activity recorded</td></tr>'}
+      ${p.items.map(l=>`<tr><td style="white-space:nowrap">${fmtDateTime(l.created_at)}</td><td>${escapeHtml(BriptaReporting.actorName(l,auditStaff))}</td><td><span class="badge badge-blue">${l.action}</span></td><td>${l.table_name||'-'}</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${l.new_value?JSON.stringify(l.new_value).slice(0,80):'-'}</td></tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No activity recorded</td></tr>'}
       </tbody></table></div>
       ${paginationHtml(p,'renderAuditLog')}
     `;
