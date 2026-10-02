@@ -721,7 +721,7 @@ function fmtPaymentDateTime(value){
 function repaymentDisplayDateTime(repayment){
   const method=String(repayment?.payment_method||'').toLowerCase();
   const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
-  const corrected=/\[BRIPTA_RECOVERY_20261002\]|Matched by borrower phone account/.test(repayment?.notes||'');
+  const corrected=/\[BRIPTA_RECOVERY_20261002\]|\[MANUAL_ENTRY\]|Matched by borrower phone account/.test(repayment?.notes||'');
   return fmtPaymentDateTime(isMpesa&&!corrected&&repayment?.created_at
     ? repayment.created_at
     : repayment?.payment_date||repayment?.created_at);
@@ -729,7 +729,7 @@ function repaymentDisplayDateTime(repayment){
 function repaymentBusinessDate(repayment){
   const method=String(repayment?.payment_method||'').toLowerCase();
   const isMpesa=method.includes('mpesa')||method.includes('m-pesa');
-  const corrected=/\[BRIPTA_RECOVERY_20261002\]|Matched by borrower phone account/.test(repayment?.notes||'');
+  const corrected=/\[BRIPTA_RECOVERY_20261002\]|\[MANUAL_ENTRY\]|Matched by borrower phone account/.test(repayment?.notes||'');
   return kenyaDateISO(isMpesa&&!corrected&&repayment?.created_at
     ? repayment.created_at
     : repayment?.payment_date||repayment?.created_at);
@@ -4143,7 +4143,7 @@ async function openPaymentModal(loanId){
     ${loanInfo}
     ${!loanId?`<div class="form-group" style="position:relative"><label>Search Loan (by loan no, client name, phone or ID)</label><input class="input" id="payLoanSearch" list="payLoanList" placeholder="Type loan no, name, phone or ID number..." oninput="searchLoanForPay(this.value)" autocomplete="off"><datalist id="payLoanList"></datalist><div id="payLoanResults" style="margin-top:6px;max-height:280px;overflow-y:auto;border-radius:8px"></div></div>`:''}
     <input type="hidden" id="payLoanId" value="${loanId||''}">
-    <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="mpesa_c2b">📲 M-Pesa C2B (Daraja — auto)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payDarajaInfoWrap" style="display:none"><div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);padding:10px;border-radius:8px;font-size:12px;line-height:1.5">Client pays via M-Pesa Paybill <strong>${(appSettings&&appSettings.mpesa_shortcode)||'—'}</strong>, account number = <strong>their National ID</strong>. Payment is matched and recorded automatically by the Daraja webhook.</div></div>
+    <div class="form-row"><div class="form-group"><label>Amount *</label><input class="input" type="number" id="payAmount"></div><div class="form-group"><label>Method</label><select class="select" id="payMethod" onchange="onPayMethodChange(this.value)"><option value="cash">Cash</option><option value="mpesa">M-Pesa (Manual)</option><option value="mpesa_c2b">📲 M-Pesa C2B (Daraja — auto)</option><option value="bank_transfer">Bank Transfer</option><option value="cheque">Cheque</option></select></div></div><div class="form-group" id="payDarajaInfoWrap" style="display:none"><div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.25);padding:10px;border-radius:8px;font-size:12px;line-height:1.5">Client pays via M-Pesa Paybill <strong>${(appSettings&&appSettings.mpesa_shortcode)||'—'}</strong>, using their registered phone number as the account reference. If the transaction is already in Suspense, match it there so it is recorded only once.</div></div>
     <div class="form-row"><div class="form-group"><label>Reference / Txn Code</label><input class="input" id="payRef"></div><div class="form-group"><label>Date</label><input class="input" type="date" id="payDate" value="${today()}"></div></div>
     <div class="form-row"><div class="form-group"><label>Sender Name</label><input class="input" id="paySenderName" placeholder="Name shown on payment message"></div><div class="form-group"><label>Sender Phone</label><input class="input" id="paySenderPhone" placeholder="Phone that sent the payment"></div></div>
     <div class="form-group"><label>Amount applied to Penalty (KES)</label><input class="input" type="number" id="payPenaltyAmt" value="0"></div>
@@ -4249,8 +4249,9 @@ async function enforceMinimumWeekInterest(loan, paymentAmount){
   result.minimumInterest = minimumInterest;
 
   // Interest already collected on previous repayments for this loan
-  const { data: prevReps } = await sb('loan_repayments')
+  const { data: prevReps, error: prevRepsError } = await sb('loan_repayments')
     .select('interest_portion').eq('loan_id', loan.id);
+  if(prevRepsError)throw prevRepsError;
   const totalInterestCollected = (prevReps||[]).reduce((s,r)=>s+Number(r.interest_portion||0), 0);
 
   // Interest embedded in the current payment (proportional to loan's interest ratio)
@@ -4268,23 +4269,26 @@ async function enforceMinimumWeekInterest(loan, paymentAmount){
 
   // Inflate the loan's outstanding_balance by the shortfall so the client still owes it
   const correctedBalance = Number((Math.max(0, Number(loan.outstanding_balance) - paymentAmount) + shortfall).toFixed(2));
-  await sb('loans').update({
+  const{error:minimumLoanError}=await sb('loans').update({
     outstanding_balance: correctedBalance,
     total_interest: Number((Number(loan.total_interest||0) + shortfall).toFixed(2)),
     total_payable:  Number((Number(loan.total_payable||0)  + shortfall).toFixed(2))
   }).eq('id', loan.id);
+  if(minimumLoanError)throw minimumLoanError;
 
   // Sync the shortfall into the first unpaid schedule installment
-  const { data: firstSched } = await sb('loan_schedules')
+  const { data: firstSched, error: firstSchedError } = await sb('loan_schedules')
     .select('*').eq('loan_id', loan.id)
     .in('status',['pending','partial','overdue'])
     .order('installment_no',{ascending:true}).limit(1);
+  if(firstSchedError)throw firstSchedError;
   if(firstSched && firstSched.length){
     const s = firstSched[0];
-    await sb('loan_schedules').update({
+    const{error:minimumScheduleError}=await sb('loan_schedules').update({
       total_due:    Number((Number(s.total_due||0)    + shortfall).toFixed(2)),
       interest_due: Number((Number(s.interest_due||0) + shortfall).toFixed(2))
     }).eq('id', s.id);
+    if(minimumScheduleError)throw minimumScheduleError;
   }
 
   return result;
@@ -4296,10 +4300,23 @@ async function savePayment(){
   if(!amount||amount<=0)return toast('Enter valid amount','warning');
   const btn=document.getElementById('btnSavePayment');
   if(btn){ btn.disabled=true; btn.textContent='Processing...'; }
+  let savedRepaymentId=null;
   try{
-    const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
+    const{data:loan,error:loanReadError}=await sb('loans').select('*').eq('id',loanId).eq('business_id',currentUser.business_id).single();
+    if(loanReadError)throw loanReadError;
     if(!loan)throw new Error('Loan not found');
     const _method = $('#payMethod').value;
+    const paymentRef=($('#payRef').value||'').trim().toUpperCase();
+    const selectedPayDate=$('#payDate').value;
+    if(!selectedPayDate||selectedPayDate>today())throw new Error('Choose a valid payment date that is not in the future.');
+    if(_method.startsWith('mpesa')&&!paymentRef)throw new Error('Enter the M-Pesa transaction code before recording this payment.');
+    if(_method.startsWith('mpesa')){
+      const{data:prior,error:priorError}=await sb('loan_repayments')
+        .select('id,receipt_no').eq('business_id',currentUser.business_id)
+        .eq('payment_reference',paymentRef).limit(1);
+      if(priorError)throw priorError;
+      if(prior?.length)throw new Error(`M-Pesa transaction ${paymentRef} is already recorded as ${prior[0].receipt_no||'a repayment'}. Do not enter it again.`);
+    }
     if(_method==='mpesa_c2b'){
       // Daraja C2B — payment will be auto-reconciled by webhook. This manual entry is supplementary.
       toast('Recording as M-Pesa C2B. The Daraja webhook will also auto-reconcile real-time payments.', 'info');
@@ -4324,17 +4341,20 @@ async function savePayment(){
 
     const allocationText=paymentAllocationText(allocation);
     const userNote=($('#payNotes').value||'').trim();
-    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:$('#payMethod').value,payment_reference:$('#payRef').value,payment_date:localDateTime(),sender_name:($('#paySenderName')?.value||'').trim(),sender_phone:($('#paySenderPhone')?.value||'').trim(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id};
+    const paymentDate=selectedPayDate===today()?localDateTime():`${selectedPayDate}T12:00:00+03:00`;
+    const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:_method,payment_reference:paymentRef,payment_date:paymentDate,sender_name:($('#paySenderName')?.value||'').trim(),sender_phone:($('#paySenderPhone')?.value||'').trim(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`[MANUAL_ENTRY] ${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id,branch_id:loan.branch_id};
     const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
     if(error)throw error;
+    savedRepaymentId=repayment?.id;
     await persistPaymentAllocation(loan,allocation);
 
     // ── Cascade payment across schedules (oldest first by due_date) ──
-    const{data:allScheds}=await sb('loan_schedules')
+    const{data:allScheds,error:scheduleReadError}=await sb('loan_schedules')
       .select('*').eq('loan_id',loanId)
       .in('status',['pending','overdue','partial'])
       .order('due_date',{ascending:true})
       .order('installment_no',{ascending:true});
+    if(scheduleReadError)throw scheduleReadError;
     let remaining=allocation.loanPortion;
     const schedUpdates=[];
     for(const s of (allScheds||[])){
@@ -4350,10 +4370,14 @@ async function savePayment(){
         total_paid:newTotal,
         status:schedStatus,
         paid_at:schedStatus==='paid'?new Date().toISOString():null
-      }).eq('id',s.id));
+      }).eq('id',s.id).select('id').single());
       remaining-=apply;
     }
-    if(schedUpdates.length)await Promise.allSettled(schedUpdates);
+    if(schedUpdates.length){
+      const scheduleResults=await Promise.all(schedUpdates);
+      const failedSchedule=scheduleResults.find(result=>result.error);
+      if(failedSchedule)throw failedSchedule.error;
+    }
 
     // ── Enforce minimum 1-week interest on early full payoff ──────────────────
     const minIntResult = await enforceMinimumWeekInterest(loan, allocation.loanPortion);
@@ -4365,9 +4389,10 @@ async function savePayment(){
       );
     }
     // Re-fetch the loan in case enforceMinimumWeekInterest changed its balances
-    const { data: loanAfterMinInt } = minIntResult.adjusted
+    const { data: loanAfterMinInt, error: loanAfterMinIntError } = minIntResult.adjusted
       ? await sb('loans').select('*').eq('id', loanId).single()
-      : { data: loan };
+      : { data: loan, error: null };
+    if(loanAfterMinIntError)throw loanAfterMinIntError;
     const loanRef = loanAfterMinInt || loan;
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -4376,10 +4401,11 @@ async function savePayment(){
     const todayStr2=today();
     // Fetch ALL schedule rows for this loan — past and future — so we can
     // compute total_paid vs total_due correctly after the cascade
-    const{data:freshScheds}=await sb('loan_schedules')
+    const{data:freshScheds,error:freshScheduleError}=await sb('loan_schedules')
       .select('due_date,total_due,total_paid,status,installment_no')
       .eq('loan_id',loanId)
       .order('due_date',{ascending:true});
+    if(freshScheduleError)throw freshScheduleError;
     let newArrears=0,newOverdueDays=0;
     if(freshScheds&&freshScheds.length){
       // Past-due rows where there is still an unpaid balance
@@ -4400,13 +4426,14 @@ async function savePayment(){
     const newBalance=minIntResult.adjusted
       ? Number(loanRef.outstanding_balance||0)
       : Number(Math.max(0,Number(loan.outstanding_balance||0)-allocation.loanPortion).toFixed(2));
-    await sb('loans').update({
+    const{error:loanUpdateError}=await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBalance,
       status:newBalance<=0?'completed':loanRef.status,
       overdue_days:newBalance<=0?0:newOverdueDays,
       arrears_amount:newBalance<=0?0:Number(Math.min(newBalance,Math.max(0,newArrears)).toFixed(2))
-    }).eq('id',loanId);
+    }).eq('id',loanId).eq('business_id',currentUser.business_id).select('id').single();
+    if(loanUpdateError)throw loanUpdateError;
 
     triggerRepaymentSms(repayment?.id);
     await audit('payment_recorded','loan_repayments',null,null,rec);
@@ -4430,7 +4457,9 @@ async function savePayment(){
     if(currentSection!=='dashboard') renderDashboard();
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Confirm Payment'; }
-    toast(e.message,'error');
+    toast(savedRepaymentId
+      ? `Payment was saved, but loan posting needs review (${e.message}). Do not enter this payment again; check receipt ${savedRepaymentId}.`
+      : e.message,'error');
   }
 }
 
@@ -6166,7 +6195,7 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
       processing_fee_portion:allocation.processingFeePortion,
       loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,
       mpesa_confirmed:true,collected_by:currentUser.id,
-      business_id:currentUser.business_id,notes:`Matched from suspense account. Allocation: ${paymentAllocationText(allocation)||'none'}`
+      business_id:currentUser.business_id,branch_id:loan.branch_id,notes:`Matched from suspense account. Allocation: ${paymentAllocationText(allocation)||'none'}`
     }).select('id').single();
     if(repaymentErr) throw repaymentErr;
     await persistPaymentAllocation(loan,allocation);
