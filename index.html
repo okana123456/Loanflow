@@ -397,6 +397,11 @@ async function assignedLoanOfficerForClient(clientId,preferredIds=[]){
 // Increment when database visibility rules change so an earlier partial/empty
 // RLS response cannot remain visible after the policy has been repaired.
 const BRIPTA_CACHE_VERSION = 6;
+// The October access-policy repairs made previously hidden portfolio rows
+// visible. Rebuild only these read caches once; incremental updates cannot
+// discover older rows that were absent from a user's earlier RLS snapshot.
+const BRIPTA_PORTFOLIO_CACHE_REVISION = 2;
+const BRIPTA_PORTFOLIO_TABLES = new Set(['loan_clients','loans','loan_schedules','loan_repayments','loan_staff']);
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
 const BRIPTA_MIN_SYNC_MS = 60 * 1000;
@@ -427,7 +432,8 @@ function openBriptaCache(){
   });
 }
 function briptaCacheKey(table){
-  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${selectedBranchId||'all'}:${table}:v${BRIPTA_CACHE_VERSION}`;
+  const portfolioRevision=BRIPTA_PORTFOLIO_TABLES.has(table)?`:portfolio${BRIPTA_PORTFOLIO_CACHE_REVISION}`:'';
+  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${selectedBranchId||'all'}:${table}:v${BRIPTA_CACHE_VERSION}${portfolioRevision}`;
 }
 async function readBriptaCache(table){
   try{
@@ -454,6 +460,21 @@ async function writeBriptaCache(table, rows, fullSyncAt){
     });
   }catch(e){}
 }
+async function upsertBriptaCachedRows(table,updatedRows){
+  const rows=(updatedRows||[]).filter(row=>row?.id);
+  if(!rows.length)return;
+  const key=BRIPTA_CACHE_MAP[table]||table;
+  if(Array.isArray(cachedData[key])){
+    const merged=new Map(cachedData[key].filter(row=>row?.id).map(row=>[row.id,row]));
+    rows.forEach(row=>merged.set(row.id,row));
+    cachedData[key]=[...merged.values()];
+  }
+  const cached=await readBriptaCache(table);
+  if(!cached||!Array.isArray(cached.rows))return;
+  const merged=new Map(cached.rows.filter(row=>row?.id).map(row=>[row.id,row]));
+  rows.forEach(row=>merged.set(row.id,row));
+  await writeBriptaCache(table,[...merged.values()],cached.fullSyncAt);
+}
 async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   const pageSize = 1000;
   const maxRows = 100000;
@@ -475,7 +496,7 @@ async function fetchBriptaTableOptimized(table,force=false){
   if(!force && cached && Array.isArray(cached.rows) && Date.now() - Number(cached.savedAt || 0) < BRIPTA_MIN_SYNC_MS){
     return {data: cached.rows, error: null, fromCache: true, syncSkipped: true};
   }
-  const needsFull = !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= BRIPTA_FULL_SYNC_MS;
+  const needsFull = force || !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= BRIPTA_FULL_SYNC_MS;
   if(needsFull){
     const result = await fetchPagedBusinessRows(table);
     if(!result.error) await writeBriptaCache(table, result.data, Date.now());
@@ -511,7 +532,7 @@ async function loadBriptaTables(tables,{force=false}={}){
   const results = await Promise.all(uniqueTables.map(t=>fetchBriptaTableOptimized(t,force)));
   results.forEach((res,i)=>{
     const table = uniqueTables[i];
-    if(res.error) throw res.error;
+    if(res.error) throw new Error(`${table}: ${res.error.message||res.error}`);
     const key = BRIPTA_CACHE_MAP[table] || table;
     cachedData[key] = res.data || [];
   });
@@ -520,7 +541,12 @@ async function loadBriptaTables(tables,{force=false}={}){
 }
 async function refreshBriptaReports(section){
   try{
-    await loadBriptaTables(['loan_clients','loans','loan_repayments','loan_schedules','loan_staff','loan_applications'],{force:true});
+    const tables=section==='repayments'
+      ? ['loan_clients','loans','loan_repayments']
+      : section==='officer_dashboard'||section==='officer_performance'
+        ? ['loan_clients','loans','loan_repayments','loan_schedules','loan_staff']
+        : ['loan_clients','loans','loan_repayments','loan_schedules','loan_staff','loan_applications'];
+    await loadBriptaTables(tables,{force:true});
     navigateTo(section);
   }catch(e){toast('Could not refresh: '+e.message,'error');}
 }
@@ -539,7 +565,7 @@ async function refreshBriptaArrears(){
 function reportingOfficerVisible(s){
   const roles=(s.role||'').split(',').map(r=>r.trim());
   return s.is_active!==false && roles.includes('loan_officer') && !roles.some(r=>['admin','branch_manager'].includes(r))
-    && (!selectedBranchId || s.branch_id===selectedBranchId || (cachedData.loans||[]).some(l=>canonicalLoanOfficerId(l.loan_officer_id)===s.id));
+    && (s.id===currentUser?.id || !selectedBranchId || s.branch_id===selectedBranchId || (cachedData.loans||[]).some(l=>canonicalLoanOfficerId(l.loan_officer_id)===s.id));
 }
 
 // ═══ KEEP ALIVE PING ═══
@@ -3880,6 +3906,7 @@ let repPage=1;
 let visibleRepayments=[];
 async function renderRepayments(page=1){
   repPage=page;const main=$('#mainContent');
+  main.innerHTML='<div class="loading-overlay"><div class="spinner"></div><p>Loading repayments…</p></div>';
   try{
     await loadBriptaTables(['loan_clients','loans','loan_repayments']);
     const reps=(cachedData.repayments||[]).slice().sort((a,b)=>{
@@ -3986,7 +4013,10 @@ async function renderRepayments(page=1){
       </tbody></table></div>
       ${paginationHtml(p,'renderRepayments')}
     `;
-  }catch(e){toast(e.message,'error')}
+  }catch(e){
+    main.innerHTML=`<div class="empty-state"><p>Could not load repayments: ${escapeHtml(e.message||'Unknown error')}</p><button class="btn btn-outline" onclick="refreshBriptaReports('repayments')">Retry loading repayments</button></div>`;
+    toast(e.message,'error');
+  }
 }
 
 async function confirmMpesaPayment(queueId,billRef,amount,transId){
@@ -4343,7 +4373,7 @@ async function savePayment(){
     const userNote=($('#payNotes').value||'').trim();
     const paymentDate=selectedPayDate===today()?localDateTime():`${selectedPayDate}T12:00:00+03:00`;
     const rec={loan_id:loanId,receipt_no:receiptNo,amount,payment_method:_method,payment_reference:paymentRef,payment_date:paymentDate,sender_name:($('#paySenderName')?.value||'').trim(),sender_phone:($('#paySenderPhone')?.value||'').trim(),principal_portion:principalPortion,interest_portion:interestPortion,penalty_portion:penaltyPortion,registration_fee_portion:allocation.registrationFeePortion,processing_fee_portion:allocation.processingFeePortion,loan_portion:allocation.loanPortion,credit_portion:allocation.creditPortion,collected_by:currentUser?.id,notes:`[MANUAL_ENTRY] ${userNote}${userNote?' | ':''}Allocation: ${allocationText||'none'}`,business_id:currentUser?.business_id,branch_id:loan.branch_id};
-    const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('id').single();
+    const{data:repayment,error}=await sb('loan_repayments').insert(rec).select('*').single();
     if(error)throw error;
     savedRepaymentId=repayment?.id;
     await persistPaymentAllocation(loan,allocation);
@@ -4370,7 +4400,7 @@ async function savePayment(){
         total_paid:newTotal,
         status:schedStatus,
         paid_at:schedStatus==='paid'?new Date().toISOString():null
-      }).eq('id',s.id).select('id').single());
+      }).eq('id',s.id).select('*').single());
       remaining-=apply;
     }
     if(schedUpdates.length){
@@ -4402,7 +4432,7 @@ async function savePayment(){
     // Fetch ALL schedule rows for this loan — past and future — so we can
     // compute total_paid vs total_due correctly after the cascade
     const{data:freshScheds,error:freshScheduleError}=await sb('loan_schedules')
-      .select('due_date,total_due,total_paid,status,installment_no')
+      .select('*')
       .eq('loan_id',loanId)
       .order('due_date',{ascending:true});
     if(freshScheduleError)throw freshScheduleError;
@@ -4426,14 +4456,20 @@ async function savePayment(){
     const newBalance=minIntResult.adjusted
       ? Number(loanRef.outstanding_balance||0)
       : Number(Math.max(0,Number(loan.outstanding_balance||0)-allocation.loanPortion).toFixed(2));
-    const{error:loanUpdateError}=await sb('loans').update({
+    const{data:updatedLoan,error:loanUpdateError}=await sb('loans').update({
       total_paid:newPaid,
       outstanding_balance:newBalance,
       status:newBalance<=0?'completed':loanRef.status,
       overdue_days:newBalance<=0?0:newOverdueDays,
       arrears_amount:newBalance<=0?0:Number(Math.min(newBalance,Math.max(0,newArrears)).toFixed(2))
-    }).eq('id',loanId).eq('business_id',currentUser.business_id).select('id').single();
+    }).eq('id',loanId).eq('business_id',currentUser.business_id).select('*').single();
     if(loanUpdateError)throw loanUpdateError;
+
+    await Promise.all([
+      upsertBriptaCachedRows('loans',[updatedLoan]),
+      upsertBriptaCachedRows('loan_schedules',freshScheds||[]),
+      upsertBriptaCachedRows('loan_repayments',[repayment])
+    ]);
 
     triggerRepaymentSms(repayment?.id);
     await audit('payment_recorded','loan_repayments',null,null,rec);
@@ -4441,8 +4477,10 @@ async function savePayment(){
       ? `Payment ${receiptNo} recorded! Remaining interest balance: KES ${fmtMoney(minIntResult.shortfall)}`
       : `Payment ${receiptNo} recorded! ${fmtMoney(amount)}`;
     toast(toastMsg,'success');closeModal();
-    // Always clear cachedData so dashboard, accounting and arrears reflect the payment immediately
-    cachedData.loans=null;cachedData.schedules=null;cachedData.repayments=null;
+    // Updated rows are already reflected in both the in-memory and device
+    // caches, so the next screen does not fall back to a stale minute-old copy.
+    if(selectedPayDate.slice(0,7)!==today().slice(0,7))
+      appFilters.repayments={type:'all',start:'',end:''};
     // Auto-refresh due list on dashboard if visible
     if(document.getElementById('dueClientTable')){
       const dp=document.getElementById('dueDatePicker');
