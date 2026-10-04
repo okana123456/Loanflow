@@ -400,7 +400,7 @@ const BRIPTA_CACHE_VERSION = 6;
 // The October access-policy repairs made previously hidden portfolio rows
 // visible. Rebuild only these read caches once; incremental updates cannot
 // discover older rows that were absent from a user's earlier RLS snapshot.
-const BRIPTA_PORTFOLIO_CACHE_REVISION = 2;
+const BRIPTA_PORTFOLIO_CACHE_REVISION = 3;
 const BRIPTA_PORTFOLIO_TABLES = new Set(['loan_clients','loans','loan_schedules','loan_repayments','loan_staff']);
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
@@ -3919,7 +3919,12 @@ async function renderRepayments(page=1){
     // callbacks use created_at; manually recorded payments use payment_date.
     let filteredReps = filterByDate(reps||[], repaymentBusinessDate, f);
     const isOnlyOfficer = hasRole('loan_officer') && !hasRole('admin','branch_manager');
-    if (isOnlyOfficer) filteredReps = filteredReps.filter(r => canonicalLoanOfficerId(r.loans?.loan_officer_id) === currentUser.id);
+    if (isOnlyOfficer) {
+      const officerLoanIds = new Set((cachedData.loans||[])
+        .filter(l => canonicalLoanOfficerId(l.loan_officer_id) === currentUser.id)
+        .map(l => l.id));
+      filteredReps = filteredReps.filter(r => officerLoanIds.has(r.loan_id));
+    }
 
     // ── Compute running balance per payment row ──────────────────────────
     // Group ALL repayments (not just filtered) by loan_id to get full

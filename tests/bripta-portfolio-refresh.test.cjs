@@ -42,5 +42,29 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(officerContext.reportingOfficerVisible({id:'officer-1',role:'loan_officer',is_active:true}),true,
     'an officer with no cached loans still gets their dashboard');
   assert.equal(officerContext.reportingOfficerVisible({id:'other-branch',role:'loan_officer',branch_id:'other',is_active:true}),false);
+  const repaymentMain={innerHTML:''};
+  const repaymentContext=vm.createContext({
+    $:()=>repaymentMain,
+    cachedData:{loans:[{id:'my-loan',loan_officer_id:'officer-1'}],repayments:[
+      {id:'mine',loan_id:'my-loan',amount:50,payment_date:'2026-10-04'},
+      {id:'other',loan_id:'other-loan',amount:70,payment_date:'2026-10-04'}
+    ]},
+    currentUser:{id:'officer-1',role:'loan_officer'},
+    appFilters:{repayments:{type:'all_time'}},
+    loadBriptaTables:async()=>{},filterByDate:rows=>rows,
+    repaymentBusinessDate:r=>r.payment_date,
+    hasRole:(...roles)=>roles.includes('loan_officer'),
+    canonicalLoanOfficerId:id=>id,
+    buildRepaymentBalanceMap:()=>({}),
+    paginate:rows=>({items:rows,totalPages:1,page:1,total:rows.length}),
+    fmtMoney:n=>String(n),getDateFilterHtml:()=>'',escapeHtml:x=>String(x),
+    repaymentSenderHtml:()=>'',repaymentDisplayDateTime:r=>r.payment_date,
+    paginationHtml:()=>'',toast:()=>{}
+  });
+  vm.runInContext(between('let repPage=1;','\nasync function confirmMpesaPayment('),repaymentContext);
+  await repaymentContext.renderRepayments();
+  assert.equal(vm.runInContext('visibleRepayments.length',repaymentContext),1);
+  assert.equal(vm.runInContext('visibleRepayments[0].id',repaymentContext),'mine',
+    'officer payments should be matched by visible loan ID even without an embedded loan relation');
   console.log('PASS: Refresh rebuilds visible repayment rows; officer dashboard keeps the signed-in officer visible.');
 })().catch(error=>{console.error(error);process.exitCode=1});
