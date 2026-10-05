@@ -212,6 +212,7 @@ serve(async (req) => {
         last_name: body?.LastName || "",
         raw_payload: body,
         confirmed: false,
+        ...(businessId === "BIZ-B3F5E5D9" ? { dismissed: false } : {}),
       })
       .select("id")
       .maybeSingle();

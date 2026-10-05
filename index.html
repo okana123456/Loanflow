@@ -328,6 +328,7 @@ tr:hover{background:rgba(255,213,0,.18)}
 </div>
 
 <script src="bripta-reporting.js"></script>
+<script src="bripta-client-documents.js"></script>
 <script>
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
@@ -678,7 +679,7 @@ function updateDateFilter(section, type) {
     appFilters[section].type = type;
     if(type !== 'custom') {
         if(section==='dashboard') renderDashboard();
-        if(section==='accounting') renderAccounting();
+        if(section==='accounting') renderAccountingLegacy();
         if(section==='repayments') renderRepayments(1);
         if(section==='sms') renderSmsCenter(1);
     } else {
@@ -690,7 +691,7 @@ function applyCustomDate(section) {
     appFilters[section].start = document.getElementById(section+'Start').value;
     appFilters[section].end = document.getElementById(section+'End').value;
     if(section==='dashboard') renderDashboard();
-    if(section==='accounting') renderAccounting();
+    if(section==='accounting') renderAccountingLegacy();
     if(section==='repayments') renderRepayments(1);
     if(section==='sms') renderSmsCenter(1);
 }
@@ -2440,6 +2441,7 @@ async function openAddClientModal(){
     <div style="padding:8px 12px;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.25);border-radius:8px;margin-bottom:12px;font-size:12px;color:var(--text-secondary)">🔒 <strong>Guarantor Details</strong></div>
     <div class="form-row"><div class="form-group"><label>Guarantor Full Name</label><input class="input" id="cNokName"></div><div class="form-group"><label>Guarantor Phone</label><input class="input" id="cNokPhone"></div></div>
     <div class="form-group"><label>Guarantor Relationship</label><input class="input" id="cNokRel" placeholder="e.g. Spouse, Sibling, Friend"></div>
+    ${clientDocumentInputs()}
     <div class="form-group"><label>Notes</label><textarea class="textarea" id="cNotes"></textarea></div>
     ${hasRole('admin','branch_manager')?`<div class="form-group"><label>Branch *</label><select class="select" id="cBranch">${branchOptions(selectedBranchId||currentUser.branch_id)}</select></div>`:''}
     ${officerDropdown}
@@ -2454,6 +2456,8 @@ async function openAddClientModal(){
 async function saveClient(){
   const name=$('#cName').value.trim();const idNo=$('#cIdNo').value.trim();const phone=$('#cPhone').value.trim();
   if(!name||!idNo||!phone)return toast('Name, ID No, and Phone are required','warning');
+  let documents;
+  try{documents=selectedClientDocuments();}catch(error){return toast(error.message,'warning');}
   const btn=document.getElementById('btnSaveClient');
   if(btn){ btn.disabled=true; btn.textContent='Processing...'; }
   try{
@@ -2494,7 +2498,12 @@ async function saveClient(){
     }
     await audit('client_created','loan_clients',data.id,null,rec);
     triggerClientOnboardingSms(data.id);
+    const failedDocuments=await saveClientDocumentFiles(data.id,documents);
     toast(`Client added. Welcome SMS will be sent if SMS credits are available.`,'success');closeModal();renderClients();
+    if(failedDocuments.length){
+      toast('Client saved, but some documents could not upload. Retry them from Documents; do not create the client again.','warning');
+      await openClientDocuments(data.id);
+    }
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Save Client'; }
     toast(e.message,'error');
@@ -2516,6 +2525,7 @@ async function viewClient(id){
         ${clientAvatarHtml(c,true)}
         <div style="flex:1;min-width:0">
           <h2>${escapeHtml(c.full_name)}</h2>
+          ${hasRole('admin','branch_manager','loan_officer')?`<button class="btn btn-outline btn-sm" onclick="openClientDocuments('${c.id}')">Client &amp; Guarantor Documents</button>`:''}
           <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.phone||'-')} &nbsp;|&nbsp; ID: ${escapeHtml(c.id_number||'-')}</div>
           ${canShowPhotoUpload?`
             <input id="${photoInputId}" type="file" accept="image/png,image/jpeg,image/webp" style="display:none" onchange="uploadClientPhoto('${c.id}', this, '${escapeHtml(c.photo_path||'')}')">
@@ -5918,36 +5928,37 @@ function requireSuspenseManage(){
   return false;
 }
 
+async function fetchBriptaSuspenseRows(source){
+  const rows=[];let after=null;
+  for(let page=0;page<200;page++){
+    const{data,error}=await supabaseClient.rpc('bripta_suspense_page',{
+      p_source:source,p_branch:selectedBranchId||null,p_after:after,p_limit:500
+    });
+    if(error)throw error;
+    if(!Array.isArray(data?.rows))throw new Error('Could not read Suspense records');
+    rows.push(...data.rows);
+    if(!data.next_after)return rows.sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)));
+    if(after===data.next_after)throw new Error('Could not load the next Suspense page');
+    after=data.next_after;
+  }
+  throw new Error('Too many Suspense records to load completely');
+}
 async function renderSuspense(){
   const main=$('#mainContent');
   const canManage=canManageSuspense();
   if(!canManage)selectedSuspenseEntries.clear();
   main.innerHTML='<div class="loading-overlay"><div class="spinner"></div></div>';
   try{
-    // Unconfirmed M-Pesa queue entries — these are unmatched payments
-    let queueQuery=sb('mpesa_callback_queue').select('*').eq('confirmed',false).eq('dismissed',false).order('created_at',{ascending:false}).limit(3000);
-    if(selectedBranchId)queueQuery=queueQuery.eq('branch_id',selectedBranchId);
-    const[queueR,loansR,suspR]=await Promise.all([
-      queueQuery,
-      canManage
-        ? branchScoped('loans','id,loan_no,outstanding_balance,status,client_id,loan_clients(full_name,phone,id_number)').eq('status','active').gt('outstanding_balance',0)
-        : Promise.resolve({data:[],error:null}),
-      branchScoped('unmatched_payments','*').order('created_at',{ascending:false})
+    const[queued,manual]=await Promise.all([
+      fetchBriptaSuspenseRows('queue'),fetchBriptaSuspenseRows('manual')
     ]);
-    if(queueR.error)throw new Error('Could not load pending M-Pesa payments: '+queueR.error.message);
-    if(suspR.error)throw new Error('Could not load manual suspense entries: '+suspR.error.message);
-    if(loansR.error)throw new Error('Could not load active loans for matching: '+loansR.error.message);
-
-    const shortcode = String(appSettings?.mpesa_shortcode || '').trim();
-    const queue=(queueR.data||[]).filter(q=>{
-      const queueBiz = String(q.business_short_code || '').trim();
-      const belongsHere = !queueBiz || queueBiz === currentUser.business_id || (shortcode && queueBiz === shortcode);
-      const needsAction = !q.dismissed && (!q.confirmed || (!q.loan_id && !q.repayment_id));
-      return belongsHere && needsAction;
-    });
-    const activeLoans=loansR.data||[];
-    const manualSuspense=(suspR.data||[]);
-    const pendingManualSuspense=(manualSuspense||[]).filter(r=>!r.resolved && !r.dismissed);
+    // One receipt may have a queue row and an old manual fallback. Display it
+    // once; the database reader also excludes receipts already repaid/resolved.
+    const reference=row=>String(row.trans_id||row.mpesa_reference||'').trim().toUpperCase();
+    const seen=new Set();
+    const unique=rows=>rows.filter(row=>{const ref=reference(row);if(!ref)return true;if(seen.has(ref))return false;seen.add(ref);return true;});
+    const queue=unique(queued);
+    const pendingManualSuspense=unique(manual);
     visibleSuspenseEntries=[
       ...queue.map(q=>({key:`mpesa:${q.id}`,type:'mpesa',id:q.id,amount:Number(q.trans_amount||0)})),
       ...pendingManualSuspense.map(r=>({key:`unmatched:${r.id}`,type:'unmatched',id:r.id,amount:Number(r.amount||0)}))

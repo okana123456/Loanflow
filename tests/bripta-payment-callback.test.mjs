@@ -31,7 +31,7 @@ async function run(options={}) {
       if(this.table==='loan_settings')return {data:[{business_id:business,mpesa_auto_confirm:true,mpesa_shortcode:'4044341'}],error:null};
       if(this.table==='loan_repayments')return {data:options.existingRepayment?{id:'repayment',loan_id:'loan',business_id:business}:null,error:null};
       if(this.table==='mpesa_callback_queue')return {data:options.previousQueue||null,error:null};
-      if(this.table==='loans')return {data:loan,error:null};
+      if(this.table==='loans')return {data:options.noActiveLoan?null:loan,error:null};
       if(this.table==='loan_schedules')return {data:[],error:null};
       if(this.table==='loan_clients')return {data:[{id:'client',business_id:business,full_name:'Test Client'}],error:null};
       throw new Error('Unexpected table '+this.table);
@@ -74,6 +74,8 @@ for(const [name,options] of [
   ['held payment',{ref:'UJ2558DDTO',candidates:[],previousQueue:{id:'saved-queue',confirmed:false}}],
   ['ambiguous client phone',{candidates:[{id:'one',business_id:biz},{id:'two',business_id:biz}]}],
   ['short account reference',{account:'50'}],
+  ['unknown account phone',{candidates:[]}],
+  ['client without active loan',{noActiveLoan:true}],
   ['temporary lookup error',{lookupError:true}],
 ]){
   result=await run(options);
@@ -81,6 +83,7 @@ for(const [name,options] of [
   assert.equal(result.calls.filter(x=>x.table==='unmatched_payments'&&x.action==='insert').length,0,name);
   assert.equal(result.sms.length,0,name);
   assert.equal(result.calls.filter(x=>x.table==='mpesa_callback_queue'&&x.action==='insert').length,options.previousQueue?0:1,name);
+  if(!options.previousQueue)assert.equal(result.calls.find(x=>x.table==='mpesa_callback_queue'&&x.action==='insert').value.dismissed,false,name);
   console.log(`PASS: ${name} stays queued without duplicate suspense money or SMS.`);
 }
 result=await run({existingRepayment:true});
