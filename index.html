@@ -400,7 +400,7 @@ const BRIPTA_CACHE_VERSION = 6;
 // The October access-policy repairs made previously hidden portfolio rows
 // visible. Rebuild only these read caches once; incremental updates cannot
 // discover older rows that were absent from a user's earlier RLS snapshot.
-const BRIPTA_PORTFOLIO_CACHE_REVISION = 4;
+const BRIPTA_PORTFOLIO_CACHE_REVISION = 5;
 const BRIPTA_PORTFOLIO_TABLES = new Set(['loan_clients','loans','loan_schedules','loan_repayments','loan_staff']);
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
@@ -494,36 +494,31 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
 function isBriptaOfficerOnly(){
   return hasRole('loan_officer') && !hasRole('admin','branch_manager');
 }
-async function fetchBriptaPortfolioRows(table,configureQuery){
-  if(table!=='loan_repayments'||!isBriptaOfficerOnly())
+async function fetchBriptaPortfolioRows(table,configureQuery,since=null){
+  if(!isBriptaOfficerOnly()||!['loan_clients','loans','loan_applications','loan_schedules','loan_repayments','loan_staff'].includes(table))
     return fetchPagedBusinessRows(table,configureQuery);
-  // The officer's loans are loaded first. Filtering by loan_id lets Postgres
-  // use the loan index before evaluating row security on repayment history.
-  const loanIds=[...new Set((cachedData.loans||[])
-    .filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===currentUser.id)
-    .map(l=>l.id).filter(Boolean))];
-  async function readBatch(ids){
-    const result=await fetchPagedBusinessRows(table,q=>{
-      const scoped=q.in('loan_id',ids);
-      return configureQuery?configureQuery(scoped):scoped;
-    });
-    if(result.error&&ids.length>1&&/statement timeout|57014/i.test(`${result.error.message||''} ${result.error.code||''}`)){
-      const middle=Math.ceil(ids.length/2);
-      const left=await readBatch(ids.slice(0,middle));
-      if(left.error)return left;
-      const right=await readBatch(ids.slice(middle));
-      return right.error?right:{data:[...left.data,...right.data],error:null};
-    }
-    return result;
-  }
+  // The server checks the authenticated officer once per page and performs
+  // explicit business, branch and ownership checks without nested legacy RLS.
   const rows=[];
-  for(let i=0;i<loanIds.length;i+=50){
-    const ids=loanIds.slice(i,i+50);
-    const result=await readBatch(ids);
-    if(result.error)return {data:rows,error:result.error};
-    rows.push(...result.data);
+  let after=null;
+  for(let page=0;page<200;page++){
+    const {data,error}=await supabaseClient.rpc('bripta_officer_portfolio_page',{
+      p_table:table,p_after:after,p_since:since,p_limit:500
+    });
+    if(error){
+      const message=['PGRST202','42883'].includes(error.code)
+        ? 'The officer access update is not installed. Ask your administrator to run the latest Bripta SQL update.'
+        : error.message;
+      return {data:[],error:{...error,message}};
+    }
+    if(data?.staff_id!==currentUser.id||!Array.isArray(data?.rows))
+      return {data:[],error:{message:'Your staff session has changed. Please sign out and sign in again.'}};
+    rows.push(...data.rows);
+    if(!data.next_after)return {data:rows,error:null};
+    if(data.next_after===after)return {data:[],error:{message:'Could not advance through portfolio records. Please retry.'}};
+    after=data.next_after;
   }
-  return {data:rows,error:null};
+  return {data:[],error:{message:'Portfolio is too large to load completely. Contact your administrator.'}};
 }
 async function fetchBriptaTableOptimized(table,force=false){
   const cached = await readBriptaCache(table);
@@ -537,10 +532,10 @@ async function fetchBriptaTableOptimized(table,force=false){
     return result;
   }
   const cursor = new Date(Math.max(0, Number(cached.savedAt || 0) - BRIPTA_SYNC_OVERLAP_MS)).toISOString();
-  let result = await fetchBriptaPortfolioRows(table, q => q.gte('updated_at', cursor).order('updated_at', {ascending:false}));
+  let result = await fetchBriptaPortfolioRows(table, q => q.gte('updated_at', cursor).order('updated_at', {ascending:false}),cursor);
   if(result.error && /updated_at|column .* does not exist/i.test(result.error.message || '')){
     if(table==='loan_repayments'&&isBriptaOfficerOnly()){
-      result=await fetchBriptaPortfolioRows(table,q=>q.gte('created_at',cursor).order('created_at',{ascending:false}));
+      result=await fetchBriptaPortfolioRows(table,q=>q.gte('created_at',cursor).order('created_at',{ascending:false}),cursor);
     }else{
       result=await fetchBriptaPortfolioRows(table);
       if(!result.error) await writeBriptaCache(table,result.data,Date.now());

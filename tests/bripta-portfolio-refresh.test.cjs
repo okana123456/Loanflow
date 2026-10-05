@@ -26,17 +26,16 @@ vm.runInContext(between('async function fetchBriptaTableOptimized(','\nfunction 
 vm.runInContext(between('async function upsertBriptaCachedRows(','\nasync function fetchPagedBusinessRows('),cacheContext);
 cacheContext.fetchBriptaPortfolioRows=(table,configureQuery)=>cacheContext.fetchPagedBusinessRows(table,configureQuery);
 
-const loanRows=Array.from({length:120},(_,i)=>({id:`loan-${i}`,loan_officer_id:'officer-1'}));
-loanRows.push({id:'other-officer-loan',loan_officer_id:'officer-2'});
 const requested=[];
 const scopedContext=vm.createContext({
-  currentUser:{id:'officer-1'},cachedData:{loans:loanRows},
+  currentUser:{id:'officer-1'},cachedData:{},
   hasRole:(...roles)=>roles.includes('loan_officer'),canonicalLoanOfficerId:id=>id,
-  fetchPagedBusinessRows:async(_table,configureQuery)=>{
-    const query={in:(_column,ids)=>{requested.push(ids);return query}};
-    configureQuery(query);
-    return{data:requested.at(-1).map(loan_id=>({id:`payment-${loan_id}`,loan_id})),error:null};
-  }
+  fetchPagedBusinessRows:async()=>{throw new Error('Officer reads must not fall back to the timing-out table queries')},
+  supabaseClient:{rpc:async(name,args)=>{
+    assert.equal(name,'bripta_officer_portfolio_page');
+    requested.push(args);
+    return {data:{staff_id:'officer-1',rows:[{id:args.p_after?'second':'first'}],next_after:args.p_after?null:'first'},error:null};
+  }}
 });
 vm.runInContext(between('function isBriptaOfficerOnly(','\nasync function fetchBriptaTableOptimized('),scopedContext);
 
@@ -69,21 +68,18 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
     'an officer with no cached loans still gets their dashboard');
   assert.equal(officerContext.reportingOfficerVisible({id:'other-branch',role:'loan_officer',branch_id:'other',is_active:true}),false);
   const scoped=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
-  assert.equal(scoped.data.length,120);
-  assert.deepEqual(requested.map(batch=>batch.length),[50,50,20]);
-  assert.ok(requested.every(batch=>!batch.includes('other-officer-loan')));
-  const retried=[];
-  scopedContext.fetchPagedBusinessRows=async(_table,configureQuery)=>{
-    const query={in:(_column,ids)=>{retried.push(ids);return query}};
-    configureQuery(query);
-    const ids=retried.at(-1);
-    return ids.length>25
-      ? {data:[],error:{code:'57014',message:'canceling statement due to statement timeout'}}
-      : {data:ids.map(loan_id=>({id:`payment-${loan_id}`,loan_id})),error:null};
-  };
-  const recovered=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
-  assert.equal(recovered.data.length,120,'smaller retry batches preserve every payment');
-  assert.ok(retried.some(batch=>batch.length===25),'timed-out batches are split');
+  assert.equal(scoped.data.length,2);
+  assert.deepEqual(requested.map(request=>request.p_after),[null,'first']);
+  await scopedContext.fetchBriptaPortfolioRows('loan_schedules',null,'2026-10-05T00:00:00Z');
+  assert.equal(requested.at(-1).p_since,'2026-10-05T00:00:00Z');
+  scopedContext.supabaseClient.rpc=async()=>({data:null,error:{code:'PGRST202'}});
+  const missing=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
+  assert.match(missing.error.message,/not installed/);
+  assert.equal(missing.data.length,0);
+  scopedContext.supabaseClient.rpc=async()=>({data:{staff_id:'another-officer',rows:[{id:'bad'}]},error:null});
+  const wrongSession=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
+  assert.equal(wrongSession.data.length,0);
+  assert.match(wrongSession.error.message,/sign out/);
   await stagedContext.loadBriptaTables(['loans','loan_repayments']);
   const repaymentMain={innerHTML:''};
   const repaymentContext=vm.createContext({
@@ -109,5 +105,5 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(vm.runInContext('visibleRepayments.length',repaymentContext),1);
   assert.equal(vm.runInContext('visibleRepayments[0].id',repaymentContext),'mine',
     'officer payments should be matched by visible loan ID even without an embedded loan relation');
-  console.log('PASS: Officer repayments load by assigned loan in retryable batches; refreshed dashboard and cache stay visible.');
+  console.log('PASS: Officer pages use the scoped reader, page by cursor, reject stale identity, and never fall back to the timed-out query.');
 })().catch(error=>{console.error(error);process.exitCode=1});
