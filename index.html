@@ -329,6 +329,7 @@ tr:hover{background:rgba(255,213,0,.18)}
 
 <script src="bripta-reporting.js"></script>
 <script src="bripta-client-documents.js"></script>
+<script src="bripta-financial-statements.js"></script>
 <script>
 // ═══ SUPABASE INIT ═══
 const SUPABASE_URL = 'https://nngscmpsxtqqjzcnsrbi.supabase.co';
@@ -6937,14 +6938,17 @@ async function renderAccountingLegacy() {
     const qFetchStart=shiftISODate(qStart,-1);
     const qEndFull = shiftISODate(qEnd,1) + 'T23:59:59+00:00';
 
-    const [loanResult,repResult,clientResult,staffResult] = await Promise.all([
+    const [loanResult,repResult,clientResult,staffResult,statementResult] = await Promise.all([
       fetchPagedBusinessRows('loans', q=>q.gte('disbursement_date',qFetchStart).lte('disbursement_date',qEnd),
         'id,client_id,loan_officer_id,processing_fee,disbursed_amount,principal_amount,total_interest,total_payable,disbursement_date,status'),
       fetchPagedBusinessRows('loan_repayments', q=>q.gte('payment_date',qFetchStart).lte('payment_date',qEndFull),
         'id,loan_id,amount,loan_portion,interest_portion,penalty_portion,payment_method,payment_date,created_at,loans(id,client_id,loan_officer_id,total_interest,total_payable,status)'),
       fetchPagedBusinessRows('loan_clients', q=>q.gte('created_at',`${qFetchStart}T00:00:00+00:00`).lte('created_at',qEndFull),
         'id,loan_officer_id,notes,created_at'),
-      fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active')
+      fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active'),
+      supabaseClient.rpc('bripta_financial_statements',{
+        p_start:qStart,p_end:qEnd==='2099-12-31'?todayISO:qEnd,p_branch:selectedBranchId||null
+      })
     ]);
     const failed=[loanResult,repResult,clientResult,staffResult].find(result=>result.error);
     if(failed) throw failed.error;
@@ -7012,6 +7016,9 @@ async function renderAccountingLegacy() {
 
     // Net revenue = all income streams that are NOT principal return
     const totalRevenue = processingFees + interestCollected + penaltiesCollected + registrationFees;
+    const statements=statementResult.error?{error:statementResult.error}:(statementResult.data||{error:{message:'No financial statement returned'}});
+    const approvedExpenses=statements?.error?null:Number(statements?.approved_expenses||0);
+    const netProfit=approvedExpenses===null?null:totalRevenue-approvedExpenses;
 
     // Officer Revenue Breakdown — use the client's explicit portfolio owner
     // first because registration fees can exist before the first loan.
@@ -7103,13 +7110,15 @@ async function renderAccountingLegacy() {
       </div>
       
       <div class="kpi-grid">
-        <div class="kpi-card" style="border-top: 4px solid var(--accent-green)"><div class="kpi-label">Net Profit (Revenue)</div><div class="kpi-value" style="color:var(--accent-green)">${fmtMoney(totalRevenue)}</div><div class="kpi-sub">Registration + Processing + Interest + Penalties</div></div>
+        <div class="kpi-card"><div class="kpi-label">Total Income</div><div class="kpi-value">${fmtMoney(totalRevenue)}</div><div class="kpi-sub">Registration + Processing + Interest + Penalties</div></div>
+        <div class="kpi-card"><div class="kpi-label">Approved Expenses</div><div class="kpi-value">${approvedExpenses===null?'Unavailable':fmtMoney(approvedExpenses)}</div></div>
+        <div class="kpi-card" style="border-top:4px solid var(--accent-green)"><div class="kpi-label">Net Profit / Loss</div><div class="kpi-value" style="color:${netProfit<0?'var(--accent-red)':'var(--accent-green)'}">${netProfit===null?'Unavailable':fmtMoney(netProfit)}</div><div class="kpi-sub">Total income less approved expenses</div></div>
         <div class="kpi-card"><div class="kpi-label">Processing Fees (KES 500/loan)</div><div class="kpi-value">${fmtMoney(processingFees)}</div></div>
         <div class="kpi-card"><div class="kpi-label">Registration Fees</div><div class="kpi-value">${fmtMoney(registrationFees)}</div><div class="kpi-sub">${filteredClients.length} new client(s) × KES ${REGISTRATION_FEE}</div></div>
         <div class="kpi-card"><div class="kpi-label">Interest Collected</div><div class="kpi-value">${fmtMoney(interestCollected)}</div></div>
         <div class="kpi-card"><div class="kpi-label">Penalties Collected</div><div class="kpi-value">${fmtMoney(penaltiesCollected)}</div></div>
       </div>
-      
+      ${briptaStatementHtml(statements||{error:{message:'No financial statement returned'}},{total:totalRevenue,registration:registrationFees,processing:processingFees,interest:interestCollected,penalties:penaltiesCollected})}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px">
         <div class="card">
             <h3 style="font-size:16px;margin-bottom:16px;color:var(--accent-purple)">Officer Performance (Revenue)</h3>
@@ -7174,7 +7183,9 @@ async function saveAsset(id,oldBranch,oldCust){const rec={business_id:currentUse
 async function disposeAsset(id){if(!await confirm_('Mark this asset as disposed?'))return;const value=Number(prompt('Disposal value (KES):')||0);const{error}=await sb('bripta_assets').update({status:'disposed',disposed_at:new Date().toISOString(),disposal_value:value,updated_at:new Date().toISOString()}).eq('id',id);if(error)return toast(error.message,'error');await audit('asset_disposed','bripta_assets',id,null,{disposal_value:value});renderAssets()}
 
 async function renderAccounting(){
-  if(!hasPermission('view_accounting')&&!hasRole('branch_manager','admin'))return toast('Accounting permission required','warning');const main=$('#mainContent');if(!appFilters.accounting)appFilters.accounting={type:'this_month',start:'',end:''};await supabaseClient.rpc('bripta_sync_accounting');let q=sb('bripta_accounting_entries').select('*,bripta_branches(name)').eq('business_id',currentUser.business_id).order('entry_date',{ascending:false}).limit(10000);if(selectedBranchId)q=q.eq('branch_id',selectedBranchId);const{data,error}=await q;if(error)return toast(error.message,'error');const rows=filterByDate(data||[],'entry_date',appFilters.accounting);const income=rows.filter(x=>x.account_type==='income').reduce((s,x)=>s+Number(x.credit)-Number(x.debit),0),expenses=rows.filter(x=>x.account_type==='expense').reduce((s,x)=>s+Number(x.debit)-Number(x.credit),0),net=income-expenses;const accounts={};rows.forEach(x=>{accounts[x.account_name]=(accounts[x.account_name]||0)+Number(x.debit)-Number(x.credit)});main.innerHTML=`<div class="page-header"><div><h1>Detailed Accounting</h1><p style="color:var(--text-secondary)">${selectedBranchId?escapeHtml(branchName(selectedBranchId)):'All Branches'}</p></div><button class="btn btn-outline" onclick="openSuspenseEquityModal()">Suspense → Owner Equity</button></div>${getDateFilterHtml('accounting')}<div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Income</div><div class="kpi-value">${fmtMoney(income)}</div></div><div class="kpi-card"><div class="kpi-label">Approved Expenses</div><div class="kpi-value">${fmtMoney(expenses)}</div></div><div class="kpi-card"><div class="kpi-label">Net Profit / Loss</div><div class="kpi-value" style="color:${net>=0?'var(--accent-green)':'var(--accent-red)'}">${fmtMoney(net)}</div></div></div><div class="charts-grid"><div class="card"><h3>Account Balances</h3>${Object.entries(accounts).map(([n,v])=>`<div style="display:flex;justify-content:space-between;border-bottom:1px solid var(--border);padding:7px"><span>${escapeHtml(n)}</span><strong>${fmtMoney(Math.abs(v))} ${v>=0?'Dr':'Cr'}</strong></div>`).join('')}</div><div class="card"><h3>Profit & Loss</h3><div style="display:flex;justify-content:space-between;padding:8px"><span>Total income</span><strong>${fmtMoney(income)}</strong></div><div style="display:flex;justify-content:space-between;padding:8px"><span>Operating expenses</span><strong>${fmtMoney(expenses)}</strong></div><div style="display:flex;justify-content:space-between;padding:8px;border-top:2px solid var(--border)"><span>Net profit / loss</span><strong>${fmtMoney(net)}</strong></div></div></div><h3 class="dash-h3">Transaction Ledger</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Account</th><th>Description</th><th>Debit</th><th>Credit</th><th>Source</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${fmtDate(x.entry_date)}</td><td>${escapeHtml(x.bripta_branches?.name||branchName(x.branch_id))}</td><td>${escapeHtml(x.account_code+' '+x.account_name)}</td><td>${escapeHtml(x.description)}</td><td>${x.debit?fmtMoney(x.debit):'-'}</td><td>${x.credit?fmtMoney(x.credit):'-'}</td><td>${escapeHtml(x.source_table)} #${escapeHtml(x.source_id.slice(0,8))}</td></tr>`).join('')}</tbody></table></div>`}
+  if(!hasPermission('view_accounting')&&!hasRole('branch_manager','admin'))return toast('Accounting permission required','warning');
+  return renderAccountingLegacy();
+}
 function openSuspenseEquityModal(){openModal(`<h2>Transfer Suspense to Owner Capital / Equity</h2><div class="form-group"><label>Branch</label><select class="select" id="eqBranch">${branchOptions(selectedBranchId)}</select></div><div class="form-row"><div class="form-group"><label>Suspense reference</label><input class="input" id="eqRef"></div><div class="form-group"><label>Amount</label><input class="input" type="number" id="eqAmount"></div></div><div class="form-group"><label>Description / authorization</label><input class="input" id="eqDesc"></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveSuspenseEquity()">Transfer</button></div>`)}
 async function saveSuspenseEquity(){const{error}=await supabaseClient.rpc('bripta_suspense_to_equity',{p_source_id:$('#eqRef').value,p_amount:Number($('#eqAmount').value),p_description:$('#eqDesc').value,p_branch:$('#eqBranch').value});if(error)return toast(error.message,'error');closeModal();toast('Transferred to Owner Equity','success');renderAccounting()}
 
