@@ -24,6 +24,32 @@ const cacheContext=vm.createContext({
 });
 vm.runInContext(between('async function fetchBriptaTableOptimized(','\nfunction hydrateBriptaRelations('),cacheContext);
 vm.runInContext(between('async function upsertBriptaCachedRows(','\nasync function fetchPagedBusinessRows('),cacheContext);
+cacheContext.fetchBriptaPortfolioRows=(table,configureQuery)=>cacheContext.fetchPagedBusinessRows(table,configureQuery);
+
+const loanRows=Array.from({length:120},(_,i)=>({id:`loan-${i}`,loan_officer_id:'officer-1'}));
+loanRows.push({id:'other-officer-loan',loan_officer_id:'officer-2'});
+const requested=[];
+const scopedContext=vm.createContext({
+  currentUser:{id:'officer-1'},cachedData:{loans:loanRows},
+  hasRole:(...roles)=>roles.includes('loan_officer'),canonicalLoanOfficerId:id=>id,
+  fetchPagedBusinessRows:async(_table,configureQuery)=>{
+    const query={in:(_column,ids)=>{requested.push(ids);return query}};
+    configureQuery(query);
+    return{data:requested.at(-1).map(loan_id=>({id:`payment-${loan_id}`,loan_id})),error:null};
+  }
+});
+vm.runInContext(between('function isBriptaOfficerOnly(','\nasync function fetchBriptaTableOptimized('),scopedContext);
+
+const stagedContext=vm.createContext({
+  cachedData:{},hasRole:(...roles)=>roles.includes('loan_officer'),
+  isBriptaOfficerOnly:()=>true,
+  fetchBriptaTableOptimized:async table=>{
+    if(table==='loan_repayments')assert.equal(stagedContext.cachedData.loans.length,1,
+      'load visible loans before requesting their repayments');
+    return{data:table==='loans'?[{id:'loan-1'}]:[],error:null};
+  },BRIPTA_CACHE_MAP:{loans:'loans',loan_repayments:'repayments'}
+});
+vm.runInContext(between('function hydrateBriptaRelations(','\nasync function refreshBriptaReports('),stagedContext);
 
 const officerContext=vm.createContext({
   currentUser:{id:'officer-1',role:'loan_officer'},selectedBranchId:'migori',cachedData:{loans:[]},
@@ -42,6 +68,23 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(officerContext.reportingOfficerVisible({id:'officer-1',role:'loan_officer',is_active:true}),true,
     'an officer with no cached loans still gets their dashboard');
   assert.equal(officerContext.reportingOfficerVisible({id:'other-branch',role:'loan_officer',branch_id:'other',is_active:true}),false);
+  const scoped=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
+  assert.equal(scoped.data.length,120);
+  assert.deepEqual(requested.map(batch=>batch.length),[50,50,20]);
+  assert.ok(requested.every(batch=>!batch.includes('other-officer-loan')));
+  const retried=[];
+  scopedContext.fetchPagedBusinessRows=async(_table,configureQuery)=>{
+    const query={in:(_column,ids)=>{retried.push(ids);return query}};
+    configureQuery(query);
+    const ids=retried.at(-1);
+    return ids.length>25
+      ? {data:[],error:{code:'57014',message:'canceling statement due to statement timeout'}}
+      : {data:ids.map(loan_id=>({id:`payment-${loan_id}`,loan_id})),error:null};
+  };
+  const recovered=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
+  assert.equal(recovered.data.length,120,'smaller retry batches preserve every payment');
+  assert.ok(retried.some(batch=>batch.length===25),'timed-out batches are split');
+  await stagedContext.loadBriptaTables(['loans','loan_repayments']);
   const repaymentMain={innerHTML:''};
   const repaymentContext=vm.createContext({
     $:()=>repaymentMain,
@@ -66,5 +109,5 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(vm.runInContext('visibleRepayments.length',repaymentContext),1);
   assert.equal(vm.runInContext('visibleRepayments[0].id',repaymentContext),'mine',
     'officer payments should be matched by visible loan ID even without an embedded loan relation');
-  console.log('PASS: Refresh rebuilds visible repayment rows; officer dashboard keeps the signed-in officer visible.');
+  console.log('PASS: Officer repayments load by assigned loan in retryable batches; refreshed dashboard and cache stay visible.');
 })().catch(error=>{console.error(error);process.exitCode=1});
