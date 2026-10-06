@@ -4162,20 +4162,10 @@ async function dismissMpesaPayment(queueId){
   if(!requireSuspenseManage())return;
   if(!await confirm_('Dismiss this M-Pesa payment? It will be removed from suspense without recording a repayment.'))return;
   try{
-    const dismissedAt=new Date().toISOString();
-    const{error}=await sb('mpesa_callback_queue').update({
-      confirmed:true,
-      dismissed:true,
-      dismissed_at:dismissedAt,
-      dismissed_by:String(currentUser.id||'')
-    }).eq('id',queueId);
-    if(error)throw error;
-    await audit('suspense_dismissed','mpesa_callback_queue',queueId,null,{reason:'Dismissed by authorized user'});
-    toast('Payment dismissed','info');
-    if(currentSection==='suspense')renderSuspense();else renderRepayments();
-  }catch(e){
-    toast(/dismissed/i.test(e.message||'')?'Run the Bripta balance and suspense SQL setup, then try again.':e.message,'error');
-  }
+    const result=await dismissSuspenseRecords([queueId],[]);
+    toast(result.dismissed_rows?'Payment dismissed':'Payment was already dismissed','info');
+    if(currentSection==='suspense')await renderSuspense();else await renderRepayments();
+  }catch(e){toast(e.message,'error');}
 }
 
 function calculatePaymentAllocation(loan,grossAmount){
@@ -6071,49 +6061,29 @@ function updateSuspenseBulkControls(){
   }
 }
 
+async function dismissSuspenseRecords(queueIds,manualIds){
+  const{data,error}=await supabaseClient.rpc('bripta_dismiss_suspense',{
+    p_queue_ids:queueIds,p_manual_ids:manualIds,p_reason:'Dismissed by authorized staff'
+  });
+  if(error)throw error;
+  if(!data?.ok||data.requested!==new Set(queueIds).size+new Set(manualIds).size)
+    throw new Error('Dismissal was not confirmed. Reload Suspense and try again.');
+  return data;
+}
 async function bulkDismissSuspense(){
   if(!requireSuspenseManage())return;
   const selected=visibleSuspenseEntries.filter(entry=>selectedSuspenseEntries.has(entry.key));
   if(!selected.length)return toast('Select at least one suspense amount','warning');
+  if(selected.length>500)return toast('Select at most 500 payments at a time','warning');
   const total=selected.reduce((sum,entry)=>sum+entry.amount,0);
   if(!await confirm_(`Dismiss ${selected.length} selected suspense amount(s) totalling ${fmtMoney(total)}? No repayment will be created.`))return;
-
   const btn=document.getElementById('bulkDismissSuspenseBtn');
   if(btn){btn.disabled=true;btn.textContent='Dismissing...'}
   try{
-    const dismissedAt=new Date().toISOString();
-    const common={
-      dismissed:true,
-      dismissed_at:dismissedAt,
-      dismissed_by:String(currentUser.id||'')
-    };
-    const queueIds=selected.filter(entry=>entry.type==='mpesa').map(entry=>entry.id);
-    const manualIds=selected.filter(entry=>entry.type==='unmatched').map(entry=>entry.id);
-    const operations=[];
-    if(queueIds.length){
-      operations.push(sb('mpesa_callback_queue').update({...common,confirmed:true}).in('id',queueIds));
-    }
-    if(manualIds.length){
-      operations.push(sb('unmatched_payments').update({
-        ...common,
-        resolved:true,
-        resolved_at:dismissedAt,
-        resolved_by:currentUser.id
-      }).eq('business_id',currentUser.business_id).in('id',manualIds));
-    }
-    const results=await Promise.all(operations);
-    const failed=results.find(result=>result?.error);
-    if(failed?.error)throw failed.error;
-
-    await audit('suspense_bulk_dismissed','suspense',null,null,{
-      entries:selected.length,
-      total_amount:total,
-      mpesa_queue_entries:queueIds.length,
-      manual_entries:manualIds.length
-    });
+    const result=await dismissSuspenseRecords(selected.filter(e=>e.type==='mpesa').map(e=>e.id),selected.filter(e=>e.type==='unmatched').map(e=>e.id));
     selectedSuspenseEntries.clear();
-    toast(`${selected.length} suspense amount(s) dismissed`,'success');
-    renderSuspense();
+    toast(result.dismissed_rows?'Selected payments dismissed':'Selected payments were already dismissed','success');
+    await renderSuspense();
   }catch(e){
     if(btn){btn.disabled=false;updateSuspenseBulkControls()}
     toast(e.message,'error');
@@ -6163,22 +6133,10 @@ async function dismissManualSuspense(entryId){
   if(!requireSuspenseManage())return;
   if(!await confirm_('Dismiss this suspense amount? It will be removed from the pending suspense total without creating a repayment.'))return;
   try{
-    const dismissedAt=new Date().toISOString();
-    const{error}=await sb('unmatched_payments').update({
-      resolved:true,
-      resolved_at:dismissedAt,
-      resolved_by:currentUser.id,
-      dismissed:true,
-      dismissed_at:dismissedAt,
-      dismissed_by:String(currentUser.id||'')
-    }).eq('id',entryId).eq('business_id',currentUser.business_id);
-    if(error)throw error;
-    await audit('suspense_dismissed','unmatched_payments',entryId,null,{reason:'Dismissed by authorized user'});
-    toast('Suspense amount dismissed','info');
-    renderSuspense();
-  }catch(e){
-    toast(/dismissed/i.test(e.message||'')?'Run the Bripta balance and suspense SQL setup, then try again.':e.message,'error');
-  }
+    const result=await dismissSuspenseRecords([],[entryId]);
+    toast(result.dismissed_rows?'Suspense amount dismissed':'Suspense amount was already dismissed','info');
+    await renderSuspense();
+  }catch(e){toast(e.message,'error');}
 }
 
 async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){

@@ -90,6 +90,10 @@ result=await run({existingRepayment:true});
 assert.equal(result.calls.filter(x=>x.action==='insert').length,0);assert.equal(result.sms.length,0);
 console.log('PASS: an already recorded transaction produces no second repayment or SMS request.');
 
+result=await run({previousQueue:{id:'dismissed-queue',confirmed:true}});
+assert.equal(result.calls.filter(x=>x.action==='insert').length,0);assert.equal(result.sms.length,0);
+console.log('PASS: retrying a dismissed terminal callback creates no repayment or SMS.');
+
 result=await run({business:'ANOTHER_BUSINESS',account:'12345678'});
 assert.equal(result.calls.filter(x=>x.rpc).length,0);
 assert.ok(result.calls.find(x=>x.table==='loan_clients').filters.some(f=>f[1]==='id_number'&&f[2]==='12345678'));
