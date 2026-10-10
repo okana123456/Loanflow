@@ -6917,7 +6917,7 @@ async function renderAccountingLegacy() {
     const qFetchStart=shiftISODate(qStart,-1);
     const qEndFull = shiftISODate(qEnd,1) + 'T23:59:59+00:00';
 
-    const [loanResult,repResult,clientResult,staffResult,statementResult] = await Promise.all([
+    const [loanResult,repResult,clientResult,staffResult,statementResult,chargedPenaltyResult] = await Promise.all([
       fetchPagedBusinessRows('loans', q=>q.gte('disbursement_date',qFetchStart).lte('disbursement_date',qEnd),
         'id,client_id,loan_officer_id,processing_fee,disbursed_amount,principal_amount,total_interest,total_payable,disbursement_date,status'),
       fetchPagedBusinessRows('loan_repayments', q=>q.gte('payment_date',qFetchStart).lte('payment_date',qEndFull),
@@ -6927,7 +6927,8 @@ async function renderAccountingLegacy() {
       fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active'),
       supabaseClient.rpc('bripta_financial_statements',{
         p_start:qStart,p_end:qEnd==='2099-12-31'?todayISO:qEnd,p_branch:selectedBranchId||null
-      })
+      }),
+      readAccountingPenalties(qStart,qEnd)
     ]);
     const failed=[loanResult,repResult,clientResult,staffResult].find(result=>result.error);
     if(failed) throw failed.error;
@@ -7098,6 +7099,7 @@ async function renderAccountingLegacy() {
         <div class="kpi-card"><div class="kpi-label">Penalties Collected</div><div class="kpi-value">${fmtMoney(penaltiesCollected)}</div></div>
       </div>
       ${briptaStatementHtml(statements||{error:{message:'No financial statement returned'}},{total:totalRevenue,registration:registrationFees,processing:processingFees,interest:interestCollected,penalties:penaltiesCollected})}
+      ${accountingPenaltyHtml(chargedPenaltyResult)}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px">
         <div class="card">
             <h3 style="font-size:16px;margin-bottom:16px;color:var(--accent-purple)">Officer Performance (Revenue)</h3>

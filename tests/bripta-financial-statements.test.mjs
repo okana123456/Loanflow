@@ -42,11 +42,24 @@ try{
   await entry(1,'2026-11-01','5000','Future Expense','expense',200,0,'bripta_expenses',id(26),'expense_debit');
   const snapshot=async()=>db.query('select (select sum(amount) from bripta_expenses) expenses,(select sum(disbursed_amount) from loans) loans,(select sum(amount) from loan_repayments) repayments,(select sum(debit+credit) from bripta_accounting_entries) journal');
   const before=await snapshot();
+  await db.exec(`alter table loans add column client_id uuid,add column loan_no text default '251959';
+    create table loan_clients(id uuid primary key,business_id text,full_name text);
+    create table loan_penalties(id uuid primary key,loan_id uuid,penalty_amount numeric,date_charged date,reason text,is_waived boolean);
+    insert into loan_clients values('${id(90)}','${biz}','Hellen Akinyi Opiyo');
+    update loans set client_id='${id(90)}' where id='${id(51)}';
+    insert into loan_penalties values('${id(91)}','${id(51)}',525,'2026-10-10','Rollover Penalty (15%)',false),
+      ('${id(92)}','${id(51)}',50,'2026-10-09','Waived rollover',true);
+  `);
   const migration=readFileSync(new URL('../bripta-financial-statements-20261005.sql',import.meta.url),'utf8');
   await db.exec(migration);await db.exec(migration);
+  const penaltyMigration=readFileSync(new URL('../bripta-accounting-penalties-20261010.sql',import.meta.url),'utf8');
+  await db.exec(penaltyMigration);await db.exec(penaltyMigration);
   const login=async n=>{await db.exec('reset role');await db.query("select set_config('request.jwt.claims',$1,false)",[JSON.stringify({sub:id(n),email:`u${n}@test.invalid`})]);await db.exec('set role authenticated');};
   const report=async(branch=null,start='2026-10-01',end='2026-10-02')=>(await db.query('select bripta_financial_statements($1,$2,$3) result',[start,end,branch])).rows[0].result;
   await login(11);let r=await report(id(1));
+  const charged=(await db.query('select bripta_accounting_penalties($1,$2,$3) result',['2026-10-10','2026-10-10',id(1)])).rows[0].result.rows;
+  assert.equal(charged.length,1);assert.equal(charged[0].penalty_amount,525);assert.equal(charged[0].charged_on,'2026-10-10');assert.equal(charged[0].client_name,'Hellen Akinyi Opiyo');
+  assert.equal((await db.query('select bripta_accounting_penalties($1,$2,$3) result',['2026-10-10','2026-10-10',id(2)])).rows[0].result.rows.length,0,'other branch excludes penalty');
   assert.equal(r.approved_expenses,30);assert.equal(r.expense_categories.length,1);
   assert.equal(r.accounts.find(a=>a.account_code==='1000').signed_balance,1070,'opening and prior income retained for balance sheet');
   assert.equal(r.missing_source_postings.loans,1);assert.equal(r.missing_source_postings.asset_purchases,1);
@@ -57,8 +70,10 @@ try{
   assert.equal((await report(id(1),'2026-10-03','2026-10-03')).approved_expenses,10,'paid expense counted');
   await assert.rejects(()=>report(null,'2026-10-03','2026-10-01'),/valid date range/);
   await login(12);assert.equal((await report()).approved_expenses,30);await assert.rejects(()=>report(id(2)),/Branch access/);
+  assert.equal((await db.query('select bripta_accounting_penalties($1,$2) result',['2026-10-09','2026-10-10'])).rows[0].result.rows.length,2);
+  await assert.rejects(()=>db.query('select bripta_accounting_penalties($1,$2,$3)',['2026-10-09','2026-10-10',id(2)]),/Branch access/);
   await login(13);assert.equal((await report()).approved_expenses,30);
-  for(const n of [14,15]){await login(n);await assert.rejects(()=>report(),/Accounting permission/);}
+  for(const n of [14,15]){await login(n);await assert.rejects(()=>report(),/Accounting permission/);await assert.rejects(()=>db.query('select bripta_accounting_penalties($1,$2)',['2026-10-09','2026-10-10']),/Accounting permission/);}
   await db.exec('reset role;set role anon');await assert.rejects(()=>report(),/permission denied/);
   await db.exec('reset role');assert.deepEqual(await snapshot(),before,'report and migration leave every source amount and posting unchanged');
   console.log('PASS: cumulative as-of balances, approved/paid expenses once, date boundaries, category totals, role/branch/business isolation and idempotent read-only SQL.');
@@ -69,7 +84,9 @@ try{
     appFilters:{accounting:{type:'custom',start:'2026-10-01',end:'2026-10-02'}},$:()=>main,
     escapeHtml:x=>String(x),fmtMoney:x=>'KES '+Number(x).toFixed(2),getDateFilterHtml:()=>'',REGISTRATION_FEE:5,
     repaymentBusinessDate:r=>r.payment_date,canonicalLoanOfficerId:x=>x,parseRegFeeFromNotes:()=>({amount:5}),toast:x=>errors.push(x),
-    supabaseClient:{rpc:async(name,args)=>{assert.equal(name,'bripta_financial_statements');assert.equal(args.p_branch,id(1));return {data:r};}},
+    supabaseClient:{rpc:async(name,args)=>{assert.equal(args.p_branch,id(1));
+      if(name==='bripta_accounting_penalties')return {data:{rows:charged,next_after:null}};
+      assert.equal(name,'bripta_financial_statements');return {data:r};}},
     fetchPagedBusinessRows:async table=>({data:table==='loans'?[{id:'loan',client_id:'client',loan_officer_id:'officer',processing_fee:10,disbursed_amount:100,disbursement_date:'2026-10-01',status:'active'}]:
       table==='loan_repayments'?[{loan_id:'loan',amount:50,loan_portion:50,interest_portion:20,penalty_portion:3,payment_date:'2026-10-02'}]:
       table==='loan_clients'?[{id:'client',loan_officer_id:'officer',created_at:'2026-10-01'}]:[{id:'officer',name:'Officer',role:'loan_officer',is_active:true}]})});
@@ -83,6 +100,10 @@ try{
   assert.ok(main.innerHTML.includes('KES 38.00'),'original revenue retained');
   assert.ok(main.innerHTML.includes('KES 8.00'),'net profit deducts approved expense once');
   assert.ok(main.innerHTML.includes('Balance Sheet'));assert.ok(main.innerHTML.includes('1 loan disbursements'),'missing history explicitly shown');
+  assert.ok(main.innerHTML.includes('Rollover Penalties Charged'));assert.ok(main.innerHTML.includes('KES 525.00'));assert.ok(main.innerHTML.includes('2026-10-10'));
+  assert.ok(main.innerHTML.includes('KES 8.00'),'charged penalty is not counted again as collected profit');
+  const waivedHtml=context.accountingPenaltyHtml({data:[...charged,{penalty_amount:50,is_waived:true,charged_on:'2026-10-09'}]});
+  assert.ok(waivedHtml.includes('KES 525.00'));assert.ok(waivedHtml.includes('KES 50.00'));assert.ok(!waivedHtml.includes('KES 575.00'),'waived charges excluded from applied total');
   r={...r,approved_expenses:50};await context.renderAccountingLegacy();assert.ok(main.innerHTML.includes('Net loss'));assert.ok(main.innerHTML.includes('KES -12.00'));
   context.supabaseClient.rpc=async()=>({error:{message:'Statement unavailable'}});
   await context.renderAccountingLegacy();assert.ok(main.innerHTML.includes('Unavailable'));assert.ok(main.innerHTML.includes('KES 38.00'),'statement failure preserves income report');
