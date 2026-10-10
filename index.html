@@ -3475,11 +3475,29 @@ function filterLoanStatus(v){
   filterLoans(q);
 }
 
+async function readLoanPenaltyRecords(loanId){
+  const{data,error}=await supabaseClient.rpc('bripta_loan_penalty_records',{p_loan_id:loanId});
+  if(error)return {data:null,error};
+  if(data?.loan_id!==loanId||!Array.isArray(data?.rows))return {data:null,error:{message:'Penalty records could not be verified'}};
+  return {data:data.rows,error:null};
+}
+function penaltyRecordHtml(records){
+  const rows=records||[];
+  return `<h3 style="margin:12px 0">Rollover Penalty Record</h3>
+    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">Recorded charges shown separately from payments collected.</p>
+    <div class="table-wrap"><table><thead><tr><th>Date charged</th><th>Amount charged</th><th>Reason</th><th>Status</th></tr></thead><tbody>
+    ${rows.map(p=>`<tr><td style="white-space:nowrap">${p.date_charged||p.created_at?fmtDate(p.date_charged||p.created_at):'Date not recorded'}</td>
+      <td style="white-space:nowrap;${p.is_waived?'text-decoration:line-through;':''}">${fmtMoney(p.penalty_amount)}</td>
+      <td>${escapeHtml(p.reason||'Rollover Penalty')}${p.is_waived&&p.waived_reason?`<div style="font-size:11px;color:var(--text-secondary)">${escapeHtml(p.waived_reason)}</div>`:''}</td>
+      <td><span class="badge ${p.is_waived?'badge-green':'badge-red'}">${p.is_waived?'Waived':'Applied'}</span></td></tr>`).join('')||'<tr><td colspan="4" style="padding:16px;text-align:center">No penalty records for this loan</td></tr>'}
+    </tbody></table></div>`;
+}
 async function viewLoan(id){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true}).order('created_at',{ascending:true});
-  const{data:loanPenalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
+  const{data:loanPenalties,error:penaltyError}=await readLoanPenaltyRecords(id);
+  if(penaltyError)return toast('Could not load penalty records: '+penaltyError.message,'error');
   if(!loan)return toast('Loan not found','error');
   // Stored balances remain authoritative because imported and restructured
   // loans can legitimately differ from a simple full-ledger recalculation.
@@ -3501,7 +3519,8 @@ async function viewLoan(id){
       <div><strong>Maturity:</strong> ${fmtDate(loan.maturity_date)}</div>
       <div><strong>Method:</strong> ${loan.disbursement_method||'-'}</div>
     </div>
-    <div class="tabs"><div class="tab active" onclick="showLoanTab('schedule',this)">Schedule</div><div class="tab" onclick="showLoanTab('payments',this)">Payments</div></div>
+    <div class="tabs"><div class="tab active" onclick="showLoanTab('schedule',this)">Schedule</div><div class="tab" onclick="showLoanTab('payments',this)">Payments</div><div class="tab" onclick="showLoanTab('penalties',this)">Rollover Penalties</div></div>
+    <div id="loanTabPenalties" style="display:none">${penaltyRecordHtml(loanPenalties)}</div>
     <div id="loanTabSchedule">
       <div class="table-wrap" style="max-height:300px;overflow-y:auto"><table><thead><tr><th>#</th><th>Due Date</th><th>Total Due</th><th>Paid</th><th>Remaining Due</th><th>Status</th></tr></thead><tbody>
       ${(schedules||[]).map(s=>{
@@ -3557,6 +3576,7 @@ function showLoanTab(tab,el){
   $$('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');
   $('#loanTabSchedule').style.display=tab==='schedule'?'block':'none';
   $('#loanTabPayments').style.display=tab==='payments'?'block':'none';
+  $('#loanTabPenalties').style.display=tab==='penalties'?'block':'none';
 }
 
 async function openEditLoanModal(id){
@@ -3713,12 +3733,12 @@ async function viewClientPayments(loanId){
   const{data:loan}=await sb('loans').select('*,loan_clients(full_name,phone)').eq('id',loanId).single();
   if(!loan) return toast('Loan not found','error');
 
-  const[{data:payments},{data:penalties}]=await Promise.all([
+  const[{data:payments},{data:penalties,error:penaltyError}]=await Promise.all([
     sb('loan_repayments').select('*').eq('loan_id',loanId)
       .order('payment_date',{ascending:true}).order('created_at',{ascending:true}),
-    sb('loan_penalties').select('*').eq('loan_id',loanId)
-      .order('date_charged',{ascending:true})
+    readLoanPenaltyRecords(loanId)
   ]);
+  if(penaltyError)return toast('Could not load penalty records: '+penaltyError.message,'error');
 
   const clientName = loan.loan_clients?.full_name||'Unknown';
   const totalPayable = Number(loan.total_payable||0);
@@ -3771,6 +3791,7 @@ async function viewClientPayments(loanId){
 
   openModal(`
     <h2>💳 Payment History — ${clientName}</h2>
+    ${penaltyRecordHtml(penalties)}
     <div class="card" style="margin-bottom:12px;font-size:12px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
       <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Loan #</div><strong>${loan.loan_no}</strong></div>
       <div><div style="font-size:10px;color:var(--text-secondary);text-transform:uppercase">Total Payable</div><strong>${fmtMoney(totalPayable)}</strong></div>
@@ -3810,8 +3831,7 @@ async function downloadPaymentStatementPdf(loanId){
     const[{data:payments,error:paymentError},{data:penalties,error:penaltyError}]=await Promise.all([
       sb('loan_repayments').select('*').eq('loan_id',loanId)
         .order('payment_date',{ascending:true}).order('created_at',{ascending:true}),
-      sb('loan_penalties').select('*').eq('loan_id',loanId)
-        .order('date_charged',{ascending:true})
+      readLoanPenaltyRecords(loanId)
     ]);
     if(paymentError) throw paymentError;
     if(penaltyError) throw penaltyError;
@@ -3933,7 +3953,8 @@ async function exportLoanPDF(id){
   const{data:loan}=await sb('loans').select('*').eq('id',id).single();
   const{data:schedules}=await sb('loan_schedules').select('*').eq('loan_id',id).order('installment_no');
   const{data:payments}=await sb('loan_repayments').select('*').eq('loan_id',id).order('payment_date',{ascending:true});
-  const{data:penalties}=await sb('loan_penalties').select('*').eq('loan_id',id).order('date_charged',{ascending:true});
+  const{data:penalties,error:penaltyError}=await readLoanPenaltyRecords(id);
+  if(penaltyError)return toast('Could not load penalty records: '+penaltyError.message,'error');
   if(!loan)return;
   const{jsPDF}=window.jspdf;const doc=new jsPDF();
   doc.setFontSize(16);doc.text('Bripta — Loan Statement',14,20);
