@@ -104,6 +104,15 @@ try{
   assert.ok(main.innerHTML.includes('KES 8.00'),'charged penalty is not counted again as collected profit');
   const waivedHtml=context.accountingPenaltyHtml({data:[...charged,{penalty_amount:50,is_waived:true,charged_on:'2026-10-09'}]});
   assert.ok(waivedHtml.includes('KES 525.00'));assert.ok(waivedHtml.includes('KES 50.00'));assert.ok(!waivedHtml.includes('KES 575.00'),'waived charges excluded from applied total');
+  const many=Array.from({length:25},(_,n)=>({id:String(n).padStart(2,'0'),charged_on:'2026-10-10',client_name:'Client '+n,penalty_amount:10,is_waived:n>=20}));
+  const compact=context.accountingPenaltyHtml({data:many});
+  assert.equal((compact.match(/<tr>/g)||[]).length,11,'only ten records plus heading rendered');
+  assert.ok(compact.includes('KES 200.00'));assert.ok(compact.includes('KES 50.00'),'totals cover all pages');
+  assert.ok(!compact.includes('<details open>'),'long list initially collapsed');
+  const panel={innerHTML:''};context.document={getElementById:()=>panel};context.showAccountingPenaltyPage(3);
+  assert.equal((panel.innerHTML.match(/<tr>/g)||[]).length,6,'last page has remaining five records');
+  assert.ok(panel.innerHTML.includes('21–25 of 25 records'));assert.ok(panel.innerHTML.includes('Client 24'));
+  context.accountingPenaltyHtml({data:charged});assert.ok(context.accountingPenaltyPageHtml(9).includes('Page 1 of 1'),'new period/branch report resets and clamps pages');
   r={...r,approved_expenses:50};await context.renderAccountingLegacy();assert.ok(main.innerHTML.includes('Net loss'));assert.ok(main.innerHTML.includes('KES -12.00'));
   context.supabaseClient.rpc=async()=>({error:{message:'Statement unavailable'}});
   await context.renderAccountingLegacy();assert.ok(main.innerHTML.includes('Unavailable'));assert.ok(main.innerHTML.includes('KES 38.00'),'statement failure preserves income report');

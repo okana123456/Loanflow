@@ -14,17 +14,39 @@ async function readAccountingPenalties(start,end){
     throw new Error('Too many penalty records to load completely');
   }catch(error){return {data:null,error};}
 }
+let accountingPenaltyRows=[];
+const ACCOUNTING_PENALTY_PAGE_SIZE=10;
+function accountingPenaltyPageHtml(page=1){
+  const count=accountingPenaltyRows.length,total=Math.max(1,Math.ceil(count/ACCOUNTING_PENALTY_PAGE_SIZE));
+  page=Math.min(total,Math.max(1,Math.floor(Number(page)||1)));
+  const offset=(page-1)*ACCOUNTING_PENALTY_PAGE_SIZE;
+  const rows=accountingPenaltyRows.slice(offset,offset+ACCOUNTING_PENALTY_PAGE_SIZE);
+  return `<div class="table-wrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Date charged</th><th>Client</th><th>Loan</th><th>Amount charged</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+    ${rows.map(p=>`<tr><td>${escapeHtml(p.charged_on||'Date not recorded')}</td><td>${escapeHtml(p.client_name||'-')}</td><td>${escapeHtml(p.loan_no||'-')}</td><td style="white-space:nowrap">${fmtMoney(p.penalty_amount)}</td><td>${p.is_waived?'Waived':'Applied'}</td><td>${escapeHtml(p.reason||'Rollover Penalty')}</td></tr>`).join('')||'<tr><td colspan="6" style="padding:16px;text-align:center">No penalty charges in this period</td></tr>'}
+    </tbody></table></div>
+    ${count?`<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:10px">
+      <button type="button" class="btn btn-outline btn-sm" ${page<=1?'disabled':''} onclick="showAccountingPenaltyPage(${page-1})">Previous</button>
+      <span style="font-size:12px" aria-live="polite">${offset+1}–${Math.min(offset+ACCOUNTING_PENALTY_PAGE_SIZE,count)} of ${count} records · Page ${page} of ${total}</span>
+      <button type="button" class="btn btn-outline btn-sm" ${page>=total?'disabled':''} onclick="showAccountingPenaltyPage(${page+1})">Next</button>
+    </div>`:''}`;
+}
+function showAccountingPenaltyPage(page){
+  const panel=document.getElementById('accountingPenaltyPage');
+  if(panel)panel.innerHTML=accountingPenaltyPageHtml(page);
+}
 function accountingPenaltyHtml(result){
+  accountingPenaltyRows=[];
   if(result.error)return `<div class="card" style="margin-top:20px"><h3>Rollover Penalties Charged</h3><p>Could not load charged penalties: ${escapeHtml(result.error.message)}</p></div>`;
-  const rows=(result.data||[]).slice().sort((a,b)=>String(b.charged_on||'').localeCompare(String(a.charged_on||'')));
-  const applied=rows.filter(p=>!p.is_waived).reduce((sum,p)=>sum+Number(p.penalty_amount||0),0);
-  const waived=rows.filter(p=>p.is_waived).reduce((sum,p)=>sum+Number(p.penalty_amount||0),0);
+  accountingPenaltyRows=(result.data||[]).slice().sort((a,b)=>String(b.charged_on||'').localeCompare(String(a.charged_on||''))||String(a.id||'').localeCompare(String(b.id||'')));
+  const applied=accountingPenaltyRows.filter(p=>!p.is_waived).reduce((sum,p)=>sum+Number(p.penalty_amount||0),0);
+  const waived=accountingPenaltyRows.filter(p=>p.is_waived).reduce((sum,p)=>sum+Number(p.penalty_amount||0),0);
   return `<div class="card" style="margin-top:20px"><h3>Rollover Penalties Charged</h3>
     <p style="font-size:12px;color:var(--text-secondary);margin:8px 0">Applied charges: <strong>${fmtMoney(applied)}</strong> · Waived: <strong>${fmtMoney(waived)}</strong></p>
-    <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Charges recorded in the selected period and branch. These amounts are already part of the loan balances; only penalties collected through repayments contribute to collected income.</p>
-    <div class="table-wrap"><table><thead><tr><th>Date charged</th><th>Client</th><th>Loan</th><th>Amount charged</th><th>Status</th><th>Reason</th></tr></thead><tbody>
-    ${rows.map(p=>`<tr><td>${escapeHtml(p.charged_on||'Date not recorded')}</td><td>${escapeHtml(p.client_name||'-')}</td><td>${escapeHtml(p.loan_no||'-')}</td><td style="white-space:nowrap">${fmtMoney(p.penalty_amount)}</td><td>${p.is_waived?'Waived':'Applied'}</td><td>${escapeHtml(p.reason||'Rollover Penalty')}</td></tr>`).join('')||'<tr><td colspan="6" style="padding:16px;text-align:center">No penalty charges in this period</td></tr>'}
-    </tbody></table></div></div>`;
+    <details ${accountingPenaltyRows.length<=ACCOUNTING_PENALTY_PAGE_SIZE?'open':''}>
+      <summary style="cursor:pointer;font-weight:600;padding:8px 0">View penalty records (${accountingPenaltyRows.length})</summary>
+      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">Charges recorded in the selected period and branch. These amounts are already part of the loan balances; only penalties collected through repayments contribute to collected income.</p>
+      <div id="accountingPenaltyPage">${accountingPenaltyPageHtml(1)}</div>
+    </details></div>`;
 }
 function briptaBalanceSheet(accounts){
   const groups={asset:[],liability:[],equity:[]};let retained=0;
