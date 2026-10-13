@@ -39,13 +39,15 @@ const scopedContext=vm.createContext({
 });
 vm.runInContext(between('function isBriptaOfficerOnly(','\nasync function fetchBriptaTableOptimized('),scopedContext);
 
+let releaseLoans;
+const loansReady=new Promise(resolve=>{releaseLoans=resolve});
 const stagedContext=vm.createContext({
   cachedData:{},hasRole:(...roles)=>roles.includes('loan_officer'),
   isBriptaOfficerOnly:()=>true,
   fetchBriptaTableOptimized:async table=>{
-    if(table==='loan_repayments')assert.equal(stagedContext.cachedData.loans.length,1,
-      'load visible loans before requesting their repayments');
-    return{data:table==='loans'?[{id:'loan-1'}]:[],error:null};
+    if(table==='loans')await loansReady;
+    if(table==='loan_repayments')releaseLoans();
+    return{data:table==='loans'?[{id:'loan-1'}]:[{id:'payment-1',loan_id:'loan-1'}],error:null};
   },BRIPTA_CACHE_MAP:{loans:'loans',loan_repayments:'repayments'}
 });
 vm.runInContext(between('function hydrateBriptaRelations(','\nasync function refreshBriptaReports('),stagedContext);
@@ -81,6 +83,8 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(wrongSession.data.length,0);
   assert.match(wrongSession.error.message,/sign out/);
   await stagedContext.loadBriptaTables(['loans','loan_repayments']);
+  assert.equal(stagedContext.cachedData.repayments[0].loans.id,'loan-1',
+    'independent reads run concurrently, then hydrate payments against the completed loan read');
   const repaymentMain={innerHTML:''};
   const repaymentContext=vm.createContext({
     $:()=>repaymentMain,

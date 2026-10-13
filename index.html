@@ -564,8 +564,9 @@ function hydrateBriptaRelations(){
 }
 async function loadBriptaTables(tables,{force=false}={}){
   const uniqueTables = [...new Set(tables)];
-  const officerRepayments=isBriptaOfficerOnly()&&uniqueTables.includes('loan_repayments');
-  const firstTables=officerRepayments?uniqueTables.filter(t=>t!=='loan_repayments'):uniqueTables;
+  // The portfolio RPC authorizes each table independently; repayments need not
+  // wait for the client's loan cache. Hydrate relationships after every read ends.
+  const firstTables=uniqueTables;
   const firstResults=await Promise.all(firstTables.map(t=>fetchBriptaTableOptimized(t,force)));
   firstResults.forEach((res,i)=>{
     const table = firstTables[i];
@@ -573,11 +574,6 @@ async function loadBriptaTables(tables,{force=false}={}){
     const key = BRIPTA_CACHE_MAP[table] || table;
     cachedData[key] = res.data || [];
   });
-  if(officerRepayments){
-    const result=await fetchBriptaTableOptimized('loan_repayments',force);
-    if(result.error)throw new Error(`loan_repayments: ${result.error.message||result.error}`);
-    cachedData.repayments=result.data||[];
-  }
   hydrateBriptaRelations();
   return cachedData;
 }
@@ -705,9 +701,10 @@ function kenyaDateISO(value=new Date()){
     if(/^\d{4}-\d{2}-\d{2}[T ]/.test(raw)&&!/(Z|[+-]\d{2}:?\d{2})$/.test(raw)) return raw.slice(0,10);
     const dt=value instanceof Date?value:new Date(value);
     if(isNaN(dt)) return raw.slice(0,10);
-    const parts=new Intl.DateTimeFormat('en-CA',{
+    const formatter=kenyaDateISO.formatter||(kenyaDateISO.formatter=new Intl.DateTimeFormat('en-CA',{
       timeZone:'Africa/Nairobi',year:'numeric',month:'2-digit',day:'2-digit'
-    }).formatToParts(dt);
+    }));
+    const parts=formatter.formatToParts(dt);
     const pick=type=>parts.find(part=>part.type===type)?.value;
     return `${pick('year')}-${pick('month')}-${pick('day')}`;
 }
@@ -6446,6 +6443,8 @@ async function renderOfficerPerformance(){
     const allStaff=cachedData.staff||[];
 
     const performanceState=BriptaReporting.allocatedSchedules(allLoans,cachedData.schedules||[],allReps,today(),repaymentBusinessDate);
+    // Calculate each loan's quality once, then aggregate the same results per officer.
+    const portfolioQuality=BriptaReporting.portfolioQuality(allLoans,performanceState.schedules,today());
     // Filter to staff who have the loan_officer role ONLY.
     // Admins/branch managers should not appear in officer performance —
     // clients should always be attributed to a loan officer, never to admin.
@@ -6461,7 +6460,7 @@ async function renderOfficerPerformance(){
     const rows = filteredOfficers.map(o=>{
       // Match loans where loan_officer_id === o.id (also include apps later)
       const oLoans = allLoans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id);
-      const quality=BriptaReporting.portfolioQuality(oLoans,performanceState.schedules,today());
+      const quality=BriptaReporting.qualityTotals(portfolioQuality.active.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id));
       const oActive = quality.active;
       const oApps = allApps.filter(a=>canonicalLoanOfficerId(a.loan_officer_id)===o.id);
       const oAppsMonth = oApps.filter(a=>a.created_at && a.created_at.startsWith(nowM));
