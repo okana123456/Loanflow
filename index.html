@@ -6771,11 +6771,11 @@ async function renderSmsCenter(page=1){
         ${rows.length?rows.map(r=>`<tr><td>${fmtDateTime(r.queued_at)}</td><td>${smsKindLabel(r)}</td><td><strong>${escapeHtml(r.client_name||'-')}</strong></td><td>${escapeHtml(r.recipient||'-')}</td><td style="min-width:260px;white-space:normal">${escapeHtml(r.message||'Waiting for final message')}</td><td>${Number(r.segments||0)||'-'}</td><td>${smsStatusBadge(r.status)}</td><td style="font-size:11px;color:var(--text-secondary);white-space:normal">${escapeHtml(r.last_error||r.provider_uid||'-')}</td></tr>`).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:18px">No SMS records in this period</td></tr>'}
       </tbody></table></div></div>
       ${smsPageHtml(safePage,totalPages,totalMessages,pageSize)}
-      <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Bundle history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Payment Reference</th><th>Note</th></tr></thead><tbody>
-        ${(topups||[]).length?(topups||[]).map(t=>`<tr><td>${fmtDateTime(t.created_at)}</td><td><strong>${Number(t.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(t.customer_reference||'-')}</td><td>${escapeHtml(t.note||'-')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No SMS bundles purchased yet</td></tr>'}
+      <div class="card"><h3 style="font-size:14px;margin-bottom:10px">Bundle history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Amount Paid</th><th>Payment Reference</th><th>Note</th></tr></thead><tbody>
+        ${(topups||[]).length?(topups||[]).map(t=>`<tr><td>${fmtDateTime(t.created_at)}</td><td><strong>${Number(t.credits||0).toLocaleString()}</strong></td><td>${t.customer_amount_paid==null?'-':`KES ${Number(t.customer_amount_paid).toLocaleString('en-KE',{minimumFractionDigits:2,maximumFractionDigits:2})}`}</td><td>${escapeHtml(t.customer_reference||'-')}</td><td>${escapeHtml(t.note||'-')}</td></tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No SMS bundles purchased yet</td></tr>'}
       </tbody></table></div></div>
-      <div class="card" style="margin-top:18px"><h3 style="font-size:14px;margin-bottom:10px">Bundle requests</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Phone</th><th>Status</th></tr></thead><tbody>
-        ${(requests||[]).length?(requests||[]).map(r=>`<tr><td>${fmtDateTime(r.created_at)}</td><td><strong>${Number(r.credits||0).toLocaleString()}</strong></td><td>${escapeHtml(r.phone||'-')}</td><td>${smsStatusBadge(r.status||'pending')}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">No bundle requests yet</td></tr>'}
+      <div class="card" style="margin-top:18px"><h3 style="font-size:14px;margin-bottom:10px">Bundle requests</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Credits</th><th>Amount Requested</th><th>Phone</th><th>Status</th></tr></thead><tbody>
+        ${(requests||[]).length?(requests||[]).map(r=>`<tr><td>${fmtDateTime(r.created_at)}</td><td><strong>${Number(r.credits||0).toLocaleString()}</strong></td><td>${r.amount==null?'-':`KES ${Number(r.amount).toLocaleString('en-KE',{minimumFractionDigits:2,maximumFractionDigits:2})}`}</td><td>${escapeHtml(r.phone||'-')}</td><td>${smsStatusBadge(r.status||'pending')}</td></tr>`).join(''):'<tr><td colspan="5" style="text-align:center;color:var(--text-secondary)">No bundle requests yet</td></tr>'}
       </tbody></table></div></div>`;
   }catch(error){
     main.innerHTML=`<div class="empty-state"><h3>SMS Centre is not ready</h3><p>${escapeHtml(error.message||'Run the Bripta TalkSasa SMS wallet SQL setup.')}</p></div>`;
@@ -6858,17 +6858,17 @@ async function sendSmsTest(btn){
 function openSmsBundleRequest(){
   openModal(`
     <h2>Buy SMS Bundle</h2>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose SMS credits and send an M-Pesa prompt to the payment phone.</p>
-    <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty" onchange="updateSmsBundleAmount()"><option value="50">50 SMS - KES 35</option><option value="100">100 SMS - KES 70</option><option value="200">200 SMS - KES 140</option><option value="500">500 SMS - KES 350</option><option value="1000">1,000 SMS - KES 700</option><option value="2500">2,500 SMS - KES 1,750</option><option value="5000">5,000 SMS - KES 3,500</option><option value="10000">10,000 SMS - KES 7,000</option></select></div>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Choose SMS credits at KES 0.55 each and send an M-Pesa prompt to the payment phone.</p>
+    <div class="form-group"><label>SMS credits</label><select class="select" id="smsBundleQty" onchange="updateSmsBundleAmount()"><option value="100">100 SMS - KES 55</option><option value="200">200 SMS - KES 110</option><option value="500">500 SMS - KES 275</option><option value="1000">1,000 SMS - KES 550</option><option value="2500">2,500 SMS - KES 1,375</option><option value="5000">5,000 SMS - KES 2,750</option><option value="10000">10,000 SMS - KES 5,500</option></select></div>
     <div class="form-group"><label>Payment phone</label><input class="input" id="smsBundlePhone" placeholder="07XXXXXXXX" inputmode="tel"></div>
-    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">Amount to pay: <strong id="smsBundleAmount">KES 35</strong></div>
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">Amount to pay: <strong id="smsBundleAmount">KES 55</strong></div>
     <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="startSmsBundlePayment(this)">Send M-Pesa Prompt</button></div>
   `);
 }
 
 function updateSmsBundleAmount(){
-  const credits=Number(document.getElementById('smsBundleQty')?.value||50);
-  const amount=Math.ceil(credits*0.7);
+  const credits=Number(document.getElementById('smsBundleQty')?.value||100);
+  const amount=credits*55/100;
   const el=document.getElementById('smsBundleAmount');
   if(el)el.textContent=`KES ${amount.toLocaleString('en-KE')}`;
 }
@@ -6884,7 +6884,7 @@ async function startSmsBundlePayment(btn){
     });
     if(error)throw error;
     if(!data?.ok)throw new Error(data?.message||'M-Pesa prompt failed');
-    toast(data.message||'M-Pesa prompt sent. Complete it on the phone.','success');
+    toast(`M-Pesa prompt sent for KES ${Number(data.amount).toLocaleString('en-KE')} (${credits.toLocaleString('en-KE')} SMS). Complete it on the phone.`,'success');
     closeModal();
     renderSmsCenter();
   }catch(error){

@@ -42,14 +42,14 @@ serve(async (req) => {
       return json({ ok: false, message: "Enter a valid Safaricom phone number." }, 400);
     }
 
-    const allowedCredits = new Set([50, 100, 200, 500, 1000, 2500, 5000, 10000]);
+    const allowedCredits = new Set([100, 200, 500, 1000, 2500, 5000, 10000]);
     const credits = Number(body.credits || 0);
     if (!allowedCredits.has(credits)) {
       return json({ ok: false, message: "Choose a valid SMS bundle." }, 400);
     }
 
-    const unitPrice = Number(Deno.env.get("BRIPTA_SMS_RETAIL_PRICE") || "0.7");
-    const amount = Math.max(1, Math.ceil(credits * unitPrice));
+    // M-Pesa STK amounts are whole shillings. These bundles price exactly at KES 0.55/SMS.
+    const amount = credits * 55 / 100;
 
     const supabaseUrl = Deno.env.get("PATAFIX_PROJECT_URL") || Deno.env.get("SUPABASE_URL") || "";
     const serviceKey = Deno.env.get("PATAFIX_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
