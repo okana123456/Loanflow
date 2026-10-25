@@ -36,8 +36,8 @@ function billingMonth() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-function billingAmount(month = billingMonth()) {
-  return month >= "2026-11-01" ? 7500 : 3000;
+function billingAmount(month: string, businessId: string) {
+  return month >= "2026-11-01" ? (businessId === "BIZ-B3F5E5D9" ? 6500 : 7500) : 3000;
 }
 
 serve(async (req) => {
@@ -98,7 +98,7 @@ serve(async (req) => {
 
     // Server-authoritative effective date. Environment values cannot charge the
     // November price during an earlier billing cycle.
-    const amount = billingAmount();
+    const amount = billingAmount(billingMonth(), staff.business_id);
     const shortcode = env("SERVICE_SHORTCODE");
     const consumerKey = env("SERVICE_CONSUMER_KEY");
     const consumerSecret = env("SERVICE_CONSUMER_SECRET");

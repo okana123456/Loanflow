@@ -355,7 +355,7 @@ let branchList = [];
 let selectedBranchId = null;
 let currentPermissions = {};
 function serviceBillingAmount(month=serviceBillingMonth()){
-  return month >= '2026-11-01' ? 7500 : 3000;
+  return month >= '2026-11-01' ? (currentUser?.business_id==='BIZ-B3F5E5D9'?6500:7500) : 3000;
 }
 const SERVICE_BILLING_FIRST_REMINDER_DATE = '2026-08-02';
 const SERVICE_BILLING_REMINDER_DAY = 2;

@@ -1,5 +1,11 @@
 # Bripta multi-branch finance upgrade deployment
 
+**Pricing update (25 October 2026):** After this original upgrade, run
+`bripta-subscription-6500-20261025.sql` and deploy the corresponding updated
+frontend and three subscription Edge Functions. Bripta's November 2026 onward
+rate is KES 6,500. The KES 7,500 figures below describe the original upgrade
+and remain the rate for other businesses in the shared project.
+
 This release is scoped to Supabase project `nngscmpsxtqqjzcnsrbi`. It discovers all populated business scopes in this project; legacy rows with no business identifier use the neutral `SYSTEM` scope.
 
 ## Deployment order

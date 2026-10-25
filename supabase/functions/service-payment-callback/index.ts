@@ -21,8 +21,8 @@ function nextPaidUntil(billingMonth: string) {
   return d.toISOString().slice(0, 10);
 }
 
-function billingAmount(month: string) {
-  return String(month).slice(0, 10) >= "2026-11-01" ? 7500 : 3000;
+function billingAmount(month: string, businessId: string) {
+  return String(month).slice(0, 10) >= "2026-11-01" ? (businessId === "BIZ-B3F5E5D9" ? 6500 : 7500) : 3000;
 }
 
 function metaValue(items: Array<{ Name?: string; Value?: unknown }>, name: string) {
@@ -95,7 +95,7 @@ Deno.serve(async (req) => {
       return callbackResponse();
     }
 
-    const requiredAmount = billingAmount(cycle.billing_month);
+    const requiredAmount = billingAmount(cycle.billing_month, cycle.business_id);
     if (paid && paidAmount < requiredAmount) {
       paid = false;
       console.error("Subscription callback amount below required billing amount", { paidAmount, requiredAmount, billing_month: cycle.billing_month });
