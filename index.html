@@ -402,7 +402,7 @@ const BRIPTA_CACHE_VERSION = 6;
 // The October access-policy repairs made previously hidden portfolio rows
 // visible. Rebuild only these read caches once; incremental updates cannot
 // discover older rows that were absent from a user's earlier RLS snapshot.
-const BRIPTA_PORTFOLIO_CACHE_REVISION = 5;
+const BRIPTA_PORTFOLIO_CACHE_REVISION = 6;
 const BRIPTA_PORTFOLIO_TABLES = new Set(['loan_clients','loans','loan_schedules','loan_repayments','loan_staff']);
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
@@ -2137,7 +2137,7 @@ function hasPermission(name){
 async function loadBranchContext(){
   if(!currentUser?.business_id)return;
   const[{data:branches},{data:permission}]=await Promise.all([
-    sb('bripta_branches').select('*').order('name'),
+    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
     sb('bripta_staff_permissions').select('*').eq('staff_id',currentUser.id).maybeSingle()
   ]);
   branchList=branches||[]; currentPermissions=permission||{};
@@ -3081,7 +3081,11 @@ async function submitApplication(){
       }
     }
     appOfficerId=await assignedLoanOfficerForClient(selectedClientId,[appOfficerId]);
-    const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:appOfficerId,business_id:currentUser?.business_id,loan_type:loanType};
+    const {data:applicationClient,error:applicationClientError}=await sb('loan_clients')
+      .select('branch_id').eq('id',selectedClientId).eq('business_id',currentUser.business_id).single();
+    if(applicationClientError)throw applicationClientError;
+    if(!applicationClient?.branch_id)throw new Error('Assign this client to a branch before submitting an application.');
+    const rec={application_no:appNo,client_id:selectedClientId,applied_amount:amt,applied_term_weeks:Number($('#appTerm').value),purpose:$('#appPurpose').value,status:'submitted',loan_officer_id:appOfficerId,business_id:currentUser?.business_id,branch_id:applicationClient.branch_id,loan_type:loanType};
     
     // Robust auto-tier → product mapping (case-insensitive, trims, fallbacks)
     const tier=getAutoTier(amt);
@@ -3228,7 +3232,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
   if(btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
   try{
     const {data: appCheck,error:appCheckErr} = await sb('loan_applications')
-      .select('status,client_id,business_id,applied_term_weeks')
+      .select('status,client_id,business_id,branch_id,applied_term_weeks')
       .eq('id',appId)
       .eq('business_id',currentUser?.business_id)
       .single();
@@ -3312,8 +3316,17 @@ async function confirmDisburse(appId,clientId,termWeeks){
       disbOfficerId = canonicalLoanOfficerId(prevLoans[0].loan_officer_id);
     }
     disbOfficerId=await assignedLoanOfficerForClient(clientId,[disbOfficerId]);
+    const {data:disbClient,error:disbClientError}=await sb('loan_clients')
+      .select('branch_id').eq('id',clientId).eq('business_id',currentUser.business_id).single();
+    if(disbClientError)throw disbClientError;
+    if(!disbClient?.branch_id)throw new Error('Assign this client to a branch before disbursement.');
+    if(appCheck.branch_id!==disbClient.branch_id){
+      const {error:branchError}=await sb('loan_applications')
+        .update({branch_id:disbClient.branch_id}).eq('id',appId).eq('business_id',currentUser.business_id);
+      if(branchError)throw branchError;
+    }
     // Full principal is disbursed; automatic fee diversion is disabled.
-    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:0,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,loan_type:disbLoanType};
+    const loanRec={loan_no:loanNo,application_id:appId,client_id:clientId,loan_officer_id:disbOfficerId,principal_amount:amt,interest_rate:rate,interest_type:'flat',term_weeks:term,processing_fee:procFee,processing_fee_paid:0,registration_fee_due:0,registration_fee_paid:0,total_interest:c.totalInterest,total_payable:c.totalPayable,weekly_installment:c.weekly,disbursed_amount:amt,disbursement_method:$('#dMethod').value,disbursement_reference:$('#dRef').value,disbursement_date:disbDate,first_repayment_date:firstRep,maturity_date:localISODate(maturity),status:'active',outstanding_balance:c.totalPayable,total_paid:0,arrears_amount:0,overdue_days:0,business_id:currentUser?.business_id,branch_id:disbClient.branch_id,loan_type:disbLoanType};
 
     // Guard: if loan_type column doesn't exist yet in DB, retry without it
     let{data:loan,error:lErr}=await sb('loans').insert(loanRec).select().single();
@@ -3328,13 +3341,13 @@ async function confirmDisburse(appId,clientId,termWeeks){
     // Future-only charge ledger. These charges never alter the loan balance
     // and repayments are never silently diverted to them.
     const futureCharges=[{
-      business_id:currentUser.business_id,client_id:clientId,loan_id:loan.id,
+      business_id:currentUser.business_id,branch_id:loan.branch_id,client_id:clientId,loan_id:loan.id,
       charge_type:'processing_fee',description:`Processing fee for loan ${loanNo}`,
       amount:procFee,amount_paid:0,status:'pending',source:'system',
       charge_date:disbDate,created_by:currentUser.id
     }];
     if(regFee>0)futureCharges.push({
-      business_id:currentUser.business_id,client_id:clientId,loan_id:loan.id,
+      business_id:currentUser.business_id,branch_id:loan.branch_id,client_id:clientId,loan_id:loan.id,
       charge_type:'registration_fee',description:'New client registration fee',
       amount:regFee,amount_paid:0,status:'pending',source:'system',
       charge_date:disbDate,created_by:currentUser.id
@@ -3347,7 +3360,7 @@ async function confirmDisburse(appId,clientId,termWeeks){
 
     const schedules=c.schedule.map((s,i)=>{
       const due=parseLocalDate(firstRep);due.setDate(due.getDate()+i*7);
-      return{loan_id:loan.id,business_id:currentUser?.business_id,installment_no:s.no,due_date:localISODate(due),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
+      return{loan_id:loan.id,business_id:currentUser?.business_id,branch_id:loan.branch_id,installment_no:s.no,due_date:localISODate(due),principal_due:s.principal,interest_due:s.interest,total_due:s.total,principal_paid:0,interest_paid:0,total_paid:0,penalty_charged:0,status:'pending'};
     });
     
     const{error:sErr}=await sb('loan_schedules').insert(schedules);
@@ -7130,7 +7143,7 @@ async function renderBranches(){
   if(!hasRole('admin')&&!hasPermission('manage_branches'))return toast('Branch management permission required','warning');
   const main=$('#mainContent');
   const[{data:branches},{data:staff},{data:clients}]=await Promise.all([
-    sb('bripta_branches').select('*').order('name'),
+    sb('bripta_branches').select('*').eq('business_id',currentUser.business_id).order('name'),
     sb('loan_staff').select('id,branch_id').eq('business_id',BRIPTA_BUSINESS_ID),
     sb('loan_clients').select('id,branch_id').eq('business_id',BRIPTA_BUSINESS_ID)
   ]);
@@ -7139,8 +7152,8 @@ async function renderBranches(){
   <div class="table-wrap"><table><thead><tr><th>Code</th><th>Branch</th><th>Contact</th><th>Staff</th><th>Clients</th><th>Status</th><th>Actions</th></tr></thead><tbody>${branchList.map(b=>`<tr><td><strong>${escapeHtml(b.code)}</strong></td><td>${escapeHtml(b.name)} ${b.is_head_office?'<span class="badge badge-yellow">Head Office</span>':''}<div style="color:var(--text-secondary)">${escapeHtml(b.address||'')}</div></td><td>${escapeHtml(b.phone||b.email||'-')}</td><td>${(staff||[]).filter(x=>x.branch_id===b.id).length}</td><td>${(clients||[]).filter(x=>x.branch_id===b.id).length}</td><td><span class="badge ${b.is_active?'badge-green':'badge-gray'}">${b.is_active?'Active':'Inactive'}</span></td><td><button class="btn btn-outline btn-sm" onclick='openBranchModal(${JSON.stringify(b).replace(/'/g,"&#39;")})'>Edit</button> ${!b.is_head_office?`<button class="btn btn-outline btn-sm" onclick="toggleBranch('${b.id}',${!b.is_active})">${b.is_active?'Deactivate':'Activate'}</button>`:''}</td></tr>`).join('')}</tbody></table></div>`;
 }
 function openBranchModal(b={}){openModal(`<h2>${b.id?'Edit':'Add'} Branch</h2><div class="form-row"><div class="form-group"><label>Code</label><input class="input" id="brCode" value="${escapeHtml(b.code||'')}"></div><div class="form-group"><label>Name</label><input class="input" id="brName" value="${escapeHtml(b.name||'')}"></div></div><div class="form-group"><label>Address</label><input class="input" id="brAddress" value="${escapeHtml(b.address||'')}"></div><div class="form-row"><div class="form-group"><label>Phone</label><input class="input" id="brPhone" value="${escapeHtml(b.phone||'')}"></div><div class="form-group"><label>Email</label><input class="input" id="brEmail" value="${escapeHtml(b.email||'')}"></div></div><div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveBranch('${b.id||''}')">Save</button></div>`)}
-async function saveBranch(id){const rec={business_id:currentUser.business_id,code:$('#brCode').value.trim().toUpperCase(),name:$('#brName').value.trim(),address:$('#brAddress').value.trim()||null,phone:$('#brPhone').value.trim()||null,email:$('#brEmail').value.trim()||null,updated_at:new Date().toISOString()};if(!rec.code||!rec.name)return toast('Code and name are required','warning');const q=id?sb('bripta_branches').update(rec).eq('id',id):sb('bripta_branches').insert({...rec,created_by:currentUser.id});const{error}=await q;if(error)return toast(error.message,'error');await audit(id?'branch_updated':'branch_created','bripta_branches',id||null,null,rec);closeModal();await loadBranchContext();renderBranches()}
-async function toggleBranch(id,active){const{error}=await sb('bripta_branches').update({is_active:active,updated_at:new Date().toISOString()}).eq('id',id).eq('is_head_office',false);if(error)return toast(error.message,'error');await audit(active?'branch_activated':'branch_deactivated','bripta_branches',id,null,{is_active:active});await loadBranchContext();renderBranches()}
+async function saveBranch(id){const rec={business_id:currentUser.business_id,code:$('#brCode').value.trim().toUpperCase(),name:$('#brName').value.trim(),address:$('#brAddress').value.trim()||null,phone:$('#brPhone').value.trim()||null,email:$('#brEmail').value.trim()||null,updated_at:new Date().toISOString()};if(!rec.code||!rec.name)return toast('Code and name are required','warning');const q=id?sb('bripta_branches').update(rec).eq('id',id).eq('business_id',currentUser.business_id):sb('bripta_branches').insert({...rec,created_by:currentUser.id});const{error}=await q;if(error)return toast(error.message,'error');await audit(id?'branch_updated':'branch_created','bripta_branches',id||null,null,rec);closeModal();await loadBranchContext();renderBranches()}
+async function toggleBranch(id,active){const{error}=await sb('bripta_branches').update({is_active:active,updated_at:new Date().toISOString()}).eq('id',id).eq('business_id',currentUser.business_id).eq('is_head_office',false);if(error)return toast(error.message,'error');await audit(active?'branch_activated':'branch_deactivated','bripta_branches',id,null,{is_active:active});await loadBranchContext();renderBranches()}
 
 async function renderExpenses(){
   const main=$('#mainContent');if(!hasPermission('view_expenses')&&!hasRole('branch_manager','admin','cashier'))return toast('Expense access required','warning');
@@ -7216,7 +7229,7 @@ function openAddStaffModal(s){
       <div class="form-group"><label>Active</label><select class="select" id="stActive"><option value="true" ${s.is_active!==false?'selected':''}>Yes</option><option value="false" ${s.is_active===false?'selected':''}>No</option></select></div>
     </div>
     <div class="form-group"><label>Explicit Permissions</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--bg-dark);padding:10px;border:1px solid var(--border);border-radius:8px">${[['view_accounting','View accounting'],['view_expenses','View expenses'],['initiate_expenses','Initiate expenses'],['approve_expenses','Approve expenses'],['manage_assets','Manage assets'],['manage_branches','Manage branches'],['transfer_portfolios','Transfer portfolios'],['adjust_charges_excess','Adjust Charges & Excess']].map(([k,l])=>`<label><input type="checkbox" class="st-perm-cb" value="${k}" ${s.bripta_staff_permissions?.[0]?.[k]?'checked':''}> ${l}</label>`).join('')}</div></div>
-    ${s.id?'<label style="display:flex;gap:7px;align-items:center;margin:10px 0"><input type="checkbox" id="stMovePortfolio"> Move this officer’s entire portfolio to the selected branch</label>':''}
+    ${s.id?'<p style="font-size:12px;color:var(--text-secondary)">Changing a staff member’s branch keeps existing client and loan records in their original branches. Transfer selected clients separately from the Clients tab.</p>':''}
     
     ${!s.id ? `
     <div class="form-group">
@@ -7288,17 +7301,21 @@ async function saveStaff(id){
     const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value||null};
     
     if(id){
-      await sb('loan_staff').update(rec).eq('id',id);
+      const {error:staffError}=await sb('loan_staff').update(rec).eq('id',id).eq('business_id',currentUser.business_id).select('id').single();
+      if(staffError)throw staffError;
     }else{
       rec.business_id=currentUser?.business_id;
       if (authUserId) rec.auth_user_id = authUserId;
-      await sb('loan_staff').insert(rec);
+      const {error:staffError}=await sb('loan_staff').insert(rec);
+      if(staffError)throw staffError;
     }
     const staffId=id||((await sb('loan_staff').select('id').eq('business_id',currentUser.business_id).eq('email',email).maybeSingle()).data?.id);
     const perms={staff_id:staffId,business_id:currentUser.business_id,branch_id:rec.branch_id,updated_by:currentUser.id,updated_at:new Date().toISOString()};
     ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>perms[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
-    if(staffId)await sb('bripta_staff_permissions').upsert(perms,{onConflict:'staff_id'});
-    if(id&&document.getElementById('stMovePortfolio')?.checked)await supabaseClient.rpc('bripta_transfer_portfolio',{p_from:id,p_to:id,p_client_ids:null,p_move_all:true});
+    if(staffId){
+      const {error:permissionError}=await sb('bripta_staff_permissions').upsert(perms,{onConflict:'staff_id'});
+      if(permissionError)throw permissionError;
+    }
     await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email:rec.email});
     toast('Staff saved successfully','success');closeModal();renderStaff();
   }catch(e){
