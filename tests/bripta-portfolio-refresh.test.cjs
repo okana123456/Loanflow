@@ -11,11 +11,18 @@ const between=(start,end)=>{
 let calls=0;
 let written=null;
 const memory={repayments:[{id:'old',amount:10}]};
+const keyContext=vm.createContext({
+  selectedBranchId:'migori',currentUser:{id:'admin',business_id:'BIZ-B3F5E5D9'},
+  BRIPTA_PORTFOLIO_TABLES:new Set(['loans']),BRIPTA_PORTFOLIO_CACHE_REVISION:7,BRIPTA_CACHE_VERSION:6
+});
+vm.runInContext(between('function briptaCacheKey(','\nasync function readBriptaCache('),keyContext);
+assert.match(keyContext.briptaCacheKey('loans','mbita'),/:mbita:loans:/,
+  'a completed request must retain its original branch cache key after the selector changes');
 const cacheContext=vm.createContext({
   BRIPTA_MIN_SYNC_MS:60000,BRIPTA_FULL_SYNC_MS:90*86400000,BRIPTA_SYNC_OVERLAP_MS:300000,
   BRIPTA_BRANCH_OWNERSHIP_SYNC_MS:600000,BRIPTA_BRANCH_OWNERSHIP_TABLES:new Set(['loan_clients','loans','loan_applications','loan_staff']),
   briptaBranchOwnershipRefreshPending:false,
-  BRIPTA_CACHE_MAP:{loan_repayments:'repayments'},cachedData:memory,
+  BRIPTA_CACHE_MAP:{loan_repayments:'repayments'},cachedData:memory,selectedBranchId:null,
   readBriptaCache:async()=>({rows:[],savedAt:Date.now(),fullSyncAt:Date.now()}),
   fetchPagedBusinessRows:async(_table,configureQuery)=>{
     calls++;
@@ -44,7 +51,7 @@ vm.runInContext(between('function isBriptaOfficerOnly(','\nasync function fetchB
 let releaseLoans;
 const loansReady=new Promise(resolve=>{releaseLoans=resolve});
 const stagedContext=vm.createContext({
-  cachedData:{},hasRole:(...roles)=>roles.includes('loan_officer'),
+  cachedData:{},selectedBranchId:null,currentUser:{id:'officer-1'},hasRole:(...roles)=>roles.includes('loan_officer'),
   isBriptaOfficerOnly:()=>true,
   fetchBriptaTableOptimized:async table=>{
     if(table==='loans')await loansReady;
@@ -96,6 +103,20 @@ officerContext.branchName=id=>id==='migori'?'Migori':'Mbita';
   await stagedContext.loadBriptaTables(['loans','loan_repayments']);
   assert.equal(stagedContext.cachedData.repayments[0].loans.id,'loan-1',
     'independent reads run concurrently, then hydrate payments against the completed loan read');
+  const branchContext=vm.createContext({
+    selectedBranchId:'mbita',currentUser:{id:'admin'},cachedData:{},
+    BRIPTA_CACHE_MAP:{loans:'loans',loan_repayments:'repayments'},
+    BRIPTA_BRANCH_OWNERSHIP_TABLES:new Set(['loans']),briptaBranchOwnershipRefreshPending:false,
+    fetchBriptaTableOptimized:async table=>({data:[
+      {id:`${table}-mbita`,branch_id:'mbita'},
+      {id:`${table}-migori`,branch_id:'migori'}
+    ],error:null})
+  });
+  vm.runInContext(between('function hydrateBriptaRelations(','\nasync function refreshBriptaReports('),branchContext);
+  await branchContext.loadBriptaTables(['loans','loan_repayments']);
+  assert.equal(branchContext.cachedData.loans.length,1);
+  assert.equal(branchContext.cachedData.repayments.length,1);
+  assert.equal(branchContext.cachedData.loans[0].branch_id,'mbita');
   const repaymentMain={innerHTML:''};
   const repaymentContext=vm.createContext({
     $:()=>repaymentMain,

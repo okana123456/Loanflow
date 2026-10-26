@@ -398,7 +398,7 @@ const BRIPTA_CACHE_VERSION = 6;
 // The October access-policy repairs made previously hidden portfolio rows
 // visible. Rebuild only these read caches once; incremental updates cannot
 // discover older rows that were absent from a user's earlier RLS snapshot.
-const BRIPTA_PORTFOLIO_CACHE_REVISION = 6;
+const BRIPTA_PORTFOLIO_CACHE_REVISION = 7;
 const BRIPTA_PORTFOLIO_TABLES = new Set(['loan_clients','loans','loan_schedules','loan_repayments','loan_staff']);
 const BRIPTA_BUSINESS_ID = 'BIZ-B3F5E5D9';
 const BRIPTA_FULL_SYNC_MS = 90 * 24 * 60 * 60 * 1000;
@@ -435,26 +435,26 @@ function openBriptaCache(){
     req.onerror = () => reject(req.error);
   });
 }
-function briptaCacheKey(table){
+function briptaCacheKey(table,branchId=selectedBranchId){
   const portfolioRevision=BRIPTA_PORTFOLIO_TABLES.has(table)?`:portfolio${BRIPTA_PORTFOLIO_CACHE_REVISION}`:'';
-  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${selectedBranchId||'all'}:${table}:v${BRIPTA_CACHE_VERSION}${portfolioRevision}`;
+  return `${currentUser?.business_id||'default'}:${currentUser?.id||'anonymous'}:${branchId||'all'}:${table}:v${BRIPTA_CACHE_VERSION}${portfolioRevision}`;
 }
-async function readBriptaCache(table){
+async function readBriptaCache(table,branchId=selectedBranchId){
   try{
     const db = await openBriptaCache();
     return await new Promise((resolve,reject)=>{
-      const req = db.transaction('tables','readonly').objectStore('tables').get(briptaCacheKey(table));
+      const req = db.transaction('tables','readonly').objectStore('tables').get(briptaCacheKey(table,branchId));
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
     });
   }catch(e){ return null; }
 }
-async function writeBriptaCache(table, rows, fullSyncAt){
+async function writeBriptaCache(table, rows, fullSyncAt,branchId=selectedBranchId){
   try{
     const db = await openBriptaCache();
     await new Promise((resolve,reject)=>{
       const req = db.transaction('tables','readwrite').objectStore('tables').put({
-        key: briptaCacheKey(table),
+        key: briptaCacheKey(table,branchId),
         rows: rows || [],
         fullSyncAt: fullSyncAt || Date.now(),
         savedAt: Date.now()
@@ -483,10 +483,12 @@ async function fetchPagedBusinessRows(table, configureQuery, columns='*'){
   const pageSize = 1000;
   const maxRows = 100000;
   const rows = [];
+  const branchId=selectedBranchId;
+  const smsCenterRequest=currentSection==='sms_center';
   for(let from=0; from<maxRows; from+=pageSize){
     let query = sb(table).select(columns).range(from, from + pageSize - 1);
     query = query.eq('business_id', BRIPTA_BUSINESS_ID);
-    if(selectedBranchId && table!=='loan_staff' && currentSection!=='sms_center') query = query.eq('branch_id', selectedBranchId);
+    if(branchId && table!=='loan_staff' && !smsCenterRequest) query = query.eq('branch_id', branchId);
     if(configureQuery) query = configureQuery(query);
     const {data,error} = await query;
     if(error) return {data: rows, error};
@@ -525,7 +527,8 @@ async function fetchBriptaPortfolioRows(table,configureQuery,since=null){
   return {data:[],error:{message:'Portfolio is too large to load completely. Contact your administrator.'}};
 }
 async function fetchBriptaTableOptimized(table,force=false){
-  const cached = await readBriptaCache(table);
+  const branchId=selectedBranchId;
+  const cached = await readBriptaCache(table,branchId);
   force=force||(briptaBranchOwnershipRefreshPending&&BRIPTA_BRANCH_OWNERSHIP_TABLES.has(table));
   const fullSyncMs=BRIPTA_BRANCH_OWNERSHIP_TABLES.has(table)?BRIPTA_BRANCH_OWNERSHIP_SYNC_MS:BRIPTA_FULL_SYNC_MS;
   const needsFull = force || !cached || !Array.isArray(cached.rows) || Date.now() - Number(cached.fullSyncAt || 0) >= fullSyncMs;
@@ -534,7 +537,7 @@ async function fetchBriptaTableOptimized(table,force=false){
   }
   if(needsFull){
     const result = await fetchBriptaPortfolioRows(table);
-    if(!result.error) await writeBriptaCache(table, result.data, Date.now());
+    if(!result.error) await writeBriptaCache(table, result.data, Date.now(),branchId);
     return result;
   }
   const cursor = new Date(Math.max(0, Number(cached.savedAt || 0) - BRIPTA_SYNC_OVERLAP_MS)).toISOString();
@@ -544,7 +547,7 @@ async function fetchBriptaTableOptimized(table,force=false){
       result=await fetchBriptaPortfolioRows(table,q=>q.gte('created_at',cursor).order('created_at',{ascending:false}),cursor);
     }else{
       result=await fetchBriptaPortfolioRows(table);
-      if(!result.error) await writeBriptaCache(table,result.data,Date.now());
+      if(!result.error) await writeBriptaCache(table,result.data,Date.now(),branchId);
       return result;
     }
   }
@@ -552,7 +555,7 @@ async function fetchBriptaTableOptimized(table,force=false){
   const merged = new Map((cached.rows || []).filter(r=>r?.id).map(r=>[r.id,r]));
   (result.data || []).filter(r=>r?.id).forEach(r=>merged.set(r.id,r));
   const rows = [...merged.values()];
-  await writeBriptaCache(table, rows, cached.fullSyncAt);
+  await writeBriptaCache(table, rows, cached.fullSyncAt,branchId);
   return {data: rows, error: null, fromCache: true};
 }
 function hydrateBriptaRelations(){
@@ -568,15 +571,22 @@ function hydrateBriptaRelations(){
 }
 async function loadBriptaTables(tables,{force=false}={}){
   const uniqueTables = [...new Set(tables)];
+  const branchAtStart=selectedBranchId;
+  const userAtStart=currentUser?.id;
   // The portfolio RPC authorizes each table independently; repayments need not
   // wait for the client's loan cache. Hydrate relationships after every read ends.
   const firstTables=uniqueTables;
   const firstResults=await Promise.all(firstTables.map(t=>fetchBriptaTableOptimized(t,force)));
+  if(branchAtStart!==selectedBranchId||userAtStart!==currentUser?.id)
+    throw new Error('Branch changed while loading. Please retry this view.');
   firstResults.forEach((res,i)=>{
     const table = firstTables[i];
     if(res.error) throw new Error(`${table}: ${res.error.message||res.error}`);
     const key = BRIPTA_CACHE_MAP[table] || table;
-    cachedData[key] = res.data || [];
+    // Never show rows from an old all-branch snapshot under a selected branch.
+    cachedData[key] = branchAtStart&&table!=='loan_staff'
+      ? (res.data||[]).filter(row=>row.branch_id===branchAtStart)
+      : res.data||[];
   });
   if(uniqueTables.some(t=>BRIPTA_BRANCH_OWNERSHIP_TABLES.has(t)))briptaBranchOwnershipRefreshPending=false;
   hydrateBriptaRelations();
