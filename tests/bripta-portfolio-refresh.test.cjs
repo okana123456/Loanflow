@@ -77,6 +77,15 @@ officerContext.branchName=id=>id==='migori'?'Migori':'Mbita';
   const reconciled=await cacheContext.fetchBriptaTableOptimized('loan_clients');
   assert.equal(calls,2,'an old branch ownership snapshot must be fully reconciled even when recently read');
   assert.equal(reconciled.data[0].id,'visible-after-policy-repair');
+  cacheContext.readBriptaCache=async()=>({rows:[{id:'old-payment'}],savedAt:Date.now()-120000,fullSyncAt:Date.now()});
+  let repaymentDeltaColumn=null;
+  cacheContext.fetchBriptaPortfolioRows=async(_table,configureQuery)=>{
+    configureQuery({gte:(column)=>{repaymentDeltaColumn=column;return{order:()=>({})}}});
+    return{data:[{id:'new-payment'}],error:null};
+  };
+  const paymentDelta=await cacheContext.fetchBriptaTableOptimized('loan_repayments');
+  assert.equal(repaymentDeltaColumn,'created_at','repayments must not trigger a full history reload after one minute');
+  assert.equal(paymentDelta.data.length,2);
   await cacheContext.upsertBriptaCachedRows('loan_repayments',[{id:'new',amount:50}]);
   assert.equal(memory.repayments.find(row=>row.id==='new').amount,50);
   assert.equal(written.find(row=>row.id==='new').amount,50,

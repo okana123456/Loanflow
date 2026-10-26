@@ -443,8 +443,19 @@ async function readBriptaCache(table,branchId=selectedBranchId){
   try{
     const db = await openBriptaCache();
     return await new Promise((resolve,reject)=>{
-      const req = db.transaction('tables','readonly').objectStore('tables').get(briptaCacheKey(table,branchId));
-      req.onsuccess = () => resolve(req.result || null);
+      const store=db.transaction('tables','readonly').objectStore('tables');
+      const req = store.get(briptaCacheKey(table,branchId));
+      req.onsuccess = () => {
+        if(req.result||branchId||!['loan_repayments','loan_schedules'].includes(table)){
+          resolve(req.result||null);return;
+        }
+        // These large All Branches snapshots were safe before the ownership
+        // cache reset. Reuse them once instead of downloading all history.
+        const oldKey=briptaCacheKey(table,branchId).replace(':portfolio7',':portfolio6');
+        const oldReq=store.get(oldKey);
+        oldReq.onsuccess=()=>resolve(oldReq.result||null);
+        oldReq.onerror=()=>reject(oldReq.error);
+      };
       req.onerror = () => reject(req.error);
     });
   }catch(e){ return null; }
@@ -541,7 +552,8 @@ async function fetchBriptaTableOptimized(table,force=false){
     return result;
   }
   const cursor = new Date(Math.max(0, Number(cached.savedAt || 0) - BRIPTA_SYNC_OVERLAP_MS)).toISOString();
-  let result = await fetchBriptaPortfolioRows(table, q => q.gte('updated_at', cursor).order('updated_at', {ascending:false}),cursor);
+  const deltaColumn=table==='loan_repayments'?'created_at':'updated_at';
+  let result = await fetchBriptaPortfolioRows(table, q => q.gte(deltaColumn, cursor).order(deltaColumn, {ascending:false}),cursor);
   if(result.error && /updated_at|column .* does not exist/i.test(result.error.message || '')){
     if(table==='loan_repayments'&&isBriptaOfficerOnly()){
       result=await fetchBriptaPortfolioRows(table,q=>q.gte('created_at',cursor).order('created_at',{ascending:false}),cursor);
