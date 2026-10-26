@@ -338,10 +338,6 @@ const SUPABASE_KEY = 'sb_publishable_3ZboZu03Uevy2HQOaa4GAw_ivwCzTqA';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { storageKey: 'bripta-main-auth-v2' }
 });
-// Secondary client used ONLY for Admin creating staff without logging themselves out
-const adminAuthClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false, storageKey: 'bripta-admin-auth' }
-});
 let sb = (table) => supabaseClient.from(table);
 
 // ═══ STATE ═══
@@ -7234,7 +7230,7 @@ function openAddStaffModal(s){
     ${!s.id ? `
     <div class="form-group">
       <label>Set Initial Password *</label>
-      <input class="input" type="password" id="stPwd" placeholder="Min 6 characters">
+      <input class="input" type="password" id="stPwd" placeholder="Min 8 characters" autocomplete="new-password">
     </div>
     ` : ''}
 
@@ -7275,48 +7271,39 @@ async function saveStaff(id){
   if(btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
   try{
-    let authUserId = null;
-    
     if (!id) {
         const pwd = $('#stPwd').value;
-        if (!pwd || pwd.length < 6) throw new Error('Password must be at least 6 characters');
-        
-        const { data: authData, error: authErr } = await adminAuthClient.auth.signUp({
-            email: email,
-            password: pwd,
-            options: { data: { full_name: name } }
+        if (!pwd || pwd.length < 8) throw new Error('Password must be at least 8 characters');
+        const permissions={};
+        ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>permissions[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
+        const {data,error}=await supabaseClient.functions.invoke('bripta-create-staff',{
+          body:{name:name.trim(),email:email.trim(),phone:$('#stPhone').value||null,
+            role:selectedRoles,is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value,
+            password:pwd,permissions}
         });
-        
-        if (authErr) {
-            if (authErr.message.includes('already registered')) {
-                toast('Note: This email is already registered in the system. The password you just typed was ignored; they must use their existing password.', 'warning');
-            } else {
-                throw authErr;
-            }
-        } else {
-            authUserId = authData.user?.id;
+        if(error){
+          const details=await error.context?.json?.().catch(()=>null);
+          throw new Error(details?.message||error.message||'Could not create staff login');
         }
+        if(!data?.ok)throw new Error(data?.message||'Could not create staff login');
+        await audit('staff_created','loan_staff',data.staff_id,null,{name,email:email.trim()});
+        toast('Staff login created. The initial password is ready to use.','success');
+        closeModal();renderStaff();
+        return;
     }
 
     const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value||null};
     
-    if(id){
-      const {error:staffError}=await sb('loan_staff').update(rec).eq('id',id).eq('business_id',currentUser.business_id).select('id').single();
-      if(staffError)throw staffError;
-    }else{
-      rec.business_id=currentUser?.business_id;
-      if (authUserId) rec.auth_user_id = authUserId;
-      const {error:staffError}=await sb('loan_staff').insert(rec);
-      if(staffError)throw staffError;
-    }
-    const staffId=id||((await sb('loan_staff').select('id').eq('business_id',currentUser.business_id).eq('email',email).maybeSingle()).data?.id);
+    const {error:staffError}=await sb('loan_staff').update(rec).eq('id',id).eq('business_id',currentUser.business_id).select('id').single();
+    if(staffError)throw staffError;
+    const staffId=id;
     const perms={staff_id:staffId,business_id:currentUser.business_id,branch_id:rec.branch_id,updated_by:currentUser.id,updated_at:new Date().toISOString()};
     ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>perms[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
     if(staffId){
       const {error:permissionError}=await sb('bripta_staff_permissions').upsert(perms,{onConflict:'staff_id'});
       if(permissionError)throw permissionError;
     }
-    await audit(id?'staff_updated':'staff_created','loan_staff',id||null,null,{name,email:rec.email});
+    await audit('staff_updated','loan_staff',id,null,{name,email:rec.email});
     toast('Staff saved successfully','success');closeModal();renderStaff();
   }catch(e){
     toast(e.message,'error');
