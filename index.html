@@ -1453,7 +1453,17 @@ async function resolveUserRole(authUser, staffCache = null, pwd = null){
     localStorage.setItem('bripta_current_user', JSON.stringify(staff));
 
     if (!staffCache) { 
-        try{ await sb('loan_staff').update({last_login:new Date().toISOString()}).eq('id',staff.id); }catch(_){}
+        // Loan officers cannot update loan_staff directly under branch RLS.
+        // Record only this authenticated user's own activity on the server.
+        try{
+          const {data:lastSeen,error:lastSeenError}=await supabaseClient.rpc('bripta_record_staff_login');
+          if(lastSeenError)throw lastSeenError;
+          if(lastSeen){
+            staff.last_login=lastSeen;
+            currentUser.last_login=lastSeen;
+            localStorage.setItem('bripta_current_user',JSON.stringify(staff));
+          }
+        }catch(lastSeenError){console.error('Could not record staff last login',lastSeenError)}
         // Attempt to load settings silently
         loadSettings();
     } else {
