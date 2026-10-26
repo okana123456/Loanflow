@@ -13,6 +13,8 @@ let written=null;
 const memory={repayments:[{id:'old',amount:10}]};
 const cacheContext=vm.createContext({
   BRIPTA_MIN_SYNC_MS:60000,BRIPTA_FULL_SYNC_MS:90*86400000,BRIPTA_SYNC_OVERLAP_MS:300000,
+  BRIPTA_BRANCH_OWNERSHIP_SYNC_MS:600000,BRIPTA_BRANCH_OWNERSHIP_TABLES:new Set(['loan_clients','loans','loan_applications','loan_staff']),
+  briptaBranchOwnershipRefreshPending:false,
   BRIPTA_CACHE_MAP:{loan_repayments:'repayments'},cachedData:memory,
   readBriptaCache:async()=>({rows:[],savedAt:Date.now(),fullSyncAt:Date.now()}),
   fetchPagedBusinessRows:async(_table,configureQuery)=>{
@@ -48,7 +50,8 @@ const stagedContext=vm.createContext({
     if(table==='loans')await loansReady;
     if(table==='loan_repayments')releaseLoans();
     return{data:table==='loans'?[{id:'loan-1'}]:[{id:'payment-1',loan_id:'loan-1'}],error:null};
-  },BRIPTA_CACHE_MAP:{loans:'loans',loan_repayments:'repayments'}
+  },BRIPTA_CACHE_MAP:{loans:'loans',loan_repayments:'repayments'},
+  BRIPTA_BRANCH_OWNERSHIP_TABLES:new Set(['loan_clients','loans','loan_applications','loan_staff']),briptaBranchOwnershipRefreshPending:false
 });
 vm.runInContext(between('function hydrateBriptaRelations(','\nasync function refreshBriptaReports('),stagedContext);
 
@@ -57,11 +60,16 @@ const officerContext=vm.createContext({
   canonicalLoanOfficerId:id=>id
 });
 vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP ALIVE PING'),officerContext);
+officerContext.branchName=id=>id==='migori'?'Migori':'Mbita';
 
 (async()=>{
   const result=await cacheContext.fetchBriptaTableOptimized('loan_repayments',true);
   assert.equal(calls,1);
   assert.equal(result.data[0].id,'visible-after-policy-repair');
+  cacheContext.readBriptaCache=async()=>({rows:[{id:'moved-to-other-branch'}],savedAt:Date.now(),fullSyncAt:Date.now()-11*60000});
+  const reconciled=await cacheContext.fetchBriptaTableOptimized('loan_clients');
+  assert.equal(calls,2,'an old branch ownership snapshot must be fully reconciled even when recently read');
+  assert.equal(reconciled.data[0].id,'visible-after-policy-repair');
   await cacheContext.upsertBriptaCachedRows('loan_repayments',[{id:'new',amount:50}]);
   assert.equal(memory.repayments.find(row=>row.id==='new').amount,50);
   assert.equal(written.find(row=>row.id==='new').amount,50,
@@ -69,6 +77,9 @@ vm.runInContext(between('function reportingOfficerVisible(','\n// ═══ KEEP
   assert.equal(officerContext.reportingOfficerVisible({id:'officer-1',role:'loan_officer',is_active:true}),true,
     'an officer with no cached loans still gets their dashboard');
   assert.equal(officerContext.reportingOfficerVisible({id:'other-branch',role:'loan_officer',branch_id:'other',is_active:true}),false);
+  assert.equal(officerContext.officerPortfolioBranchLabel({branch_id:'other'},[{branch_id:'migori'}]),'Migori');
+  officerContext.selectedBranchId=null;
+  assert.equal(officerContext.officerPortfolioBranchLabel({branch_id:'other'},[{branch_id:'migori'},{branch_id:'mbita'}]),'Multiple branches');
   const scoped=await scopedContext.fetchBriptaPortfolioRows('loan_repayments');
   assert.equal(scoped.data.length,2);
   assert.deepEqual(requested.map(request=>request.p_after),[null,'first']);

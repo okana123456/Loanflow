@@ -95,6 +95,8 @@ try{
     selectedBranchId:branch,cachedData:{},currentSection:'repayments',
     hasRole:(...roles)=>roles.includes('loan_officer'),canonicalLoanOfficerId:value=>value,
     BRIPTA_MIN_SYNC_MS:60000,BRIPTA_FULL_SYNC_MS:90*86400000,BRIPTA_SYNC_OVERLAP_MS:300000,
+    BRIPTA_BRANCH_OWNERSHIP_SYNC_MS:600000,BRIPTA_BRANCH_OWNERSHIP_TABLES:new Set(['loan_clients','loans','loan_applications','loan_staff']),
+    briptaBranchOwnershipRefreshPending:false,
     BRIPTA_CACHE_MAP:{loan_clients:'clients',loans:'loans',loan_repayments:'repayments',loan_staff:'staff',loan_schedules:'schedules',loan_applications:'applications'},
     readBriptaCache:async table=>cache.get(table),
     writeBriptaCache:async(table,data,fullSyncAt)=>cache.set(table,{rows:structuredClone(data),savedAt:Date.now(),fullSyncAt}),
