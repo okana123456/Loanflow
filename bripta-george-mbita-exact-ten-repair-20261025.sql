@@ -1,9 +1,20 @@
+-- SUPERSEDED for future use. On 26 October, the owner clarified that only
+-- Tabitha, Judith and Rose Akeyo of these ten belong to Mbita. The other
+-- seven are corrected by bripta-return-seven-george-loans-to-migori-20261026.sql.
+-- Never rerun the earlier all-ten move after that correction.
 -- Run ONLY in the Bripta Supabase project, after
 -- bripta-branch-origin-guard-20261025.sql.
 -- This moves branch attribution for the ten loan IDs confirmed as Mbita by
 -- the business owner. It never changes an amount, balance, payment, or status.
 -- All other loans, including George's older Migori loans, keep their branch.
 begin;
+do $$ begin
+  if exists(select 1 from public.bripta_domain_audit
+    where business_id='BIZ-B3F5E5D9'
+      and action='george_seven_migori_correction_20261026') then
+    raise exception 'The all-ten Mbita repair is superseded; use the seven-loan Migori correction instead';
+  end if;
+end $$;
 drop table if exists pg_temp.bripta_moved_loans;
 drop table if exists pg_temp.bripta_financial_before;
 

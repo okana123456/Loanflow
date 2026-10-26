@@ -7192,7 +7192,7 @@ async function renderStaff(){
     const{data:staff,error}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id',BRIPTA_BUSINESS_ID).order('name');
     if(error) throw error;
     main.innerHTML=`
-      <div class="page-header"><h1>Staff Management</h1><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div>
+      <div class="page-header"><h1>Staff Management</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openPortfolioHandover()">Portfolio Handover</button><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
       ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
       </tbody></table></div>
@@ -7206,6 +7206,100 @@ async function renderStaff(){
       </div>
     `;
   }catch(e){toast(e.message,'error')}
+}
+
+let handoverStaff=[],handoverBranches=[],handoverCounts={};
+function isPortfolioOfficer(staff){
+  const roles=(staff.role||'').split(',').map(r=>r.trim());
+  return roles.includes('loan_officer')&&!roles.includes('admin')&&!roles.includes('branch_manager');
+}
+async function openPortfolioHandover(){
+  if(!hasRole('admin'))return toast('Admin access required','warning');
+  try{
+    const[{data:staff,error:staffError},{data:branches,error:branchError}]=await Promise.all([
+      sb('loan_staff').select('id,name,role,branch_id,is_active').eq('business_id',BRIPTA_BUSINESS_ID).order('name'),
+      sb('bripta_branches').select('id,name,is_active').eq('business_id',BRIPTA_BUSINESS_ID).order('name')
+    ]);
+    if(staffError)throw staffError;
+    if(branchError)throw branchError;
+    handoverStaff=staff||[];handoverBranches=branches||[];
+    const sources=handoverStaff.filter(isPortfolioOfficer);
+    if(!sources.length)throw new Error('No loan officers were found.');
+    const george=sources.find(s=>/george\s+majwa/i.test(s.name||''));
+    openModal(`
+      <h2>Branch Portfolio Handover</h2>
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Review each officer’s clients by branch. A handover transfers only the chosen branch’s clients, active loans and pending applications. Mbita and Migori records remain in their branches.</p>
+      <div class="form-group"><label>Current officer</label><select class="select" id="handoverFrom" onchange="loadPortfolioHandover()">${sources.map(s=>`<option value="${s.id}" ${s.id===(george?.id||sources[0].id)?'selected':''}>${escapeHtml(s.name)}</option>`).join('')}</select></div>
+      <div id="handoverGroups" style="font-size:13px;color:var(--text-secondary)">Loading branch portfolios...</div>
+      <div class="form-group"><label>Portfolio branch</label><select class="select" id="handoverBranch" onchange="renderPortfolioHandoverTarget()"></select></div>
+      <div class="form-group"><label>Transfer to an active officer in this branch</label><select class="select" id="handoverTo"></select></div>
+      <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="handoverConfirm" onclick="confirmPortfolioHandover()">Transfer selected branch portfolio</button></div>
+    `,true);
+    await loadPortfolioHandover();
+  }catch(e){toast(e.message||'Could not load portfolios','error')}
+}
+async function loadPortfolioHandover(){
+  const source=document.getElementById('handoverFrom')?.value;
+  const groupEl=document.getElementById('handoverGroups');
+  const branchEl=document.getElementById('handoverBranch');
+  if(!source||!groupEl||!branchEl)return;
+  groupEl.textContent='Loading branch portfolios...';
+  try{
+    const counts=await Promise.all(handoverBranches.map(async b=>{
+      const{count,error}=await sb('loan_clients').select('id',{count:'exact',head:true})
+        .eq('business_id',BRIPTA_BUSINESS_ID).eq('loan_officer_id',source).eq('branch_id',b.id);
+      if(error)throw error;
+      return {branch:b,count:count||0};
+    }));
+    if(document.getElementById('handoverFrom')?.value!==source)return;
+    handoverCounts=Object.fromEntries(counts.map(x=>[x.branch.id,x.count]));
+    groupEl.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px">${counts.map(x=>`<div class="card" style="min-width:130px;padding:10px"><strong>${escapeHtml(x.branch.name)}</strong><div>${x.count} client${x.count===1?'':'s'}</div></div>`).join('')}</div>`;
+    const available=counts.filter(x=>x.count>0&&x.branch.is_active!==false);
+    branchEl.innerHTML=available.length?available.map(x=>`<option value="${x.branch.id}">${escapeHtml(x.branch.name)} (${x.count} clients)</option>`).join(''):'<option value="">No clients assigned</option>';
+    await renderPortfolioHandoverTarget();
+  }catch(e){groupEl.textContent='Could not load branch portfolios: '+(e.message||e);branchEl.innerHTML='';}
+}
+async function renderPortfolioHandoverTarget(){
+  const branch=document.getElementById('handoverBranch')?.value;
+  const source=document.getElementById('handoverFrom')?.value;
+  const targetEl=document.getElementById('handoverTo');
+  const button=document.getElementById('handoverConfirm');
+  if(!targetEl||!button)return;
+  const targets=handoverStaff.filter(s=>s.id!==source&&s.is_active!==false&&s.branch_id===branch&&isPortfolioOfficer(s));
+  targetEl.innerHTML=targets.length?'<option value="">— Select officer —</option>'+targets.map(s=>`<option value="${s.id}">${escapeHtml(s.name)}</option>`).join(''):'<option value="">Create an officer in this branch first</option>';
+  button.disabled=!branch||!targets.length;
+  button.textContent=`Transfer ${handoverCounts[branch]||0} clients and active loans`;
+  if(branch){
+    const{count,error}=await sb('loans').select('id',{count:'exact',head:true})
+      .eq('business_id',BRIPTA_BUSINESS_ID).eq('branch_id',branch)
+      .eq('loan_officer_id',source).eq('status','active');
+    if(!error&&document.getElementById('handoverBranch')?.value===branch&&document.getElementById('handoverFrom')?.value===source){
+      button.textContent=`Transfer ${handoverCounts[branch]||0} clients and ${count||0} active loans`;
+    }
+  }
+}
+async function confirmPortfolioHandover(){
+  const source=document.getElementById('handoverFrom')?.value;
+  const branch=document.getElementById('handoverBranch')?.value;
+  const target=document.getElementById('handoverTo')?.value;
+  const branchName=handoverBranches.find(b=>b.id===branch)?.name||'selected branch';
+  const targetName=handoverStaff.find(s=>s.id===target)?.name||'selected officer';
+  if(!source||!branch||!target)return toast('Choose a branch and target officer','warning');
+  if(!await confirm_(`Transfer ${handoverCounts[branch]||0} ${branchName} clients and their active loans to ${targetName}? Other branches will stay with their current officer.`))return;
+  const button=document.getElementById('handoverConfirm');
+  if(button){button.disabled=true;button.textContent='Transferring...';}
+  try{
+    const{data,error}=await supabaseClient.rpc('bripta_handover_branch_portfolio',{
+      p_from:source,p_to:target,p_branch:branch
+    });
+    if(error)throw error;
+    if(!data?.ok)throw new Error(data?.message||'Handover was not completed');
+    closeModal();
+    toast(`${data.clients_moved} ${branchName} clients and ${data.active_loans_moved} active loans transferred to ${targetName}`,'success');
+    try{await loadBriptaTables(['loan_clients','loans','loan_applications'],{force:true});}
+    catch(refreshError){console.error('Handover completed; local cache refresh failed',refreshError);}
+    renderStaff();
+  }catch(e){toast(e.message||'Handover failed','error');if(button){button.disabled=false;button.textContent='Transfer selected branch portfolio';}}
 }
 
 function openAddStaffModal(s){
