@@ -6935,6 +6935,15 @@ async function startSmsBundlePayment(btn){
   }
 }
 
+function currentAccountingPortfolioOfficers(staff,branchId){
+  return (staff||[]).filter(s=>{
+    const roles=(s.role||'').split(',').map(role=>role.trim());
+    return s.is_active!==false && roles.includes('loan_officer')
+      && !roles.includes('admin') && !roles.includes('branch_manager')
+      && (!branchId || s.branch_id===branchId);
+  });
+}
+
 async function renderAccountingLegacy() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
@@ -7084,12 +7093,9 @@ async function renderAccountingLegacy() {
       };
       return officerStats[offId];
     };
-    (staffData || []).forEach(s => {
-      const roles=(s.role||'').split(',').map(role=>role.trim());
-      // Revenue performance is exclusively for active loan officers.
-      if (s.is_active!==false && roles.includes('loan_officer')) {
-        officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
-      }
+    const currentPortfolioOfficers=currentAccountingPortfolioOfficers(staffData,selectedBranchId);
+    currentPortfolioOfficers.forEach(s => {
+      officerStats[s.id] = { name: s.name, reg: 0, proc: 0, interest: 0, total: 0 };
     });
     officerStats['unassigned'] = { name: 'Unassigned', reg: 0, proc: 0, interest: 0, total: 0 };
 
@@ -7119,8 +7125,9 @@ async function renderAccountingLegacy() {
     });
 
     let offHtml = '';
-    Object.values(officerStats).forEach(off => {
-      if(off.total > 0 || off.name !== 'Unassigned'){
+    currentPortfolioOfficers.forEach(s => {
+      const off=officerStats[s.id];
+      if(off){
         offHtml += `
           <div style="margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:10px;">
             <div style="display:flex; justify-content:space-between; font-weight:700; margin-bottom:4px; font-size:14px;">
@@ -7136,6 +7143,12 @@ async function renderAccountingLegacy() {
         `;
       }
     });
+    const currentOfficerIds=new Set(currentPortfolioOfficers.map(s=>s.id));
+    const historicalOther=Object.entries(officerStats).reduce((sum,[id,off])=>
+      sum+(currentOfficerIds.has(id)?0:Number(off.total||0)),0);
+    if(historicalOther>0.005){
+      offHtml+=`<p style="font-size:12px;color:var(--text-secondary);margin-top:12px">${selectedBranchId?'Historical or unassigned revenue in this branch':'Historical or unassigned revenue'}: ${fmtMoney(historicalOther)}. Included in the totals above.</p>`;
+    }
 
     main.innerHTML=`
       <div class="page-header" style="align-items:flex-start; flex-direction:column; margin-bottom:12px">
