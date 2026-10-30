@@ -6987,7 +6987,7 @@ async function renderAccountingLegacy() {
         'id,loan_id,amount,loan_portion,interest_portion,penalty_portion,payment_method,payment_date,created_at,loans(id,client_id,loan_officer_id,total_interest,total_payable,status)'),
       fetchPagedBusinessRows('loan_clients', q=>q.gte('created_at',`${qFetchStart}T00:00:00+00:00`).lte('created_at',qEndFull),
         'id,loan_officer_id,notes,created_at'),
-      fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active'),
+      fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active,branch_id'),
       supabaseClient.rpc('bripta_financial_statements',{
         p_start:qStart,p_end:qEnd==='2099-12-31'?todayISO:qEnd,p_branch:selectedBranchId||null
       }),
