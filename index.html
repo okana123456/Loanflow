@@ -6944,6 +6944,19 @@ function currentAccountingPortfolioOfficers(staff,branchId){
   });
 }
 
+function briptaAccountingRevenueOwner(officerId,recordBranchId,staff){
+  const ownerId=canonicalLoanOfficerId(officerId);
+  const migoriId='00000000-0000-4000-8000-000000000001';
+  if(currentUser?.business_id!=='BIZ-B3F5E5D9'||recordBranchId!==migoriId)return ownerId||'unassigned';
+  const officer=(staff||[]).find(s=>s.id===ownerId);
+  if(officer?.is_active!==false && officer?.branch_id===migoriId &&
+     (officer?.role||'').split(',').map(role=>role.trim()).includes('loan_officer') &&
+     !(officer?.role||'').split(',').some(role=>['admin','branch_manager'].includes(role.trim())))return ownerId;
+  return (staff||[]).find(s=>s.branch_id===migoriId && s.is_active!==false &&
+    String(s.name||'').replace(/\s+/g,' ').trim().toLowerCase()==='brian ochieng' &&
+    (s.role||'').split(',').map(role=>role.trim()).includes('loan_officer'))?.id||ownerId||'unassigned';
+}
+
 async function renderAccountingLegacy() {
   const main=$('#mainContent');
   if(!currentUser?.business_id) return;
@@ -6982,11 +6995,11 @@ async function renderAccountingLegacy() {
 
     const [loanResult,repResult,clientResult,staffResult,statementResult,chargedPenaltyResult] = await Promise.all([
       fetchPagedBusinessRows('loans', q=>q.gte('disbursement_date',qFetchStart).lte('disbursement_date',qEnd),
-        'id,client_id,loan_officer_id,processing_fee,disbursed_amount,principal_amount,total_interest,total_payable,disbursement_date,status'),
+        'id,client_id,loan_officer_id,branch_id,processing_fee,disbursed_amount,principal_amount,total_interest,total_payable,disbursement_date,status'),
       fetchPagedBusinessRows('loan_repayments', q=>q.gte('payment_date',qFetchStart).lte('payment_date',qEndFull),
-        'id,loan_id,amount,loan_portion,interest_portion,penalty_portion,payment_method,payment_date,created_at,loans(id,client_id,loan_officer_id,total_interest,total_payable,status)'),
+        'id,loan_id,branch_id,amount,loan_portion,interest_portion,penalty_portion,payment_method,payment_date,created_at,loans(id,client_id,loan_officer_id,branch_id,total_interest,total_payable,status)'),
       fetchPagedBusinessRows('loan_clients', q=>q.gte('created_at',`${qFetchStart}T00:00:00+00:00`).lte('created_at',qEndFull),
-        'id,loan_officer_id,notes,created_at'),
+        'id,loan_officer_id,branch_id,notes,created_at'),
       fetchPagedBusinessRows('loan_staff', q=>q.order('name'), 'id,name,role,is_active,branch_id'),
       supabaseClient.rpc('bripta_financial_statements',{
         p_start:qStart,p_end:qEnd==='2099-12-31'?todayISO:qEnd,p_branch:selectedBranchId||null
@@ -7100,7 +7113,7 @@ async function renderAccountingLegacy() {
     officerStats['unassigned'] = { name: 'Unassigned', reg: 0, proc: 0, interest: 0, total: 0 };
 
     filteredClients.forEach(c => {
-      const offId = clientToOfficer[c.id] || 'unassigned';
+      const offId = briptaAccountingRevenueOwner(clientToOfficer[c.id],c.branch_id,staffData);
       ensureAccountingOfficer(offId);
       const regAmt = Number(parseRegFeeFromNotes(c.notes)?.amount || REGISTRATION_FEE);
       officerStats[offId].reg += regAmt;
@@ -7108,7 +7121,7 @@ async function renderAccountingLegacy() {
     });
 
     filteredLoans.forEach(l => {
-      const offId = canonicalLoanOfficerId(l.loan_officer_id) || 'unassigned';
+      const offId = briptaAccountingRevenueOwner(l.loan_officer_id,l.branch_id,staffData);
       ensureAccountingOfficer(offId);
       const procAmt = Number(l.processing_fee||0);
       officerStats[offId].proc += procAmt;
@@ -7117,7 +7130,7 @@ async function renderAccountingLegacy() {
 
     filteredReps.forEach(r => {
       const loan = loanMap[r.loan_id];
-      const offId = canonicalLoanOfficerId(loan?.loan_officer_id) || 'unassigned';
+      const offId = briptaAccountingRevenueOwner(loan?.loan_officer_id,loan?.branch_id||r.branch_id,staffData);
       ensureAccountingOfficer(offId);
       const intAmt = calcInterestPortionAcct(r);
       officerStats[offId].interest += intAmt;
