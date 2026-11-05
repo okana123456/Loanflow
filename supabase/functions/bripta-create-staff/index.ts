@@ -53,6 +53,66 @@ serve(async (req) => {
     }
 
     const body = await req.json();
+    if (body.action === "update_staff" || body.action === "promote_admin") {
+      const staffId = String(body.staff_id || "");
+      if (!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(staffId) ||
+          (body.action === "promote_admin" && staffId === actor.id)) {
+        return json({ ok: false, message: "Choose a Bripta branch manager to promote." }, 400);
+      }
+      const { data: target, error: targetError } = await admin.from("loan_staff")
+        .select("id, business_id, name, email, phone, role, is_active, branch_id")
+        .eq("id", staffId).eq("business_id", BUSINESS_ID).maybeSingle();
+      if (targetError) throw targetError;
+      if (!target) return json({ ok: false, message: "Bripta staff member was not found." }, 404);
+      const promoting = body.action === "promote_admin";
+      if (promoting && !target.is_active) {
+        return json({ ok: false, message: "Activate this branch manager before promoting them." }, 409);
+      }
+      if (promoting && !String(target.role || "").split(",").map((r: string) => r.trim()).includes("branch_manager")) {
+        return json({ ok: false, message: "This staff member is no longer a branch manager. Refresh Staff and try again." }, 409);
+      }
+      const nextRoles = promoting ? ["admin"] : String(body.role || "").split(",").map((r: string) => r.trim()).filter(Boolean);
+      const nextName = promoting ? target.name : String(body.name || "").trim();
+      const nextBranch = promoting ? target.branch_id : String(body.branch_id || "").trim();
+      if (!nextName || !nextRoles.length || nextRoles.some((r: string) => !roles.has(r)) ||
+          new Set(nextRoles).size !== nextRoles.length || !nextBranch) {
+        return json({ ok: false, message: "Enter a name, branch and valid roles." }, 400);
+      }
+      if (staffId === actor.id && (!nextRoles.includes("admin") || body.is_active === false)) {
+        return json({ ok: false, message: "You cannot remove your own administrator access." }, 400);
+      }
+      if (!promoting && String(body.email || "").trim().toLowerCase() !== String(target.email || "").trim().toLowerCase()) {
+        return json({ ok: false, message: "Staff login email cannot be changed here. Keep the current email and save again." }, 400);
+      }
+      const { data: assignedBranch, error: assignedBranchError } = await admin.from("bripta_branches")
+        .select("id").eq("id", nextBranch).eq("business_id", BUSINESS_ID).eq("is_active", true).maybeSingle();
+      if (assignedBranchError) throw assignedBranchError;
+      if (!assignedBranch) return json({ ok: false, message: "Choose an active Bripta branch." }, 400);
+      const update = promoting
+        ? { role: "admin" }
+        : { name: nextName, phone: String(body.phone || "").trim() || null,
+            role: nextRoles.join(","), is_active: body.is_active !== false, branch_id: nextBranch };
+      const { error: updateError } = await admin.from("loan_staff").update(update)
+        .eq("id", staffId).eq("business_id", BUSINESS_ID);
+      if (updateError) throw updateError;
+      if (!promoting) {
+        const permissions: Record<string, unknown> = {
+          staff_id: staffId, business_id: BUSINESS_ID, branch_id: nextBranch,
+          updated_by: actor.id, updated_at: new Date().toISOString(),
+        };
+        for (const key of permissionNames) permissions[key] = body.permissions?.[key] === true;
+        const { error: permissionError } = await admin.from("bripta_staff_permissions")
+          .upsert(permissions, { onConflict: "staff_id" });
+        if (permissionError) {
+          await admin.from("loan_staff").update({ name: target.name, phone: target.phone,
+            role: target.role, is_active: target.is_active, branch_id: target.branch_id })
+            .eq("id", staffId).eq("business_id", BUSINESS_ID);
+          throw permissionError;
+        }
+      }
+      return json({ ok: true, staff_id: staffId, role: nextRoles.join(","),
+        message: promoting ? "Branch manager promoted to administrator." : "Staff saved successfully." });
+    }
     const name = String(body.name || "").trim();
     const email = String(body.email || "").trim().toLowerCase();
     const password = String(body.password || "");

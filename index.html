@@ -7266,7 +7266,7 @@ async function renderStaff(){
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openPortfolioHandover()">Portfolio Handover</button><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
-      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button></td></tr>`).join('')}
+      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button> ${s.is_active&&(s.role||'').split(',').map(r=>r.trim()).includes('branch_manager')?`<button class="btn btn-primary btn-sm" onclick="promoteBranchManager('${s.id}')">Make Admin</button>`:''}</td></tr>`).join('')}
       </tbody></table></div>
       <div class="card" style="margin-top:20px"><h3 style="font-size:14px;margin-bottom:8px">Role Permissions</h3>
         <div style="font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
@@ -7383,7 +7383,7 @@ function openAddStaffModal(s){
     <h2>${s.id?'Edit':'Add'} Staff</h2>
     <div class="form-row">
       <div class="form-group"><label>Name *</label><input class="input" id="stName" value="${s.name||''}"></div>
-      <div class="form-group"><label>Email *</label><input class="input" id="stEmail" value="${s.email||''}"></div>
+      <div class="form-group"><label>Email *</label><input class="input" id="stEmail" value="${s.email||''}" ${s.id?'readonly title="Login email is managed with the account"':''}></div>
     </div>
     <div class="form-group"><label>Assigned Branch *</label><select class="select" id="stBranch">${branchOptions(s.branch_id||selectedBranchId)}</select></div>
     <div class="form-row">
@@ -7458,23 +7458,42 @@ async function saveStaff(id){
         return;
     }
 
-    const rec={name,email,phone:$('#stPhone').value||null,role:selectedRoles,is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value||null};
-    
-    const {error:staffError}=await sb('loan_staff').update(rec).eq('id',id).eq('business_id',currentUser.business_id).select('id').single();
-    if(staffError)throw staffError;
-    const staffId=id;
-    const perms={staff_id:staffId,business_id:currentUser.business_id,branch_id:rec.branch_id,updated_by:currentUser.id,updated_at:new Date().toISOString()};
-    ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>perms[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
-    if(staffId){
-      const {error:permissionError}=await sb('bripta_staff_permissions').upsert(perms,{onConflict:'staff_id'});
-      if(permissionError)throw permissionError;
+    const permissions={};
+    ['view_accounting','view_expenses','initiate_expenses','approve_expenses','manage_assets','manage_branches','transfer_portfolios','adjust_charges_excess'].forEach(k=>permissions[k]=!!document.querySelector(`.st-perm-cb[value="${k}"]`)?.checked);
+    const {data,error}=await supabaseClient.functions.invoke('bripta-create-staff',{
+      body:{action:'update_staff',staff_id:id,name:name.trim(),email:email.trim(),
+        phone:$('#stPhone').value||null,role:selectedRoles,
+        is_active:$('#stActive').value==='true',branch_id:$('#stBranch').value,permissions}
+    });
+    if(error){
+      const details=await error.context?.json?.().catch(()=>null);
+      throw new Error(details?.message||error.message||'Could not update staff');
     }
-    await audit('staff_updated','loan_staff',id,null,{name,email:rec.email});
+    if(!data?.ok)throw new Error(data?.message||'Could not update staff');
+    await audit('staff_updated','loan_staff',id,null,{name,email:email.trim(),role:selectedRoles});
     toast('Staff saved successfully','success');closeModal();renderStaff();
   }catch(e){
     toast(e.message,'error');
     if(btn) { btn.disabled = false; btn.textContent = id ? 'Update' : 'Save'; }
   }
+}
+
+async function promoteBranchManager(staffId){
+  if(!hasRole('admin'))return toast('Admin access required','warning');
+  if(!await confirm_('Give this branch manager full administrator access to every Bripta branch?'))return;
+  try{
+    const {data,error}=await supabaseClient.functions.invoke('bripta-create-staff',{
+      body:{action:'promote_admin',staff_id:staffId}
+    });
+    if(error){
+      const details=await error.context?.json?.().catch(()=>null);
+      throw new Error(details?.message||error.message||'Could not promote staff');
+    }
+    if(!data?.ok)throw new Error(data?.message||'Could not promote staff');
+    await audit('staff_promoted_to_admin','loan_staff',staffId,null,{role:'admin'});
+    toast('Branch manager now has full administrator access. Ask them to refresh or sign in again.','success');
+    renderStaff();
+  }catch(e){toast(e.message||'Could not promote staff','error')}
 }
 
 async function sendStaffReset(email) {
