@@ -24,7 +24,9 @@ begin
   select * into v_r from public.loan_repayments where id=v_x.repayment_id
     and loan_id=v_l.id and business_id=v_l.business_id
     and branch_id=v_l.branch_id for update;
-  if v_r.id is null or abs(coalesce(v_r.credit_portion,0)-v_x.amount_original)>0.01
+  if v_r.id is null or coalesce(v_r.processing_fee_portion,0)>0
+    or coalesce(v_r.loan_portion,0)<=0
+    or abs(coalesce(v_r.credit_portion,0)-v_x.amount_original)>0.01
     or v_r.payment_date::date<v_l.disbursement_date then return 0; end if;
   select * into v_c from public.bripta_charges
     where loan_id=v_l.id and client_id=v_l.client_id
@@ -69,6 +71,29 @@ end $$;
 
 revoke all on function public.bripta_apply_same_loan_processing_excess(uuid)
   from public,anon,authenticated;
+
+-- Keep the loan's fee-paid field aligned when an administrator allocates
+-- excess through the existing Charges & Excess screen as well.
+create or replace function public.bripta_sync_processing_fee_paid_from_allocation()
+returns trigger language plpgsql security definer set search_path=public as $$
+declare v_c public.bripta_charges%rowtype;
+begin
+  if new.action<>'charge_payment' or new.charge_id is null then return new; end if;
+  select * into v_c from public.bripta_charges where id=new.charge_id;
+  if v_c.charge_type='processing_fee' and v_c.loan_id is not null
+    and v_c.business_id=new.business_id and v_c.branch_id=new.branch_id then
+    update public.loans set processing_fee_paid=least(processing_fee,
+      greatest(coalesce(processing_fee_paid,0),v_c.amount_paid)),updated_at=now()
+    where id=v_c.loan_id and business_id=v_c.business_id
+      and branch_id=v_c.branch_id and client_id=v_c.client_id;
+  end if;
+  return new;
+end $$;
+drop trigger if exists bripta_sync_processing_fee_paid_from_allocation
+  on public.bripta_excess_allocations;
+create trigger bripta_sync_processing_fee_paid_from_allocation
+after insert on public.bripta_excess_allocations for each row
+execute function public.bripta_sync_processing_fee_paid_from_allocation();
 
 -- New verified excess is allocated automatically once its ledger row exists.
 create or replace function public.bripta_auto_apply_same_loan_processing_excess()
