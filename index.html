@@ -640,6 +640,13 @@ function officerPortfolioBranchLabel(officer,loans=[]){
   const branches=[...new Set(loans.map(l=>l.branch_id).filter(Boolean))];
   return branches.length>1?'Multiple branches':branchName(branches[0]||officer.branch_id);
 }
+function officerPerformanceLoans(officer,allLoans,activePortfolio){
+  // Historical loans in a former branch must not make a transferred officer
+  // appear to own that branch's current portfolio or collections.
+  const branches=new Set(activePortfolio.map(l=>l.branch_id).filter(Boolean));
+  return allLoans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===officer.id &&
+    (!branches.size || branches.has(l.branch_id)));
+}
 
 // ═══ KEEP ALIVE PING ═══
 // Pings Supabase to reset the 7-day pause timer
@@ -6453,7 +6460,7 @@ function downloadOfficerPerformanceReport(){
     const disbMonth = oLoansMonth.reduce((s,l)=>s+Number(l.principal_amount||0),0);
     return {
       'Officer':           o.name||o.email,
-      'Branch':            officerPortfolioBranchLabel(o,oLoans),
+      'Branch':            officerPortfolioBranchLabel(o,oActive),
       'Active Clients':    activeCount,
       'ACC Arrears (Clients)': clientsInArr,
       'BQ %':              Number(bq.toFixed(2)),
@@ -6528,10 +6535,12 @@ async function renderOfficerPerformance(){
     window._perfRows = []; // reset
     const rows = filteredOfficers.map(o=>{
       // Match loans where loan_officer_id === o.id (also include apps later)
-      const oLoans = allLoans.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id);
       const quality=BriptaReporting.qualityTotals(portfolioQuality.active.filter(l=>canonicalLoanOfficerId(l.loan_officer_id)===o.id));
       const oActive = quality.active;
-      const oApps = allApps.filter(a=>canonicalLoanOfficerId(a.loan_officer_id)===o.id);
+      const oLoans = officerPerformanceLoans(o,allLoans,oActive);
+      const activeBranches=new Set(oActive.map(l=>l.branch_id).filter(Boolean));
+      const oApps = allApps.filter(a=>canonicalLoanOfficerId(a.loan_officer_id)===o.id &&
+        (!activeBranches.size || activeBranches.has(a.branch_id)));
       const oAppsMonth = oApps.filter(a=>a.created_at && a.created_at.startsWith(nowM));
       const oLoansMonth = oLoans.filter(l=>l.disbursement_date && l.disbursement_date.startsWith(nowM));
       const oClientIds = new Set(oLoans.map(l=>l.client_id));
@@ -6578,7 +6587,7 @@ async function renderOfficerPerformance(){
               const parColor=par<=5?'var(--accent-green)':par<=15?'var(--accent-yellow)':'var(--accent-red)';
               return '<tr>' +
                 '<td><strong>'+( o.name||o.email)+'</strong></td>' +
-                '<td><span class="badge badge-gray">'+escapeHtml(officerPortfolioBranchLabel(o,oLoans))+'</span></td>' +
+                '<td><span class="badge badge-gray">'+escapeHtml(officerPortfolioBranchLabel(o,oActive))+'</span></td>' +
                 '<td><strong style="color:var(--accent-green)">'+activeCount+'</strong></td>' +
                 '<td><span class="badge badge-red">'+clientsInArr+'</span></td>' +
                 '<td><strong style="color:'+bqColor+'">'+bq.toFixed(1)+'%</strong></td>' +
