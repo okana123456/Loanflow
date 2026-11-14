@@ -629,7 +629,10 @@ async function refreshBriptaArrears(){
 }
 function reportingOfficerVisible(s){
   const roles=(s.role||'').split(',').map(r=>r.trim());
+  const hasActivePortfolio=(cachedData.loans||[]).some(l=>
+    canonicalLoanOfficerId(l.loan_officer_id)===s.id && l.status==='active');
   return s.is_active!==false && roles.includes('loan_officer') && !roles.some(r=>['admin','branch_manager'].includes(r))
+    && hasActivePortfolio
     && (s.id===currentUser?.id || !selectedBranchId || s.branch_id===selectedBranchId || (cachedData.loans||[]).some(l=>canonicalLoanOfficerId(l.loan_officer_id)===s.id));
 }
 function officerPortfolioBranchLabel(officer,loans=[]){
@@ -1524,12 +1527,21 @@ async function checkAuthSession(){
   if (cachedUserStr && session?.user) {
       try {
           const cachedUser = JSON.parse(cachedUserStr);
-          const { data: freshStaff } = await sb('loan_staff')
+          const { data: freshStaff, error: staffError } = await sb('loan_staff')
             .select('*')
+            .eq('business_id',BRIPTA_BUSINESS_ID)
             .eq('email', session.user.email)
             .eq('is_active', true)
             .maybeSingle();
-          currentUser = freshStaff || cachedUser;
+          if(staffError)throw staffError;
+          if(!freshStaff){
+            localStorage.removeItem('bripta_current_user');
+            localStorage.removeItem('bripta_last_activity');
+            await supabaseClient.auth.signOut();
+            currentUser=null;
+            return false;
+          }
+          currentUser = freshStaff;
           localStorage.setItem('bripta_current_user', JSON.stringify(currentUser));
           touchSession();
           showApp();
@@ -6940,8 +6952,12 @@ async function startSmsBundlePayment(btn){
 function currentAccountingPortfolioOfficers(staff,branchId){
   return (staff||[]).filter(s=>{
     const roles=(s.role||'').split(',').map(role=>role.trim());
+    const normalizedName=String(s.name||'').replace(/\s+/g,' ').trim().toLowerCase();
+    const hiddenForBripta=currentUser?.business_id==='BIZ-B3F5E5D9' &&
+      (normalizedName==='brian ochieng'||normalizedName==='william omuya');
     return s.is_active!==false && roles.includes('loan_officer')
       && !roles.includes('admin') && !roles.includes('branch_manager')
+      && !hiddenForBripta
       && (!branchId || s.branch_id===branchId);
   });
 }
@@ -7265,11 +7281,14 @@ async function renderStaff(){
   try{
     const{data:staff,error}=await sb('loan_staff').select('*,bripta_branches(name),bripta_staff_permissions(*)').eq('business_id',BRIPTA_BUSINESS_ID).order('name');
     if(error) throw error;
+    const activeStaff=(staff||[]).filter(s=>s.is_active!==false);
+    const formerStaff=(staff||[]).filter(s=>s.is_active===false);
     main.innerHTML=`
       <div class="page-header"><h1>Staff Management</h1><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-outline" onclick="openPortfolioHandover()">Portfolio Handover</button><button class="btn btn-primary" onclick="openAddStaffModal()">+ Add Staff</button></div></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email/Phone</th><th>Branch</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>
-      ${(staff||[]).map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td>${s.is_active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button> ${s.is_active&&(s.role||'').split(',').map(r=>r.trim()).includes('branch_manager')?`<button class="btn btn-primary btn-sm" onclick="promoteBranchManager('${s.id}')">Make Admin</button>`:''}</td></tr>`).join('')}
+      ${activeStaff.map(s=>`<tr><td><strong>${s.name}</strong></td><td>${s.email||s.phone||'-'}</td><td>${escapeHtml(s.bripta_branches?.name||'Unassigned')}</td><td><span class="badge badge-blue" style="max-width:150px;white-space:normal;display:inline-block">${(s.role||'').replace(/_/g,' ').toUpperCase()}</span></td><td><span class="badge badge-green">Active</span></td><td>${fmtDateTime(s.last_login)}</td><td><button class="btn btn-outline btn-sm" onclick="editStaff('${s.id}')">Edit</button> ${(s.role||'').split(',').map(r=>r.trim()).includes('branch_manager')?`<button class="btn btn-primary btn-sm" onclick="promoteBranchManager('${s.id}')">Make Admin</button>`:''}</td></tr>`).join('')}
       </tbody></table></div>
+      ${formerStaff.length?`<details class="card" style="margin-top:12px"><summary>Former staff (${formerStaff.length})</summary><div style="margin-top:10px;font-size:13px">${formerStaff.map(s=>`<div>${escapeHtml(s.name)} — ${escapeHtml(s.bripta_branches?.name||'Unassigned')} — access inactive ${s.auth_user_id?`<button class="btn btn-danger btn-sm" onclick="retireStaff('${s.id}')">Complete login removal</button>`:''}</div>`).join('')}</div></details>`:''}
       <div class="card" style="margin-top:20px"><h3 style="font-size:14px;margin-bottom:8px">Role Permissions</h3>
         <div style="font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:4px">
           <div><span class="badge badge-blue">admin</span> Full access (Manager)</div>
@@ -7420,7 +7439,7 @@ function openAddStaffModal(s){
     </div>
     ` : ''}
     <div class="modal-actions">
-      ${s.id && s.id !== currentUser.id ? `<button class="btn btn-danger" style="margin-right:auto" onclick="deleteStaff('${s.id}')">Delete Staff</button>` : ''}
+      ${s.id && s.id !== currentUser.id && s.is_active!==false ? `<button class="btn btn-danger" style="margin-right:auto" onclick="retireStaff('${s.id}')">Remove Access</button>` : ''}
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveStaff('${s.id||''}')">${s.id?'Update':'Save'}</button>
     </div>
@@ -7509,12 +7528,18 @@ async function sendStaffReset(email) {
     } catch(e) { toast(e.message, 'error'); }
 }
 
-async function deleteStaff(id) {
-    if(!await confirm_('Are you sure you want to permanently delete this staff member? They will lose all access.')) return;
+async function retireStaff(id) {
+    if(!await confirm_('Remove this staff member’s login and access? Their historical loan and payment records will remain. Transfer any current portfolio first.')) return;
     try {
-        await sb('loan_staff').delete().eq('id', id);
-        await audit('staff_deleted', 'loan_staff', id, null, null);
-        toast('Staff member deleted', 'success');
+        const {data,error}=await supabaseClient.functions.invoke('bripta-create-staff',{
+          body:{action:'retire_staff',staff_id:id}
+        });
+        if(error){
+          const details=await error.context?.json?.().catch(()=>null);
+          throw new Error(details?.message||error.message||'Could not remove staff access');
+        }
+        if(!data?.ok)throw new Error(data?.message||'Could not remove staff access');
+        toast('Staff access removed; historical records retained.','success');
         closeModal();
         renderStaff();
     } catch(e) { toast(e.message, 'error'); }

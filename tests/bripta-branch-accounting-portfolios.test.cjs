@@ -16,16 +16,17 @@ const staff=[
   {id:'george',name:'George',role:'loan_officer',branch_id:mbita,is_active:true},
   {id:'james',name:'James',role:'loan_officer',branch_id:mbita,is_active:true},
   {id:'admin',role:'admin,loan_officer',branch_id:migori,is_active:true},
+  {id:'william',name:'William Omuya',role:'loan_officer',branch_id:migori,is_active:true},
   {id:'former',role:'loan_officer',branch_id:migori,is_active:false}
 ];
 const officers=branch=>Array.from(context.currentAccountingPortfolioOfficers(staff,branch),s=>s.id);
-assert.deepEqual(officers(migori),['brian','faith','juma','phelix']);
+assert.deepEqual(officers(migori),['faith','juma','phelix']);
 assert.deepEqual(officers(mbita),['george','james']);
-assert.deepEqual(officers(null),['brian','faith','juma','phelix','george','james']);
+assert.deepEqual(officers(null),['faith','juma','phelix','george','james']);
 assert.equal(context.briptaAccountingRevenueOwner('george',migori,staff),'brian');
 assert.equal(context.briptaAccountingRevenueOwner(null,migori,staff),'brian');
 assert.equal(context.briptaAccountingRevenueOwner('george',mbita,staff),'george');
 assert.equal(context.briptaAccountingRevenueOwner(null,mbita,staff),'unassigned');
 assert.match(html,/const historicalOther=Object\.entries\(officerStats\)/);
 assert.match(html,/Included in the totals above/);
-console.log('PASS: Migori shows four current portfolios, Mbita two; historical revenue remains in totals.');
+console.log('PASS: Brian and William are omitted from accounting display; historical revenue remains in totals.');

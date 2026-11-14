@@ -53,6 +53,68 @@ serve(async (req) => {
     }
 
     const body = await req.json();
+    if (body.action === "retire_staff") {
+      const staffId = String(body.staff_id || "");
+      if (!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(staffId) || staffId === actor.id) {
+        return json({ ok: false, message: "Choose another Bripta staff member to remove." }, 400);
+      }
+      const { data: target, error: targetError } = await admin.from("loan_staff")
+        .select("id, business_id, name, role, is_active, auth_user_id")
+        .eq("id", staffId).eq("business_id", BUSINESS_ID).maybeSingle();
+      if (targetError) throw targetError;
+      if (!target) return json({ ok: false, message: "Bripta staff member was not found." }, 404);
+      if (target.is_active === false && !target.auth_user_id) {
+        return json({ ok: true, staff_id: staffId, message: "Staff access is already inactive." });
+      }
+
+      const [clients, loans, applications] = await Promise.all([
+        admin.from("loan_clients").select("id", { count: "exact", head: true })
+          .eq("business_id", BUSINESS_ID).eq("loan_officer_id", staffId),
+        admin.from("loans").select("id", { count: "exact", head: true })
+          .eq("business_id", BUSINESS_ID).eq("loan_officer_id", staffId).eq("status", "active"),
+        admin.from("loan_applications").select("id", { count: "exact", head: true })
+          .eq("business_id", BUSINESS_ID).eq("loan_officer_id", staffId)
+          .in("status", ["pending", "approved", "submitted", "under_review"]),
+      ]);
+      for (const result of [clients, loans, applications]) if (result.error) throw result.error;
+      if ((clients.count || 0) + (loans.count || 0) + (applications.count || 0) > 0) {
+        return json({ ok: false, message: "Transfer this staff member's clients, active loans and pending applications before removing access." }, 409);
+      }
+      if (target.auth_user_id) {
+        const { data: shared, error: sharedError } = await admin.from("loan_staff")
+          .select("id").eq("auth_user_id", target.auth_user_id).neq("id", staffId).limit(1);
+        if (sharedError) throw sharedError;
+        if (shared?.length) return json({ ok: false, message: "This login is linked to another staff record. Review it before removing access." }, 409);
+      }
+
+      // Keep the staff row for historical loans, repayments and audit entries.
+      // Unlink before deleting Auth: an unknown foreign-key delete action must
+      // never cascade into this historical staff row.
+      const { error: disableError } = await admin.from("loan_staff")
+        .update({ is_active: false, auth_user_id: null })
+        .eq("id", staffId).eq("business_id", BUSINESS_ID);
+      if (disableError) throw disableError;
+      if (target.auth_user_id) {
+        const { error: deleteError } = await admin.auth.admin.deleteUser(target.auth_user_id);
+        if (deleteError) {
+          const { error: relinkError } = await admin.from("loan_staff")
+            .update({ auth_user_id: target.auth_user_id }).eq("id", staffId).eq("business_id", BUSINESS_ID);
+          if (relinkError) console.error("Retired staff login relink failed", relinkError);
+          return json({ ok: false, message: relinkError
+            ? "Staff was deactivated, but login removal needs administrator review."
+            : `Staff was deactivated, but login removal failed: ${deleteError.message}. Retry Remove Access.` }, 500);
+        }
+      }
+      const { error: auditError } = await admin.from("loan_audit_log").insert({
+        business_id: BUSINESS_ID, user_id: actor.id, action: "staff_retired",
+        table_name: "loan_staff", record_id: staffId,
+        old_value: { name: target.name, role: target.role, is_active: true },
+        new_value: { is_active: false, login_removed: Boolean(target.auth_user_id) },
+      });
+      if (auditError) console.error("Staff retirement audit failed", auditError);
+      return json({ ok: true, staff_id: staffId,
+        message: "Staff access removed; historical records retained." });
+    }
     if (body.action === "update_staff" || body.action === "promote_admin") {
       const staffId = String(body.staff_id || "");
       if (!/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(staffId) ||

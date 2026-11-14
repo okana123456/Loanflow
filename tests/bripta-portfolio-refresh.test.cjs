@@ -90,8 +90,11 @@ officerContext.branchName=id=>id==='migori'?'Migori':'Mbita';
   assert.equal(memory.repayments.find(row=>row.id==='new').amount,50);
   assert.equal(written.find(row=>row.id==='new').amount,50,
     'a saved payment must replace the stale device snapshot before repainting');
+  assert.equal(officerContext.reportingOfficerVisible({id:'officer-1',role:'loan_officer',is_active:true}),false,
+    'an officer with no active portfolio is omitted from performance');
+  officerContext.cachedData.loans=[{id:'loan-1',loan_officer_id:'officer-1',status:'active',branch_id:'migori'}];
   assert.equal(officerContext.reportingOfficerVisible({id:'officer-1',role:'loan_officer',is_active:true}),true,
-    'an officer with no cached loans still gets their dashboard');
+    'an officer with an active portfolio remains visible');
   assert.equal(officerContext.reportingOfficerVisible({id:'other-branch',role:'loan_officer',branch_id:'other',is_active:true}),false);
   assert.equal(officerContext.officerPortfolioBranchLabel({branch_id:'other'},[{branch_id:'migori'}]),'Migori');
   officerContext.selectedBranchId=null;
