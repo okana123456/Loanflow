@@ -1,0 +1,4 @@
+project_id = "loanflow-bripta-update"
+
+[functions.bripta-document-compression]
+verify_jwt = true

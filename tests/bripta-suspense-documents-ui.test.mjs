@@ -38,14 +38,20 @@ console.log('PASS: Suspense pages load, duplicate receipts count once and office
 
 const calls=[];let fail=true;
 const bucket={upload:async(path)=>{calls.push(['upload',path]);return {};},remove:async(paths)=>{calls.push(['remove',...paths]);return {};}};
-Object.assign(context,{currentUser:{business_id:'BIZ-B3F5E5D9'},crypto:{randomUUID:()=> 'new-id'},console,
+Object.assign(context,{currentUser:{business_id:'BIZ-B3F5E5D9'},crypto:{subtle:{digest:async()=>new Uint8Array(32).buffer}},console,
   supabaseClient:{storage:{from:()=>bucket}},sb:()=>({select(){return this;},eq(){return this;},
     maybeSingle:async()=>({data:{object_path:'old-file'}}),upsert:async()=>({error:fail?{message:'Save interrupted'}:null})})});
 vm.runInContext(readFileSync(new URL('../bripta-client-documents.js',import.meta.url),'utf8'),context);
 assert.equal((context.clientDocumentInputs().match(/type="file"/g)||[]).length,6);
 assert.throws(()=>context.validateClientDocument('client_passport',{type:'application/pdf',size:10}),/passport/);
 assert.throws(()=>context.validateClientDocument('client_id_front',{type:'image/jpeg',size:9*1024*1024}),/8 MB/);
-const files=[{kind:'client_id_front',file:{name:'front.pdf',type:'application/pdf',size:10}}];
+let bitmapClosed=false;
+context.createImageBitmap=async()=>({width:3000,height:2000,close:()=>{bitmapClosed=true;}});
+context.document.createElement=()=>({width:0,height:0,getContext:()=>({fillRect(){},drawImage(){},set fillStyle(_value){}}),
+  toBlob:callback=>callback({size:900000})});
+const compressed=await context.prepareClientDocument('client_id_front',{name:'front.jpg',type:'image/jpeg',size:3000000});
+assert.equal(compressed.blob.size,900000);assert.equal(compressed.mimeType,'image/jpeg');assert.equal(bitmapClosed,true);
+const files=[{kind:'client_id_front',file:{name:'front.pdf',type:'application/pdf',size:10,arrayBuffer:async()=>new Uint8Array(10).buffer}}];
 assert.equal((await context.saveClientDocumentFiles('client',files)).length,1);
 assert.ok(!calls.some(c=>c[0]==='remove'&&c[1]==='old-file'),'failed replacement preserves old file');
 assert.equal(vm.runInContext("pendingClientDocumentUploads.get('client').length",context),1);
@@ -53,4 +59,4 @@ fail=false;
 assert.equal((await context.saveClientDocumentFiles('client',files)).length,0);
 assert.ok(calls.some(c=>c[0]==='remove'&&c[1]==='old-file'));
 assert.equal(vm.runInContext('pendingClientDocumentUploads.size',context),0);
-console.log('PASS: six upload slots, type/size validation, failed-upload cleanup and retry without recreating clients.');
+console.log('PASS: six upload slots, image compression below 1 MB, failed-upload cleanup and retry without recreating clients.');

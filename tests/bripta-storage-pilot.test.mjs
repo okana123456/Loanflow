@@ -1,0 +1,14 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const edge=readFileSync(new URL('../supabase/functions/bripta-document-compression/index.ts',import.meta.url),'utf8');
+const ui=readFileSync(new URL('../bripta-storage-cleanup.js',import.meta.url),'utf8');
+const sql=readFileSync(new URL('../bripta-cloud-document-compression-20261121.sql',import.meta.url),'utf8');
+assert.match(edge,/PILOT_OBJECT_ID='92cf7113-b8ed-487b-b7b7-9fffb9258121'/);
+assert.match(edge,/original remains linked/);
+assert.match(edge,/compressed\.byteLength<=950000/);
+assert.doesNotMatch(edge,/\.remove\(|\.update\(|\.upsert\(/);
+assert.match(ui,/hasRole\('admin'\)/);
+assert.match(ui,/Nothing will be replaced from this pilot/);
+assert.match(sql,/auth\.uid\(\)/);
+assert.match(sql,/s\.business_id='BIZ-B3F5E5D9'/);
+console.log('PASS: Bripta cloud pilot is admin-scoped and cannot replace or delete originals.');

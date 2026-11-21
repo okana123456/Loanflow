@@ -8,7 +8,7 @@ const BRIPTA_DOCUMENT_TYPES=[
 const pendingClientDocumentUploads=new Map();
 function clientDocumentInputs(prefix='onboardDoc'){
   return `<h3 style="margin:16px 0 8px">Client &amp; Guarantor Documents</h3>
-    <p style="font-size:12px;color:var(--text-secondary)">Attach passport photos and both sides of each ID. JPG, PNG or WEBP; ID copies may also be PDF. Maximum 8 MB per file.</p>
+    <p style="font-size:12px;color:var(--text-secondary)">Attach passport photos and both sides of each ID. JPG, PNG or WEBP images are reduced below 1 MB before upload; ID copies may also be PDF. Maximum source file: 8 MB.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px">
     ${BRIPTA_DOCUMENT_TYPES.map(([kind,label])=>`<div class="form-group"><label for="${prefix}_${kind}">${label}</label>
       <input class="input" style="max-width:100%" id="${prefix}_${kind}" type="file" accept="image/jpeg,image/png,image/webp${kind.endsWith('passport')?'':',application/pdf'}"></div>`).join('')}</div>`;
@@ -29,17 +29,49 @@ function selectedClientDocuments(prefix='onboardDoc'){
   }
   return files;
 }
+async function prepareClientDocument(kind,file){
+  const originalExt=validateClientDocument(kind,file);
+  if(originalExt==='pdf'||file.size<=700000){
+    return {blob:file,ext:originalExt,mimeType:file.type};
+  }
+  const bitmap=await createImageBitmap(file);
+  try{
+    const canvas=document.createElement('canvas');
+    const ctx=canvas.getContext('2d');
+    if(!ctx)throw new Error('Could not prepare document image');
+    for(const maxSide of [2200,1800,1600,1400,1200]){
+      const scale=Math.min(1,maxSide/Math.max(bitmap.width,bitmap.height));
+      canvas.width=Math.max(1,Math.round(bitmap.width*scale));
+      canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+      ctx.fillStyle='#fff';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
+      for(const quality of [0.86,0.76,0.66,0.56]){
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+        if(!blob)throw new Error('Could not compress document image');
+        if(blob.size<=950000)return {blob,ext:'jpg',mimeType:'image/jpeg'};
+      }
+    }
+    throw new Error('Document image is too large after compression. Choose a clearer, smaller image.');
+  }finally{bitmap.close();}
+}
+async function clientDocumentDigest(blob){
+  const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
+  return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+}
 async function uploadPrivateClientDocument(clientId,kind,file){
-  const ext=validateClientDocument(kind,file);
+  const prepared=await prepareClientDocument(kind,file);
   const{data:old,error:readError}=await sb('bripta_client_documents').select('object_path').eq('client_id',clientId).eq('kind',kind).maybeSingle();
   if(readError)throw readError;
-  const path=`${currentUser.business_id}/${clientId}/${kind}/${crypto.randomUUID()}.${ext}`;
+  const digest=await clientDocumentDigest(prepared.blob);
+  const path=`${currentUser.business_id}/${clientId}/${kind}/${digest}.${prepared.ext}`;
+  if(old?.object_path===path)return;
   const bucket=supabaseClient.storage.from(BRIPTA_DOCUMENT_BUCKET);
-  const{error:uploadError}=await bucket.upload(path,file,{contentType:file.type,upsert:false});
+  const{error:uploadError}=await bucket.upload(path,prepared.blob,{contentType:prepared.mimeType,upsert:false});
   if(uploadError)throw uploadError;
   const{error:saveError}=await sb('bripta_client_documents').upsert({
     client_id:clientId,kind,business_id:currentUser.business_id,object_path:path,
-    file_name:file.name,mime_type:file.type,file_size:file.size
+    file_name:file.name,mime_type:prepared.mimeType,file_size:prepared.blob.size
   },{onConflict:'client_id,kind'});
   if(saveError){await bucket.remove([path]);throw saveError;}
   if(old?.object_path&&old.object_path!==path){
