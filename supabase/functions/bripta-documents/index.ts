@@ -2,7 +2,7 @@
 // uploads, short-lived signed links, replacement and permanent deletion.
 // Secrets (Supabase function secrets only): BRIPTA_B2_ENDPOINT, BRIPTA_B2_BUCKET, BRIPTA_B2_KEY_ID, BRIPTA_B2_APP_KEY.
 // Logs contain action and step names only: never paths, keys, tokens, URLs or personal details.
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.0';
 import { createB2, newBriptaObjectKey, sha256Hex, validateDocument, BRIPTA_DOCUMENT_KINDS } from './bripta-b2.mjs';
 
 const SUPABASE_BUCKET = 'bripta-client-documents';
@@ -28,14 +28,9 @@ function store() {
     });
   }
   return client;
-}const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-
-function sameSecret(a: string, b: string) {
-  if (!a || !b || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }
+const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+
 function dbStatus(error: { code?: string } | null) {
   if (!error) return 200;
   if (error.code === '42501') return 403;
@@ -157,13 +152,17 @@ async function handleDeleteClient(actor: Actor, body: Record<string, unknown>) {
   return json({ ok: true, status: 'deleted', pending_object_cleanup: pending });
 }
 
-// Migration job only (service-role bearer): proves the switched record opens through the same signed-link path.
-async function handleVerifyMigration(body: Record<string, unknown>) {
+// Migration job only: proves the switched record opens through the same signed-link path.
+// The caller's key is checked by Postgres itself: bripta_b2_migration_target() only answers the
+// service role, so this accepts the legacy service_role JWT and new sb_secret_ keys alike.
+async function handleVerifyMigration(token: string, body: Record<string, unknown>) {
   const id = Number(body.ledger_id);
   if (!Number.isSafeInteger(id) || id <= 0) return json({ ok: false, message: 'Invalid ledger id.' }, 400);
-  const { data, error } = await admin.rpc('bripta_b2_migration_target', { p_id: id });
+  const caller = createClient(url, token, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await caller.rpc('bripta_b2_migration_target', { p_id: id });
+  if (error) return json({ ok: false, code: error.code === '42501' ? 'not_service_role' : 'target_lookup_failed' }, 403);
   const target = (data || [])[0];
-  if (error || !target) return json({ ok: false, code: 'not_switched' }, 409);
+  if (!target) return json({ ok: false, code: 'not_switched' }, 409);
   const link = await signedLink({ ...target, storage_provider: 'b2', object_path: null });
   const res = await fetch(link);
   if (!res.ok) return json({ ok: false, code: `signed_get_${res.status}` }, 502);
@@ -180,18 +179,13 @@ Deno.serve(async req => {
   let action = 'unknown';
   try {
     const isUpload = (req.headers.get('content-type') || '').startsWith('multipart/form-data');
-    if (sameSecret(token, serviceKey)) {
-      if (isUpload) return json({ ok: false }, 400);
-      const body = await req.json();
-      action = String(body?.action || '');
-      return action === 'verify_migration' ? await handleVerifyMigration(body) : json({ ok: false }, 403);
-    }
+    const body = isUpload ? {} : await req.json();
+    action = isUpload ? 'upload' : String(body?.action || '');
+    if (action === 'verify_migration') return await handleVerifyMigration(token, body);
     const { data: { user }, error: userError } = await admin.auth.getUser(token);
     if (userError || !user) return json({ ok: false, message: 'Your login expired. Sign in again.' }, 401);
     const actor = { uid: user.id, email: user.email || '' };
-    if (isUpload) { action = 'upload'; return await handleUpload(actor, req); }
-    const body = await req.json();
-    action = String(body?.action || '');
+    if (isUpload) return await handleUpload(actor, req);
     if (action === 'sign') return await handleSign(actor, body);
     if (action === 'delete_client') return await handleDeleteClient(actor, body);
     return json({ ok: false, message: 'Unknown action.' }, 400);
