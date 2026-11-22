@@ -1,5 +1,5 @@
 -- Phase 3: run ONLY after the bripta-documents function and the new website code are live and a
--- staff upload has been confirmed on Google Cloud (bripta-gcs-status: uploads_last_7_days_gcs > 0).
+-- staff upload has been confirmed on Backblaze B2 (bripta-b2-status: uploads_last_7_days_b2 > 0).
 -- Browsers can no longer add or overwrite files in the Supabase document bucket. Staff reads of
 -- not-yet-migrated originals keep working; the service role (Storage API cleanup) is unaffected.
 -- Rollback: re-run bripta-client-documents-20261005.sql (restores the original boundary policy).

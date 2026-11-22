@@ -60,7 +60,7 @@ async function clientDocumentDigest(blob){
   return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
 // New uploads, previews and deletions go through the bripta-documents server function
-// (Google Cloud Storage, short-lived signed links). Until it is deployed the legacy
+// (Backblaze B2, short-lived signed links). Until it is deployed the legacy
 // Supabase Storage path keeps the site working.
 const BRIPTA_DOCUMENT_FUNCTION='bripta-documents';
 class DocumentServiceMissing extends Error{}
@@ -86,7 +86,7 @@ async function uploadPrivateClientDocument(clientId,kind,file){
   if(readError)throw readError;
   const form=new FormData();
   form.append('client_id',clientId);form.append('kind',kind);
-  form.append('expected_previous',old?(old.gcs_object_key||old.object_path||''):'');
+  form.append('expected_previous',old?(old.ext_object_key||old.object_path||''):'');
   form.append('file',new File([prepared.blob],file.name||'document',{type:prepared.mimeType}));
   try{await callDocumentService(form);return;}
   catch(error){if(!(error instanceof DocumentServiceMissing))throw error;}
@@ -104,7 +104,7 @@ async function uploadLegacySupabaseDocument(clientId,kind,file,prepared,old){
     file_name:file.name,mime_type:prepared.mimeType,file_size:prepared.blob.size
   },{onConflict:'client_id,kind'});
   if(saveError){await bucket.remove([path]);throw saveError;}
-  if(old?.object_path&&old.object_path!==path&&old.storage_provider!=='gcs'){
+  if(old?.object_path&&old.object_path!==path&&old.storage_provider!=='b2'){
     const{error}=await bucket.remove([old.object_path]);
     if(error)console.warn('Previous document could not be removed',error.message);
   }
@@ -165,7 +165,7 @@ async function viewPrivateClientDocument(clientId,kind){
       if(!(error instanceof DocumentServiceMissing))throw error;
       const{data:doc,error:readError}=await sb('bripta_client_documents').select('object_path,storage_provider').eq('client_id',clientId).eq('kind',kind).single();
       if(readError)throw readError;
-      if(doc.storage_provider==='gcs'||!doc.object_path)throw new Error('Document service is not available yet.');
+      if(doc.storage_provider==='b2'||!doc.object_path)throw new Error('Document service is not available yet.');
       const{data,error:linkError}=await supabaseClient.storage.from(BRIPTA_DOCUMENT_BUCKET).createSignedUrl(doc.object_path,60);
       if(linkError)throw linkError;
       signedUrl=data.signedUrl;

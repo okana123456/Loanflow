@@ -8,11 +8,11 @@ with objs as (
 select 'documents' as section,jsonb_build_object(
     'total',(select count(*) from docs),
     'on_supabase',(select count(*) from docs where storage_provider='supabase'),
-    'on_gcs_migrated',(select count(*) from docs where storage_provider='gcs' and migrated_at is not null),
-    'on_gcs_new_uploads',(select count(*) from docs where storage_provider='gcs' and migrated_at is null),
-    'gcs_expected_bytes',(select coalesce(sum(file_size),0) from docs where storage_provider='gcs'),
+    'on_b2_migrated',(select count(*) from docs where storage_provider='b2' and migrated_at is not null),
+    'on_b2_new_uploads',(select count(*) from docs where storage_provider='b2' and migrated_at is null),
+    'b2_expected_bytes',(select coalesce(sum(file_size),0) from docs where storage_provider='b2'),
     'uploads_last_7_days_supabase',(select count(*) from docs where storage_provider='supabase' and uploaded_at>now()-interval '7 days'),
-    'uploads_last_7_days_gcs',(select count(*) from docs where storage_provider='gcs' and migrated_at is null and uploaded_at>now()-interval '7 days')
+    'uploads_last_7_days_b2',(select count(*) from docs where storage_provider='b2' and migrated_at is null and uploaded_at>now()-interval '7 days')
   ) as details
 union all
 select 'broken links',jsonb_build_object(
@@ -21,14 +21,14 @@ select 'broken links',jsonb_build_object(
     'known_preexisting_broken_still_broken',(select count(*) from docs d where d.client_id='583310a7-3834-4b6e-8c99-a9d2d993f681'
        and d.kind='client_id_front' and d.storage_provider='supabase'
        and not exists(select 1 from objs o where o.bucket_id='bripta-client-documents' and o.name=d.object_path)),
-    'gcs_rows_without_verified_ledger',(select count(*) from docs d where d.storage_provider='gcs' and d.migrated_at is not null
-       and not exists(select 1 from public.bripta_gcs_document_migration m where m.gcs_object_key=d.gcs_object_key and m.state='verified')))
+    'b2_rows_without_verified_ledger',(select count(*) from docs d where d.storage_provider='b2' and d.migrated_at is not null
+       and not exists(select 1 from public.bripta_b2_document_migration m where m.ext_object_key=d.ext_object_key and m.state='verified')))
 union all
 select 'ledger',(select coalesce(jsonb_object_agg(state,n),'{}') from (
-  select state,count(*) n from public.bripta_gcs_document_migration group by state) x)
+  select state,count(*) n from public.bripta_b2_document_migration group by state) x)
 union all
 select 'failures',(select coalesce(jsonb_agg(jsonb_build_object('ledger_id',id,'kind',kind,'attempts',attempts,'error',last_error) order by id),'[]')
-  from public.bripta_gcs_document_migration where state in ('failed','skipped'))
+  from public.bripta_b2_document_migration where state in ('failed','skipped'))
 union all
 select 'supabase storage',jsonb_build_object(
     'total_bytes',(select coalesce(sum(bytes),0) from objs),

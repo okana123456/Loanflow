@@ -1,9 +1,9 @@
-// Bripta private client/guarantor documents: server-side access checks, Google Cloud Storage
+// Bripta private client/guarantor documents: server-side access checks, Backblaze B2 (private bucket)
 // uploads, short-lived signed links, replacement and permanent deletion.
-// Secrets (Supabase function secrets only): BRIPTA_GCS_BUCKET, BRIPTA_GCS_SIGNER_KEY (service-account JSON).
+// Secrets (Supabase function secrets only): BRIPTA_B2_ENDPOINT, BRIPTA_B2_BUCKET, BRIPTA_B2_KEY_ID, BRIPTA_B2_APP_KEY.
 // Logs contain action and step names only: never paths, keys, tokens, URLs or personal details.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
-import { createGcs, newBriptaObjectKey, sha256Hex, validateDocument, BRIPTA_DOCUMENT_KINDS } from './bripta-gcs.mjs';
+import { createB2, newBriptaObjectKey, sha256Hex, validateDocument, BRIPTA_DOCUMENT_KINDS } from './bripta-b2.mjs';
 
 const SUPABASE_BUCKET = 'bripta-client-documents';
 const LINK_SECONDS = 60;
@@ -18,18 +18,17 @@ const json = (body: Record<string, unknown>, status = 200) =>
 
 const url = Deno.env.get('SUPABASE_URL') || '';
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-const bucketName = Deno.env.get('BRIPTA_GCS_BUCKET') || '';
-let signer: ReturnType<typeof createGcs> | null = null;
-function gcs() {
-  if (!signer) {
-    const raw = Deno.env.get('BRIPTA_GCS_SIGNER_KEY') || '';
-    if (!raw || !bucketName) throw new Error('gcs_not_configured');
-    const parsed = JSON.parse(raw);
-    signer = createGcs({ bucket: bucketName, credentials: { client_email: parsed.client_email, private_key: parsed.private_key } });
+const bucketName = Deno.env.get('BRIPTA_B2_BUCKET') || '';
+let client: ReturnType<typeof createB2> | null = null;
+function store() {
+  if (!client) {
+    client = createB2({
+      endpoint: Deno.env.get('BRIPTA_B2_ENDPOINT') || '', bucket: bucketName,
+      keyId: Deno.env.get('BRIPTA_B2_KEY_ID') || '', applicationKey: Deno.env.get('BRIPTA_B2_APP_KEY') || '',
+    });
   }
-  return signer;
-}
-const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  return client;
+}const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
 function sameSecret(a: string, b: string) {
   if (!a || !b || a.length !== b.length) return false;
@@ -50,8 +49,8 @@ const safeMessage = (error: { code?: string; message?: string } | null, fallback
 
 type Actor = { uid: string; email: string };
 type Doc = {
-  storage_provider: string; object_path: string | null; gcs_bucket: string | null; gcs_object_key: string | null;
-  gcs_generation: number | null; sha256: string | null; mime_type: string; file_size: number;
+  storage_provider: string; object_path: string | null; ext_bucket: string | null; ext_object_key: string | null;
+  ext_version: string | null; sha256: string | null; mime_type: string; file_size: number;
 };
 
 async function lookup(actor: Actor, clientId: string, kind: string | null) {
@@ -60,9 +59,9 @@ async function lookup(actor: Actor, clientId: string, kind: string | null) {
 }
 
 async function signedLink(doc: Doc): Promise<string> {
-  if (doc.storage_provider === 'gcs') {
-    if (doc.gcs_bucket !== bucketName) throw new Error('bucket_mismatch');
-    return await gcs().signedGetUrl(doc.gcs_object_key!, { expiresSeconds: LINK_SECONDS, contentType: doc.mime_type });
+  if (doc.storage_provider === 'b2') {
+    if (doc.ext_bucket !== bucketName) throw new Error('bucket_mismatch');
+    return await store().signedGetUrl(doc.ext_object_key!, { expiresSeconds: LINK_SECONDS, contentType: doc.mime_type, version: doc.ext_version || undefined });
   }
   // Supabase fallback while migration is in progress (access was already checked above).
   const { data, error } = await admin.storage.from(SUPABASE_BUCKET).createSignedUrl(doc.object_path!, LINK_SECONDS);
@@ -100,37 +99,40 @@ async function handleUpload(actor: Actor, req: Request) {
   const current = docs[0];
   if (current && (current.sha256 === digest || (current.storage_provider === 'supabase' && current.object_path?.includes(`/${digest}.`))))
     return json({ ok: true, status: 'unchanged' });
-  const currentRef = current ? (current.gcs_object_key || current.object_path || '') : '';
+  const currentRef = current ? (current.ext_object_key || current.object_path || '') : '';
   if (currentRef !== expectedPrevious) return json({ ok: false, message: 'The document changed; reopen and try again.' }, 409);
 
   const key = newBriptaObjectKey();
-  const stored = await gcs().uploadNew(key, bytes, mime, digest);
-  if (stored.exists || stored.size !== bytes.byteLength || stored.sha256 !== digest) {
-    if (!stored.exists && stored.generation) await gcs().deleteGeneration(key, stored.generation).catch(() => {});
+  // B2 verifies the signed SHA-256 of the body on upload; then confirm size, checksum tag and version.
+  const put = await store().putObject(key, bytes, mime, digest);
+  const meta = await store().head(key);
+  const stored = { version: put.version || meta?.version || '' };
+  if (!meta || !stored.version || meta.version !== stored.version || meta.size !== bytes.byteLength || meta.sha256 !== digest) {
+    if (stored.version) await store().deleteVersion(key, stored.version).catch(() => {});
     return json({ ok: false, message: 'Upload could not be verified; nothing was changed.' }, 502);
   }
   const fileName = String((file as File).name || 'document').replace(/[\r\n\t]/g, ' ').slice(0, 200);
-  const { data: committed, error: commitError } = await admin.rpc('bripta_document_gcs_commit', {
+  const { data: committed, error: commitError } = await admin.rpc('bripta_document_b2_commit', {
     p_uid: actor.uid, p_email: actor.email, p_client: clientId, p_kind: kind, p_expected_previous: expectedPrevious,
-    p_bucket: bucketName, p_key: key, p_generation: stored.generation, p_sha256: digest, p_size: bytes.byteLength,
+    p_bucket: bucketName, p_key: key, p_version: stored.version, p_sha256: digest, p_size: bytes.byteLength,
     p_mime: mime, p_file_name: fileName,
   });
   if (commitError) {
-    try { await gcs().deleteGeneration(key, stored.generation); }
-    catch { await admin.rpc('bripta_document_queue_object', { p_provider: 'gcs', p_bucket: bucketName, p_key: key, p_generation: stored.generation, p_client: clientId, p_kind: kind, p_reason: 'failed_commit' }); }
+    try { await store().deleteVersion(key, stored.version); }
+    catch { await admin.rpc('bripta_document_queue_object', { p_provider: 'b2', p_bucket: bucketName, p_key: key, p_version: stored.version, p_client: clientId, p_kind: kind, p_reason: 'failed_commit' }); }
     return json({ ok: false, message: safeMessage(commitError, 'Document link was not saved.') }, dbStatus(commitError) === 200 ? 500 : dbStatus(commitError));
   }
-  // Replacement confirmed: remove the previous Google Cloud object (exact generation only).
+  // Replacement confirmed: remove the previous B2 object (exact version only).
   // A previous Supabase original is queued for the approved cleanup instead.
   const prev = (committed || [])[0];
-  if (prev?.previous_gcs_key) {
-    try { await gcs().deleteGeneration(prev.previous_gcs_key, prev.previous_gcs_generation); }
+  if (prev?.previous_ext_key) {
+    try { await store().deleteVersion(prev.previous_ext_key, prev.previous_ext_version); }
     catch {
-      await admin.rpc('bripta_document_queue_object', { p_provider: 'gcs', p_bucket: prev.previous_gcs_bucket, p_key: prev.previous_gcs_key,
-        p_generation: prev.previous_gcs_generation, p_client: clientId, p_kind: kind, p_reason: 'replaced_by_staff' });
+      await admin.rpc('bripta_document_queue_object', { p_provider: 'b2', p_bucket: prev.previous_ext_bucket, p_key: prev.previous_ext_key,
+        p_version: prev.previous_ext_version, p_client: clientId, p_kind: kind, p_reason: 'replaced_by_staff' });
     }
   }
-  return json({ ok: true, status: 'saved', storage: 'gcs' });
+  return json({ ok: true, status: 'saved', storage: 'b2' });
 }
 
 async function handleDeleteClient(actor: Actor, body: Record<string, unknown>) {
@@ -139,11 +141,11 @@ async function handleDeleteClient(actor: Actor, body: Record<string, unknown>) {
   const { data, error } = await admin.rpc('bripta_delete_client_with_documents', { p_uid: actor.uid, p_email: actor.email, p_client: clientId });
   if (error) return json({ ok: false, message: safeMessage(error, 'Client could not be deleted.') }, dbStatus(error));
   let pending = 0;
-  for (const item of (data || []) as { queue_id: number; provider: string; bucket: string; object_key: string; gcs_generation: number }[]) {
+  for (const item of (data || []) as { queue_id: number; provider: string; bucket: string; object_key: string; ext_version: string }[]) {
     try {
-      if (item.provider === 'gcs') {
+      if (item.provider === 'b2') {
         if (item.bucket !== bucketName) throw new Error('bucket_mismatch');
-        await gcs().deleteGeneration(item.object_key, item.gcs_generation);
+        await store().deleteVersion(item.object_key, item.ext_version);
       } else {
         const { error: removeError } = await admin.storage.from(SUPABASE_BUCKET).remove([item.object_key]);
         if (removeError) throw new Error('remove_failed');
@@ -159,10 +161,10 @@ async function handleDeleteClient(actor: Actor, body: Record<string, unknown>) {
 async function handleVerifyMigration(body: Record<string, unknown>) {
   const id = Number(body.ledger_id);
   if (!Number.isSafeInteger(id) || id <= 0) return json({ ok: false, message: 'Invalid ledger id.' }, 400);
-  const { data, error } = await admin.rpc('bripta_gcs_migration_target', { p_id: id });
+  const { data, error } = await admin.rpc('bripta_b2_migration_target', { p_id: id });
   const target = (data || [])[0];
   if (error || !target) return json({ ok: false, code: 'not_switched' }, 409);
-  const link = await signedLink({ ...target, storage_provider: 'gcs', object_path: null });
+  const link = await signedLink({ ...target, storage_provider: 'b2', object_path: null });
   const res = await fetch(link);
   if (!res.ok) return json({ ok: false, code: `signed_get_${res.status}` }, 502);
   const bytes = new Uint8Array(await res.arrayBuffer());

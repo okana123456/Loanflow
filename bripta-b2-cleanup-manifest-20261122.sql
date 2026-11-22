@@ -8,7 +8,7 @@ from public.bripta_document_cleanup_manifest group by category order by category
 select m.category,m.object_id,split_part(m.object_path,'/',3) as kind,m.size_bytes,m.created_at,
   m.ledger_id,g.state as ledger_state,g.verified_at
 from public.bripta_document_cleanup_manifest m
-left join public.bripta_gcs_document_migration g on g.id=m.ledger_id
+left join public.bripta_b2_document_migration g on g.id=m.ledger_id
 order by m.category,m.created_at;
 
 -- APPROVAL (owner only, after review). Approves exactly the objects listed under that digest;
