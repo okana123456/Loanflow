@@ -139,7 +139,7 @@ async function cleanup() {
   const counts = { deleted: 0, skipped: 0, failed: 0 };
   const seen = new Set();
   while (seen.size < limit) {
-    const rows = (await rpc('bripta_document_cleanup_next', { p_limit: 20 })).filter(r => !seen.has(r.object_id));
+    const rows = await rpc('bripta_document_cleanup_next_unseen', { p_limit: 20, p_exclude_ids: [...seen] });
     if (!rows.length) break;
     for (const row of rows) {
       if (seen.size >= limit) break;

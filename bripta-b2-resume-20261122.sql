@@ -30,6 +30,30 @@ end $$;
 revoke all on function public.bripta_b2_migration_claim_next(integer,text,bigint[]) from public,anon,authenticated;
 grant execute on function public.bripta_b2_migration_claim_next(integer,text,bigint[]) to service_role;
 
+-- Skip objects already checked in this cleanup run. The existing cleanup function would
+-- repeatedly return its first 20 approvals, leaving the rest untouched.
+create or replace function public.bripta_document_cleanup_next_unseen(p_limit integer,p_exclude_ids uuid[])
+returns table(object_id uuid,category text,object_path text,size_bytes bigint,ext_bucket text,ext_object_key text,ext_version text,sha256 text)
+language plpgsql volatile security definer set search_path=pg_catalog as $$
+#variable_conflict use_column
+begin
+  perform public.bripta_require_service_role();
+  update public.bripta_document_cleanup_approval a set skipped_reason='category_changed'
+  where a.deleted_at is null and a.skipped_reason is null and not exists(
+    select 1 from public.bripta_document_cleanup_manifest m where m.object_id=a.object_id and m.category=a.category
+      and m.size_bytes=a.size_bytes and m.object_path=a.object_path);
+  return query select a.object_id,a.category,a.object_path,a.size_bytes,d.ext_bucket,d.ext_object_key,d.ext_version,d.sha256
+  from public.bripta_document_cleanup_approval a
+  left join public.bripta_b2_document_migration m on m.id=a.ledger_id
+  left join public.bripta_client_documents d on a.category='migrated_original' and d.client_id=m.client_id and d.kind=m.kind
+    and d.ext_object_key=m.ext_object_key
+  where a.deleted_at is null and a.skipped_reason is null
+    and not (a.object_id=any(coalesce(p_exclude_ids,'{}'::uuid[])))
+  order by a.object_id limit least(greatest(coalesce(p_limit,20),1),100);
+end $$;
+revoke all on function public.bripta_document_cleanup_next_unseen(integer,uuid[]) from public,anon,authenticated;
+grant execute on function public.bripta_document_cleanup_next_unseen(integer,uuid[]) to service_role;
+
 -- Read-only progress and link integrity summary.
 select
   (select count(*) from public.bripta_client_documents where business_id='BIZ-B3F5E5D9' and storage_provider='b2') as linked_on_b2,
