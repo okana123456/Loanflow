@@ -2733,7 +2733,17 @@ async function deleteClient(id){
   const { data: loans } = await sb('loans').select('id').eq('client_id', id);
   if (loans && loans.length > 0) return toast('Cannot delete client with existing loans', 'error');
   try {
-    await sb('loan_clients').delete().eq('id', id);
+    // Removes the client and its private documents (Google Cloud and Supabase copies) server-side.
+    let handled=false;
+    try{
+      const result=await callDocumentService({action:'delete_client',client_id:id});
+      handled=true;
+      if(result.pending_object_cleanup)console.warn('Some document files are queued for cleanup.');
+    }catch(error){if(!(error instanceof DocumentServiceMissing))throw error;}
+    if(!handled){
+      const {error} = await sb('loan_clients').delete().eq('id', id);
+      if(error) throw error;
+    }
     toast('Client deleted', 'success');
     closeModal();
     renderClients();

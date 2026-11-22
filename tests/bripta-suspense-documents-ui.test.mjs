@@ -38,8 +38,14 @@ console.log('PASS: Suspense pages load, duplicate receipts count once and office
 
 const calls=[];let fail=true;
 const bucket={upload:async(path)=>{calls.push(['upload',path]);return {};},remove:async(paths)=>{calls.push(['remove',...paths]);return {};}};
+// Before the bripta-documents function is deployed the gateway answers 404 (non-JSON): legacy path is used.
+const serviceCalls=[];let serviceDeployed=false;
 Object.assign(context,{currentUser:{business_id:'BIZ-B3F5E5D9'},crypto:{subtle:{digest:async()=>new Uint8Array(32).buffer}},console,
-  supabaseClient:{storage:{from:()=>bucket}},sb:()=>({select(){return this;},eq(){return this;},
+  SUPABASE_URL:'https://example.invalid',SUPABASE_KEY:'anon',FormData,File,Blob,
+  fetch:async(url,init)=>{serviceCalls.push({url,init});return serviceDeployed
+    ?new Response(JSON.stringify({ok:true,status:'saved'}),{status:200,headers:{'content-type':'application/json'}})
+    :new Response('Not found',{status:404,headers:{'content-type':'text/plain'}});},
+  supabaseClient:{storage:{from:()=>bucket},auth:{getSession:async()=>({data:{session:{access_token:'user-jwt'}}})}},sb:()=>({select(){return this;},eq(){return this;},
     maybeSingle:async()=>({data:{object_path:'old-file'}}),upsert:async()=>({error:fail?{message:'Save interrupted'}:null})})});
 vm.runInContext(readFileSync(new URL('../bripta-client-documents.js',import.meta.url),'utf8'),context);
 assert.equal((context.clientDocumentInputs().match(/type="file"/g)||[]).length,6);
@@ -60,3 +66,14 @@ assert.equal((await context.saveClientDocumentFiles('client',files)).length,0);
 assert.ok(calls.some(c=>c[0]==='remove'&&c[1]==='old-file'));
 assert.equal(vm.runInContext('pendingClientDocumentUploads.size',context),0);
 console.log('PASS: six upload slots, image compression below 1 MB, failed-upload cleanup and retry without recreating clients.');
+
+// Once deployed, uploads go to the server function (Google Cloud) and never touch Supabase Storage.
+serviceDeployed=true;calls.length=0;serviceCalls.length=0;
+assert.equal((await context.saveClientDocumentFiles('client',files)).length,0);
+assert.equal(calls.length,0);
+assert.equal(serviceCalls.length,1);
+const form=serviceCalls[0].init.body;
+assert.equal(serviceCalls[0].init.headers.Authorization,'Bearer user-jwt');
+assert.equal(form.get('kind'),'client_id_front');assert.equal(form.get('expected_previous'),'old-file');
+assert.ok(serviceCalls[0].url.endsWith('/functions/v1/bripta-documents'));
+console.log('PASS: with the document service deployed, uploads go to Google Cloud through the server function.');

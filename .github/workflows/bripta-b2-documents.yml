@@ -1,0 +1,45 @@
+name: Bripta documents to Backblaze B2
+
+# Manual only. Pilot with mode=migrate, max_files=5. Cleanup deletes nothing unless the owner
+# has approved exact objects with bripta_document_approve_cleanup() in the SQL Editor.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: migrate or cleanup
+        required: true
+        default: migrate
+        type: choice
+        options: [migrate, cleanup]
+      max_files:
+        description: Maximum documents this run (5 for the pilot, up to 600)
+        required: true
+        default: '5'
+
+concurrency:
+  group: bripta-b2-documents
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Supabase client
+        run: npm install --no-save --no-package-lock --ignore-scripts @supabase/supabase-js@2.57.0
+      - name: Run
+        env:
+          BRIPTA_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.BRIPTA_SUPABASE_SERVICE_ROLE_KEY }}
+          BRIPTA_B2_MIGRATOR_KEY_ID: ${{ secrets.BRIPTA_B2_MIGRATOR_KEY_ID }}
+          BRIPTA_B2_MIGRATOR_APP_KEY: ${{ secrets.BRIPTA_B2_MIGRATOR_APP_KEY }}
+          BRIPTA_B2_ENDPOINT: ${{ vars.BRIPTA_B2_ENDPOINT }}
+          BRIPTA_B2_BUCKET: ${{ vars.BRIPTA_B2_BUCKET }}
+          BRIPTA_MODE: ${{ inputs.mode }}
+          BRIPTA_MAX_FILES: ${{ inputs.max_files }}
+        run: node scripts/bripta-b2-migrate-documents.mjs

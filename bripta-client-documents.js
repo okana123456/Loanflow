@@ -59,10 +59,40 @@ async function clientDocumentDigest(blob){
   const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
   return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
+// New uploads, previews and deletions go through the bripta-documents server function
+// (Backblaze B2, short-lived signed links). Until it is deployed the legacy
+// Supabase Storage path keeps the site working.
+const BRIPTA_DOCUMENT_FUNCTION='bripta-documents';
+class DocumentServiceMissing extends Error{}
+async function callDocumentService(body){
+  const{data:{session}}=await supabaseClient.auth.getSession();
+  if(!session?.access_token)throw new Error('Sign in again to continue.');
+  const isForm=body instanceof FormData;
+  let response;
+  try{
+    response=await fetch(`${SUPABASE_URL}/functions/v1/${BRIPTA_DOCUMENT_FUNCTION}`,{method:'POST',
+      headers:{Authorization:`Bearer ${session.access_token}`,apikey:SUPABASE_KEY,...(isForm?{}:{'Content-Type':'application/json'})},
+      body:isForm?body:JSON.stringify(body)});
+  }catch(_){throw new Error('Document service is unreachable. Check the connection and try again.');}
+  if(response.status===404&&!(response.headers.get('content-type')||'').includes('application/json'))throw new DocumentServiceMissing();
+  const result=await response.json().catch(()=>({}));
+  if(response.status===404&&result?.code==='NOT_FOUND')throw new DocumentServiceMissing();
+  if(!response.ok||!result.ok)throw new Error(result.message||`Document service error (${response.status})`);
+  return result;
+}
 async function uploadPrivateClientDocument(clientId,kind,file){
   const prepared=await prepareClientDocument(kind,file);
-  const{data:old,error:readError}=await sb('bripta_client_documents').select('object_path').eq('client_id',clientId).eq('kind',kind).maybeSingle();
+  const{data:old,error:readError}=await sb('bripta_client_documents').select('*').eq('client_id',clientId).eq('kind',kind).maybeSingle();
   if(readError)throw readError;
+  const form=new FormData();
+  form.append('client_id',clientId);form.append('kind',kind);
+  form.append('expected_previous',old?(old.ext_object_key||old.object_path||''):'');
+  form.append('file',new File([prepared.blob],file.name||'document',{type:prepared.mimeType}));
+  try{await callDocumentService(form);return;}
+  catch(error){if(!(error instanceof DocumentServiceMissing))throw error;}
+  return uploadLegacySupabaseDocument(clientId,kind,file,prepared,old);
+}
+async function uploadLegacySupabaseDocument(clientId,kind,file,prepared,old){
   const digest=await clientDocumentDigest(prepared.blob);
   const path=`${currentUser.business_id}/${clientId}/${kind}/${digest}.${prepared.ext}`;
   if(old?.object_path===path)return;
@@ -74,7 +104,7 @@ async function uploadPrivateClientDocument(clientId,kind,file){
     file_name:file.name,mime_type:prepared.mimeType,file_size:prepared.blob.size
   },{onConflict:'client_id,kind'});
   if(saveError){await bucket.remove([path]);throw saveError;}
-  if(old?.object_path&&old.object_path!==path){
+  if(old?.object_path&&old.object_path!==path&&old.storage_provider!=='b2'){
     const{error}=await bucket.remove([old.object_path]);
     if(error)console.warn('Previous document could not be removed',error.message);
   }
@@ -129,11 +159,18 @@ async function retryClientDocuments(clientId,button){
 async function viewPrivateClientDocument(clientId,kind){
   const popup=window.open('about:blank','_blank');if(popup)popup.opener=null;
   try{
-    const{data:doc,error}=await sb('bripta_client_documents').select('object_path').eq('client_id',clientId).eq('kind',kind).single();
-    if(error)throw error;
-    const{data,error:linkError}=await supabaseClient.storage.from(BRIPTA_DOCUMENT_BUCKET).createSignedUrl(doc.object_path,60);
-    if(linkError)throw linkError;
-    if(popup)popup.location.replace(data.signedUrl);
-    else openModal(`<h2>Document ready</h2><a class="btn btn-primary" href="${escapeHtml(data.signedUrl)}" target="_blank" rel="noopener noreferrer">Open document</a><p>This link expires in one minute.</p>`);
+    let signedUrl;
+    try{signedUrl=(await callDocumentService({action:'sign',client_id:clientId,kind})).url;}
+    catch(error){
+      if(!(error instanceof DocumentServiceMissing))throw error;
+      const{data:doc,error:readError}=await sb('bripta_client_documents').select('object_path,storage_provider').eq('client_id',clientId).eq('kind',kind).single();
+      if(readError)throw readError;
+      if(doc.storage_provider==='b2'||!doc.object_path)throw new Error('Document service is not available yet.');
+      const{data,error:linkError}=await supabaseClient.storage.from(BRIPTA_DOCUMENT_BUCKET).createSignedUrl(doc.object_path,60);
+      if(linkError)throw linkError;
+      signedUrl=data.signedUrl;
+    }
+    if(popup)popup.location.replace(signedUrl);
+    else openModal(`<h2>Document ready</h2><a class="btn btn-primary" href="${escapeHtml(signedUrl)}" target="_blank" rel="noopener noreferrer">Open document</a><p>This link expires in one minute.</p>`);
   }catch(error){if(popup)popup.close();toast('Could not open document: '+error.message,'error');}
 }
