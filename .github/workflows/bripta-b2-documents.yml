@@ -12,9 +12,9 @@ on:
         type: choice
         options: [migrate, cleanup]
       max_files:
-        description: Maximum documents this run (5 for the pilot, up to 600)
+        description: Maximum documents this run (up to 600)
         required: true
-        default: '5'
+        default: '600'
 
 concurrency:
   group: bripta-b2-documents
