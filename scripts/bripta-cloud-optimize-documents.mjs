@@ -11,6 +11,15 @@ const bucket=client.storage.from('bripta-client-documents');
 const limit=Math.min(Math.max(Number(process.env.BRIPTA_MAX_FILES||600),1),600);
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const fail=(step)=>{throw new Error(`${step} failed; inspect Supabase logs without publishing document details.`);};
+function safeDatabaseError(error){
+  const code=String(error?.code||'unknown').replace(/[^A-Za-z0-9]/g,'').slice(0,12);
+  const message=String(error?.message||'unknown')
+    .replace(/eyJ[A-Za-z0-9._-]+/g,'[token]')
+    .replace(/BIZ-[A-Za-z0-9_-]+\/[^\s'"),;]+/g,'[document path]')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,'[id]')
+    .slice(0,240);
+  return `${code}: ${message}`;
+}
 let completed=0,skipped=0,freed=0;
 const skippedIds=new Set();
 
@@ -69,7 +78,8 @@ for(let i=0;i<limit;i++){
       p_object_id:item.object_id,p_old_path:item.object_path,p_new_path:path,
       p_original_bytes:original.length,p_optimized_bytes:output.length
     });
-    if(commitError||!committed)fail('Document link switch');
+    if(commitError)throw new Error(`Document link switch failed (${safeDatabaseError(commitError)}).`);
+    if(!committed)fail('Document link switch');
     await pendingCleanup();
     completed++;freed+=original.length-output.length;
     if(completed%10===0)console.log(`Verified and replaced ${completed} documents; saved ${(freed/1048576).toFixed(1)} MiB this run.`);
