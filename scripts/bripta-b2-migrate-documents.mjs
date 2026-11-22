@@ -37,13 +37,21 @@ async function rpc(name, args) {
 }
 
 async function verifyThroughApp(id) {
-  const res = await fetch(`${PROJECT}/functions/v1/bripta-documents`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'verify_migration', ledger_id: id }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.ok) step(`app_verify_${String(body.code || res.status).replace(/[^a-z0-9_]/gi, '')}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${PROJECT}/functions/v1/bripta-documents`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify_migration', ledger_id: id }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok) return;
+      if (res.status < 500 || attempt === 2) step(`app_verify_${String(body.code || res.status).replace(/[^a-z0-9_]/gi, '')}`);
+    } catch (error) {
+      if (attempt === 2) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+  }
 }
 
 async function copyOne(row) {
@@ -58,8 +66,18 @@ async function copyOne(row) {
   let meta = await b2.head(row.ext_object_key);
   if (meta && (meta.size !== bytes.byteLength || meta.sha256 !== sha)) step('existing_object_mismatch');
   if (!meta) {
-    await b2.putObject(row.ext_object_key, bytes, contentType, sha); // B2 checks the signed SHA-256 of the body
-    meta = await b2.head(row.ext_object_key);
+    for (let attempt = 0; attempt < 3 && !meta; attempt++) {
+      try {
+        await b2.putObject(row.ext_object_key, bytes, contentType, sha); // B2 checks the signed SHA-256 of the body
+      } catch (error) {
+        // The upload may have succeeded before its response failed. Check the exact key first.
+        meta = await b2.head(row.ext_object_key);
+        if (meta) break;
+        if (attempt === 2 || error?.status && error.status < 500) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+      }
+      meta = await b2.head(row.ext_object_key);
+    }
   }
   if (!meta?.version || meta.size !== bytes.byteLength || meta.sha256 !== sha) step('b2_upload_mismatch');
   // Independent read-back of that exact version: byte count and SHA-256 must match the original.
@@ -94,7 +112,7 @@ async function migrate() {
   const seen = new Set();
   let consecutiveFailures = 0;
   while (seen.size < limit) {
-    const rows = (await rpc('bripta_b2_migration_claim', { p_limit: Math.min(10, limit - seen.size + 5), p_bucket: b2Bucket }))
+    const rows = (await rpc('bripta_b2_migration_claim_next', { p_limit: Math.min(50, limit - seen.size + 50), p_bucket: b2Bucket, p_exclude_ids: [...seen] }))
       .filter(r => !seen.has(r.id));
     if (!rows.length) break;
     for (const row of rows) {
