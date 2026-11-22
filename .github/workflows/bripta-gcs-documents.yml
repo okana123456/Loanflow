@@ -1,0 +1,53 @@
+name: Bripta documents to Google Cloud Storage
+
+# Manual only. Pilot with mode=migrate, max_files=5. Cleanup deletes nothing unless the owner
+# has approved exact objects with bripta_document_approve_cleanup() in the SQL Editor.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: migrate or cleanup
+        required: true
+        default: migrate
+        type: choice
+        options: [migrate, cleanup]
+      max_files:
+        description: Maximum documents this run (5 for the pilot, up to 600)
+        required: true
+        default: '5'
+
+concurrency:
+  group: bripta-gcs-documents
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write   # keyless Google workload identity federation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Supabase client
+        run: npm install --no-save --no-package-lock --ignore-scripts @supabase/supabase-js@2.57.0
+      - id: gcp
+        name: Google workload identity (no key)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.BRIPTA_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.BRIPTA_GCP_MIGRATOR_SA }}
+          token_format: access_token
+          access_token_lifetime: 3600s
+          create_credentials_file: false
+      - name: Run
+        env:
+          BRIPTA_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.BRIPTA_SUPABASE_SERVICE_ROLE_KEY }}
+          GCS_ACCESS_TOKEN: ${{ steps.gcp.outputs.access_token }}
+          BRIPTA_GCS_BUCKET: ${{ vars.BRIPTA_GCS_BUCKET }}
+          BRIPTA_MODE: ${{ inputs.mode }}
+          BRIPTA_MAX_FILES: ${{ inputs.max_files }}
+        run: node scripts/bripta-gcs-migrate-documents.mjs
