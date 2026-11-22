@@ -25,7 +25,10 @@ const b2 = createB2({
 
 class StepError extends Error { constructor(code) { super(code); this.code = code; } }
 const step = code => { throw new StepError(code); };
-const safeCode = e => (e instanceof StepError ? e.code : e?.step ? `b2_${e.step}_${e.status}` : 'unexpected')
+// Error class and system code only (e.g. unexpected_TypeError_ENOTFOUND); never the message,
+// which can echo header values.
+const safeCode = e => (e instanceof StepError ? e.code : e?.step ? `b2_${e.step}_${e.status}`
+  : `unexpected_${e?.name || 'Error'}_${e?.cause?.code || e?.code || 'none'}`)
   .replace(/[^A-Za-z0-9_]/g, '').slice(0, 60);
 async function rpc(name, args) {
   const { data, error } = await supabase.rpc(name, args);

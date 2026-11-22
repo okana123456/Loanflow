@@ -67,7 +67,11 @@ export class StorageError extends Error {
  * endpoint: the bucket's S3 endpoint, e.g. s3.us-west-004.backblazeb2.com
  */
 export function createB2({ endpoint, bucket, keyId, applicationKey, fetchImpl = fetch }) {
-  const host = String(endpoint || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  // Values pasted into secret stores often carry stray spaces or line breaks.
+  bucket = String(bucket || '').trim();
+  keyId = String(keyId || '').trim();
+  applicationKey = String(applicationKey || '').trim();
+  const host = String(endpoint || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, '');
   const region = /^s3\.([a-z0-9-]+)\.backblazeb2\.com$/.exec(host)?.[1];
   if (!region) throw new Error('Invalid B2 S3 endpoint');
   if (!/^[a-z0-9][a-z0-9-]{4,48}[a-z0-9]$/.test(bucket || '')) throw new Error('Invalid B2 bucket name');

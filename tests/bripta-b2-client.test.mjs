@@ -46,6 +46,11 @@ assert.equal(link.searchParams.get('X-Amz-Expires'),'300');
 assert.equal(link.searchParams.get('response-content-type'),'image/jpeg');
 assert.equal(new URL(await b2.signedGetUrl(key)).searchParams.get('X-Amz-Expires'),'60');
 await assert.rejects(b2.signedGetUrl('BIZ-B3F5E5D9/client/name.jpg'),/Unexpected object key/);
+// Stray whitespace from copy-pasted secrets is ignored.
+calls.length=0;
+await createB2({...opts,endpoint:' s3.us-west-004.backblazeb2.com\n',bucket:'bripta-docs-02bf34dc ',keyId:'004keyid\r\n',applicationKey:' secret-app-key\n'}).head(key);
+assert.match(calls[0].init.headers.authorization,/Credential=004keyid\/\d{8}\/us-west-004\//);
+assert.equal(calls[0].url,`https://s3.us-west-004.backblazeb2.com/bripta-docs-02bf34dc/${key}`);
 assert.throws(()=>createB2({...opts,endpoint:'evil.example.com'}),/endpoint/);
 assert.throws(()=>createB2({...opts,bucket:'Bad Bucket'}),/bucket/);
 assert.throws(()=>createB2({...opts,applicationKey:''}),/key is missing/);
