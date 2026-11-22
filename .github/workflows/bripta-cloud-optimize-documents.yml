@@ -1,0 +1,32 @@
+name: Optimize Bripta documents in Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_files:
+        description: Maximum documents to process this run (5 for first review, up to 600)
+        required: true
+        default: '5'
+
+concurrency:
+  group: bripta-cloud-optimize-documents
+  cancel-in-progress: false
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install temporary image tools
+        run: npm install --no-save --no-package-lock --ignore-scripts=false @supabase/supabase-js@2.57.0 sharp@0.34.4
+      - name: Compress and verify Bripta documents
+        env:
+          BRIPTA_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.BRIPTA_SUPABASE_SERVICE_ROLE_KEY }}
+          BRIPTA_MAX_FILES: ${{ inputs.max_files }}
+        run: node scripts/bripta-cloud-optimize-documents.mjs
