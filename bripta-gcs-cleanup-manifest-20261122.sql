@@ -14,4 +14,5 @@ order by m.category,m.created_at;
 -- APPROVAL (owner only, after review). Approves exactly the objects listed under that digest;
 -- it fails if anything changed since the manifest was generated. Example:
 --   select public.bripta_document_approve_cleanup('migrated_original','<digest_to_approve>');
--- 'still_linked_original' can never be approved. 'previously_unlinked' and 'uncertain' are approved separately, if at all.
+-- 'still_linked_original' can never be approved. 'previously_unlinked' (the 14 reviewed files),
+-- 'optimizer_staged' (1 reduced copy from the failed optimizer) and 'uncertain' are approved separately, if at all.

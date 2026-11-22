@@ -53,17 +53,20 @@ for(const[client,kind,c]of [[21,'client_passport','a'],[21,'client_id_front','b'
 }
 await putObject(`${biz}/${id(21)}/client_id_back/${hash('e')}.jpg`,777); // previously unlinked
 await owner();
+await db.query("insert into storage.objects(id,bucket_id,name,metadata) values('5afe3fad-e5e2-409c-88ba-6d9c5fe36aa0','bripta-client-documents',$1,$2)",
+  [`${biz}/${id(21)}/guarantor_passport/${hash('d')}.jpg`,{size:'195473',mimetype:'image/jpeg'}]); // failed optimizer's staged copy
+await owner();
 // Read-only preflight runs against the pre-migration schema (incl. the failed optimizer's tables).
 await db.exec(sqlFile('bripta-cloud-document-optimizer-20261121.sql'));
 await db.exec(`create table bripta_document_compression_audit(object_id uuid,client_id uuid,kind text,old_path text,new_path text,old_deleted_at timestamptz);`);
 const preflight=(await db.query(sqlFile('bripta-gcs-preflight-audit-20261122.sql'))).rows;
 const totals=preflight.find(r=>r.section==='1 totals').details;
-assert.equal(totals.linked_files,4);assert.equal(totals.unlinked_files,1);assert.equal(totals.broken_links,0);
+assert.equal(totals.linked_files,4);assert.equal(totals.unlinked_files,2);assert.equal(totals.broken_links,0);
 assert.ok(preflight.some(r=>r.section==='7 live function'&&r.kind==='bripta_can_access_client_documents'));
 await db.exec(sqlFile('bripta-gcs-documents-20261122.sql'));
 await db.exec(sqlFile('bripta-gcs-documents-20261122.sql')); // idempotent
 assert.deepEqual((await db.query('select linked_at_baseline,count(*)::int n from bripta_document_storage_baseline group by 1 order by 1')).rows,
-  [{linked_at_baseline:false,n:1},{linked_at_baseline:true,n:4}]);
+  [{linked_at_baseline:false,n:2},{linked_at_baseline:true,n:4}]);
 assert.equal((await one("select count(*)::int n from bripta_client_documents where storage_provider='supabase'")).n,4);
 
 // Legacy staff uploads keep working and stay on Supabase.
@@ -166,7 +169,7 @@ assert.equal((await one('select bripta_document_queue_done($1) ok',[removed[0].q
 await putObject(`${biz}/${id(21)}/client_id_back/${hash('6')}.jpg`,55); // appears after baseline
 await owner();
 const cats=Object.fromEntries((await db.query('select category,count(*)::int n from bripta_document_cleanup_manifest group by 1')).rows.map(r=>[r.category,r.n]));
-assert.equal(cats.migrated_original,1);assert.equal(cats.previously_unlinked,1);assert.ok(cats.still_linked_original>=1);assert.ok(cats.uncertain>=1);
+assert.equal(cats.migrated_original,1);assert.equal(cats.previously_unlinked,1);assert.equal(cats.optimizer_staged,1);assert.ok(cats.still_linked_original>=1);assert.ok(cats.uncertain>=1);
 await rejects(db.query("select bripta_document_approve_cleanup('migrated_original','wrong')"),/Manifest changed/);
 const digest=(await one("select bripta_document_manifest_digest('migrated_original') d")).d;
 assert.equal((await one("select bripta_document_approve_cleanup('migrated_original',$1) n",[digest])).n,1);

@@ -93,7 +93,7 @@ revoke all on public.bripta_document_object_queue from public,anon,authenticated
 -- 5. Cleanup approvals: written only by the project owner in the SQL Editor.
 create table if not exists public.bripta_document_cleanup_approval (
   object_id uuid primary key,
-  category text not null check (category in ('migrated_original','previously_unlinked','uncertain')),
+  category text not null check (category in ('migrated_original','previously_unlinked','optimizer_staged','uncertain')),
   object_path text not null,
   size_bytes bigint not null,
   ledger_id bigint,
@@ -477,6 +477,10 @@ with objs as (
         then 'migrated_original'
       when exists(select 1 from public.bripta_client_documents d where d.object_path=x.object_path)
         then 'uncertain'  -- linked fallback whose migration is not verified
+      -- Staged copy left by the failed 2026-11-22 optimizer run (preflight audit, section 3).
+      when x.object_id='5afe3fad-e5e2-409c-88ba-6d9c5fe36aa0'::uuid and exists(select 1 from public.bripta_document_storage_baseline b
+          where b.object_id=x.object_id and not b.linked_at_baseline)
+        then 'optimizer_staged'
       when exists(select 1 from public.bripta_document_storage_baseline b where b.object_id=x.object_id and not b.linked_at_baseline)
         then 'previously_unlinked'
       else 'uncertain'
@@ -498,7 +502,7 @@ create or replace function public.bripta_document_approve_cleanup(p_category tex
 returns integer language plpgsql volatile security definer set search_path=pg_catalog as $$
 declare n integer;
 begin
-  if p_category not in ('migrated_original','previously_unlinked','uncertain') then raise exception 'Unknown category'; end if;
+  if p_category not in ('migrated_original','previously_unlinked','optimizer_staged','uncertain') then raise exception 'Unknown category'; end if;
   if public.bripta_document_manifest_digest(p_category)<>p_digest then
     raise exception 'Manifest changed since review; regenerate and review it again'; end if;
   insert into public.bripta_document_cleanup_approval(object_id,category,object_path,size_bytes,ledger_id,manifest_digest)
