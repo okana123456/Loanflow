@@ -73,10 +73,81 @@ async function handleSign(actor: Actor, body: Record<string, unknown>) {
   return json({ ok: true, url: await signedLink(docs[0]), expires_in: LINK_SECONDS });
 }
 
-async function handleUpload(actor: Actor, req: Request) {
+async function removeOldProfile(clientId: string, previous: { previous_path: string | null; previous_key: string | null; previous_version: string | null }) {
+  if (previous.previous_key && previous.previous_version) {
+    try { await store().deleteVersion(previous.previous_key, previous.previous_version); }
+    catch { await admin.rpc('bripta_document_queue_object', { p_provider: 'b2', p_bucket: bucketName,
+      p_key: previous.previous_key, p_version: previous.previous_version, p_client: clientId,
+      p_kind: 'profile_photo', p_reason: 'replaced_by_staff' }); }
+  } else if (previous.previous_path && previous.previous_path !== 'b2') {
+    // Existing Supabase photos stay in the review queue until a separate approved cleanup.
+    await admin.rpc('bripta_document_queue_object', { p_provider: 'supabase', p_bucket: 'client-photos',
+      p_key: previous.previous_path, p_version: null, p_client: clientId,
+      p_kind: 'profile_photo', p_reason: 'replaced_by_staff' });
+  }
+}
+
+async function handleProfileSign(actor: Actor, body: Record<string, unknown>) {
+  const clientId = String(body.client_id || '');
+  if (!UUID.test(clientId)) return json({ ok: false, message: 'Invalid client.' }, 400);
+  const { data, error } = await admin.rpc('bripta_b2_profile_lookup', { p_uid: actor.uid, p_email: actor.email, p_client: clientId });
+  if (error) return json({ ok: false, message: safeMessage(error, 'Could not open photo.') }, dbStatus(error));
+  const photo = (data || [])[0];
+  if (!photo) return json({ ok: false, message: 'Photo not found.' }, 404);
+  if (photo.ext_bucket !== bucketName) return json({ ok: false, message: 'Photo bucket mismatch.' }, 502);
+  const photoUrl = await store().signedGetUrl(photo.object_key, { expiresSeconds: LINK_SECONDS,
+    contentType: 'image/jpeg', version: photo.ext_version });
+  return json({ ok: true, url: photoUrl, expires_in: LINK_SECONDS });
+}
+
+async function handleProfileUpload(actor: Actor, form: FormData) {
+  const clientId = String(form.get('client_id') || ''), previous = String(form.get('expected_previous') || '');
+  const file = form.get('file');
+  if (!UUID.test(clientId) || !(file instanceof Blob) || file.type !== 'image/jpeg' || !file.size || file.size > 280000)
+    return json({ ok: false, message: 'Use a cropped JPG photo under 280 KB.' }, 415);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9)
+    return json({ ok: false, message: 'Invalid JPG photo.' }, 415);
+  // Check access before uploading private data to B2.
+  const { data: existing, error: accessError } = await admin.rpc('bripta_b2_profile_lookup', { p_uid: actor.uid, p_email: actor.email, p_client: clientId });
+  if (accessError) return json({ ok: false, message: safeMessage(accessError, 'Could not check photo access.') }, dbStatus(accessError));
+  const key = `bripta/photos/v1/${crypto.randomUUID()}`, digest = await sha256Hex(bytes);
+  if (previous === 'b2' && existing?.[0]?.sha256 === digest)
+    return json({ ok: true, status: 'unchanged', storage: 'b2' });
+  const put = await store().putObject(key, bytes, 'image/jpeg', digest);
+  const meta = await store().head(key);
+  if (!meta?.version || meta.version !== put.version || meta.size !== bytes.length || meta.sha256 !== digest) {
+    if (put.version) {
+      try { await store().deleteVersion(key, put.version); }
+      catch { await admin.rpc('bripta_document_queue_object', { p_provider: 'b2', p_bucket: bucketName,
+        p_key: key, p_version: put.version, p_client: clientId, p_kind: 'profile_photo', p_reason: 'failed_commit' }); }
+    }
+    return json({ ok: false, message: 'Photo upload could not be verified.' }, 502);
+  }
+  const { data, error } = await admin.rpc('bripta_b2_profile_commit', { p_uid: actor.uid, p_email: actor.email,
+    p_client: clientId, p_previous: previous, p_bucket: bucketName, p_key: key, p_version: meta.version, p_sha256: digest, p_size: bytes.length });
+  if (error) {
+    try { await store().deleteVersion(key, meta.version); }
+    catch { await admin.rpc('bripta_document_queue_object', { p_provider: 'b2', p_bucket: bucketName,
+      p_key: key, p_version: meta.version, p_client: clientId, p_kind: 'profile_photo', p_reason: 'failed_commit' }); }
+    return json({ ok: false, message: safeMessage(error, 'Photo could not be saved.') }, dbStatus(error));
+  }
+  await removeOldProfile(clientId, (data || [])[0] || {});
+  return json({ ok: true, status: 'saved', storage: 'b2' });
+}
+
+async function handleProfileRemove(actor: Actor, body: Record<string, unknown>) {
+  const clientId = String(body.client_id || '');
+  if (!UUID.test(clientId)) return json({ ok: false, message: 'Invalid client.' }, 400);
+  const { data, error } = await admin.rpc('bripta_b2_profile_remove', { p_uid: actor.uid, p_email: actor.email, p_client: clientId });
+  if (error) return json({ ok: false, message: safeMessage(error, 'Could not remove photo.') }, dbStatus(error));
+  await removeOldProfile(clientId, (data || [])[0] || {});
+  return json({ ok: true, status: 'removed' });
+}
+
+async function handleUpload(actor: Actor, req: Request, form: FormData) {
   const length = Number(req.headers.get('content-length') || 0);
   if (length > 9 * 1024 * 1024) return json({ ok: false, message: 'Maximum file size is 8 MB.' }, 413);
-  const form = await req.formData();
   const clientId = String(form.get('client_id') || ''), kind = String(form.get('kind') || '');
   const expectedPrevious = String(form.get('expected_previous') || '');
   const file = form.get('file');
@@ -142,7 +213,8 @@ async function handleDeleteClient(actor: Actor, body: Record<string, unknown>) {
         if (item.bucket !== bucketName) throw new Error('bucket_mismatch');
         await store().deleteVersion(item.object_key, item.ext_version);
       } else {
-        const { error: removeError } = await admin.storage.from(SUPABASE_BUCKET).remove([item.object_key]);
+        if (![SUPABASE_BUCKET, 'client-photos'].includes(item.bucket)) throw new Error('bucket_mismatch');
+        const { error: removeError } = await admin.storage.from(item.bucket).remove([item.object_key]);
         if (removeError) throw new Error('remove_failed');
       }
       const { data: done } = await admin.rpc('bripta_document_queue_done', { p_id: item.queue_id });
@@ -179,14 +251,20 @@ Deno.serve(async req => {
   let action = 'unknown';
   try {
     const isUpload = (req.headers.get('content-type') || '').startsWith('multipart/form-data');
+    if (isUpload && Number(req.headers.get('content-length') || 0) > 9 * 1024 * 1024)
+      return json({ ok: false, message: 'Maximum file size is 8 MB.' }, 413);
+    const form = isUpload ? await req.formData() : null;
     const body = isUpload ? {} : await req.json();
-    action = isUpload ? 'upload' : String(body?.action || '');
+    action = isUpload ? String(form?.get('action') || 'upload') : String(body?.action || '');
     if (action === 'verify_migration') return await handleVerifyMigration(token, body);
     const { data: { user }, error: userError } = await admin.auth.getUser(token);
     if (userError || !user) return json({ ok: false, message: 'Your login expired. Sign in again.' }, 401);
     const actor = { uid: user.id, email: user.email || '' };
-    if (isUpload) return await handleUpload(actor, req);
+    if (action === 'upload_profile_photo' && form) return await handleProfileUpload(actor, form);
+    if (isUpload) return await handleUpload(actor, req, form!);
     if (action === 'sign') return await handleSign(actor, body);
+    if (action === 'sign_profile_photo') return await handleProfileSign(actor, body);
+    if (action === 'remove_profile_photo') return await handleProfileRemove(actor, body);
     if (action === 'delete_client') return await handleDeleteClient(actor, body);
     return json({ ok: false, message: 'Unknown action.' }, 400);
   } catch (error) {

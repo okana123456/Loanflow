@@ -900,7 +900,7 @@ function clientInitials(name){
   return (parts[0]?.[0] || 'C') + (parts[1]?.[0] || '');
 }
 function clientPhotoUrl(client){
-  if(!client?.photo_path) return '';
+  if(!client?.photo_path || client.photo_path==='b2') return '';
   try{
     return supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).getPublicUrl(client.photo_path).data.publicUrl || '';
   }catch(e){ return ''; }
@@ -909,8 +909,43 @@ function clientAvatarHtml(client, large=false){
   const url = clientPhotoUrl(client);
   const cls = `client-avatar${large ? ' client-avatar-lg' : ''}`;
   const alt = escapeHtml(client?.full_name || 'Client photo');
+  if(client?.photo_path==='b2' && client.id)
+    return `<span class="${cls}" data-b2-photo="${escapeHtml(client.id)}" data-photo-alt="${alt}">${escapeHtml(clientInitials(client?.full_name))}</span>`;
   return url ? `<img class="${cls}" src="${url}" alt="${alt}" loading="lazy">` : `<span class="${cls}">${escapeHtml(clientInitials(client?.full_name))}</span>`;
 }
+const signedClientPhotos=new Map();
+let clientPhotoHydrationPending=false;
+const visibleB2ClientPhotos=new IntersectionObserver(entries=>{
+  entries.forEach(async entry=>{
+    if(!entry.isIntersecting)return;
+    const el=entry.target;
+    visibleB2ClientPhotos.unobserve(el);
+    const id=el.dataset.b2Photo;
+    try{
+      let cached=signedClientPhotos.get(id);
+      if(!cached || cached.expires<Date.now()){
+        const result=await callDocumentService({action:'sign_profile_photo',client_id:id});
+        cached={url:result.url,expires:Date.now()+45000};
+        signedClientPhotos.set(id,cached);
+      }
+      if(el.isConnected){
+        const img=document.createElement('img');
+        img.className=el.className;img.alt=el.dataset.photoAlt||'Client photo';img.src=cached.url;
+        img.onerror=()=>{if(img.isConnected){delete el.dataset.photoObserved;img.replaceWith(el);}};
+        el.replaceWith(img);
+      }
+    }catch(_){delete el.dataset.photoObserved;}
+  });
+},{rootMargin:'200px'});
+function hydrateB2ClientPhotos(){
+  clientPhotoHydrationPending=false;
+  document.querySelectorAll('[data-b2-photo]:not([data-photo-observed])').forEach(el=>{
+    el.dataset.photoObserved='1';visibleB2ClientPhotos.observe(el);
+  });
+}
+new MutationObserver(()=>{
+  if(!clientPhotoHydrationPending){clientPhotoHydrationPending=true;requestAnimationFrame(hydrateB2ClientPhotos);}
+}).observe(document.body,{childList:true,subtree:true});
 function paymentPhoneHtml(row){
   const phone = row?.msisdn || row?.payer_phone || row?.phone_number || row?.phone || '';
   const clean = String(phone || '').trim();
@@ -1018,17 +1053,14 @@ async function saveCroppedClientPhoto(){
   try{
     const blob = await croppedClientPhotoBlob();
     if(blob.size > 280000) throw new Error('Photo is still too large. Reduce zoom or choose a smaller image.');
-    const safeBiz = String(currentUser?.business_id || 'business').replace(/[^a-zA-Z0-9_-]/g,'');
-    const path = `${safeBiz}/${clientId}-${Date.now()}.jpg`;
     const oldPath = clientPhotoCropState.oldPath;
-    const {error:uploadError} = await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).upload(path, blob, {contentType:'image/jpeg', upsert:false, cacheControl:'604800'});
-    if(uploadError) throw uploadError;
-    const {error:updateError} = await sb('loan_clients').update({photo_path:path}).eq('id',clientId).eq('business_id',currentUser.business_id);
-    if(updateError) throw updateError;
-    if(oldPath && oldPath !== path){
-      try{ await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).remove([oldPath]); }catch(_){}
-    }
-    updateCachedClientPhoto(clientId, path);
+    const form=new FormData();
+    form.append('action','upload_profile_photo');form.append('client_id',clientId);
+    form.append('expected_previous',oldPath||'');
+    form.append('file',new File([blob],'client-photo.jpg',{type:'image/jpeg'}));
+    await callDocumentService(form);
+    signedClientPhotos.delete(clientId);
+    updateCachedClientPhoto(clientId, 'b2');
     toast('Client photo saved','success');
     clientPhotoCropState = null;
     viewClient(clientId);
@@ -1040,9 +1072,8 @@ async function saveCroppedClientPhoto(){
 async function removeClientPhoto(clientId, path){
   if(!await confirm_('Remove this client photo?')) return;
   try{
-    if(path) await supabaseClient.storage.from(CLIENT_PHOTO_BUCKET).remove([path]);
-    const {error} = await sb('loan_clients').update({photo_path:null}).eq('id',clientId).eq('business_id',currentUser.business_id);
-    if(error) throw error;
+    await callDocumentService({action:'remove_profile_photo',client_id:clientId});
+    signedClientPhotos.delete(clientId);
     updateCachedClientPhoto(clientId, null);
     toast('Client photo removed', 'success');
     viewClient(clientId);

@@ -59,9 +59,8 @@ async function clientDocumentDigest(blob){
   const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()));
   return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
-// New uploads, previews and deletions go through the bripta-documents server function
-// (Backblaze B2, short-lived signed links). Until it is deployed the legacy
-// Supabase Storage path keeps the site working.
+// New uploads, previews and deletions go through the bripta-documents server function.
+// Existing Supabase documents remain viewable during migration; new uploads require B2.
 const BRIPTA_DOCUMENT_FUNCTION='bripta-documents';
 class DocumentServiceMissing extends Error{}
 async function callDocumentService(body){
@@ -88,26 +87,7 @@ async function uploadPrivateClientDocument(clientId,kind,file){
   form.append('client_id',clientId);form.append('kind',kind);
   form.append('expected_previous',old?(old.ext_object_key||old.object_path||''):'');
   form.append('file',new File([prepared.blob],file.name||'document',{type:prepared.mimeType}));
-  try{await callDocumentService(form);return;}
-  catch(error){if(!(error instanceof DocumentServiceMissing))throw error;}
-  return uploadLegacySupabaseDocument(clientId,kind,file,prepared,old);
-}
-async function uploadLegacySupabaseDocument(clientId,kind,file,prepared,old){
-  const digest=await clientDocumentDigest(prepared.blob);
-  const path=`${currentUser.business_id}/${clientId}/${kind}/${digest}.${prepared.ext}`;
-  if(old?.object_path===path)return;
-  const bucket=supabaseClient.storage.from(BRIPTA_DOCUMENT_BUCKET);
-  const{error:uploadError}=await bucket.upload(path,prepared.blob,{contentType:prepared.mimeType,upsert:false});
-  if(uploadError)throw uploadError;
-  const{error:saveError}=await sb('bripta_client_documents').upsert({
-    client_id:clientId,kind,business_id:currentUser.business_id,object_path:path,
-    file_name:file.name,mime_type:prepared.mimeType,file_size:prepared.blob.size
-  },{onConflict:'client_id,kind'});
-  if(saveError){await bucket.remove([path]);throw saveError;}
-  if(old?.object_path&&old.object_path!==path&&old.storage_provider!=='b2'){
-    const{error}=await bucket.remove([old.object_path]);
-    if(error)console.warn('Previous document could not be removed',error.message);
-  }
+  await callDocumentService(form);
 }
 async function saveClientDocumentFiles(clientId,files){
   const failed=[];
@@ -134,7 +114,7 @@ async function openClientDocuments(clientId){
         ${retry.map(item=>`<p>${escapeHtml(BRIPTA_DOCUMENT_TYPES.find(([key])=>key===item.kind)?.[1])}: ${escapeHtml(item.error)}</p>`).join('')}
         <button class="btn btn-primary btn-sm" onclick="retryClientDocuments('${clientId}',this)">Retry pending uploads</button></div>`:''}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px">
-      ${BRIPTA_DOCUMENT_TYPES.map(([kind,label])=>{const doc=byKind.get(kind);const legacy=kind==='client_passport'&&!doc&&client.photo_path;
+      ${BRIPTA_DOCUMENT_TYPES.map(([kind,label])=>{const doc=byKind.get(kind);const legacy=kind==='client_passport'&&!doc&&client.photo_path&&client.photo_path!=='b2';
         return `<div class="card" style="padding:12px;min-width:0"><strong>${label}</strong>
           <p style="font-size:12px;overflow-wrap:anywhere">${doc?escapeHtml(doc.file_name):legacy?'Existing client photo':'Not yet attached'}</p>
           ${doc?`<button class="btn btn-outline btn-sm" onclick="viewPrivateClientDocument('${clientId}','${kind}')">View / Download</button>`:
