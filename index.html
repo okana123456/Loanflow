@@ -6064,6 +6064,11 @@ function canManageSuspense(){
   return hasRole('admin','branch_manager','cashier');
 }
 
+function canManageSuspenseEntry(row){
+  return canManageSuspense() && (hasRole('admin') ||
+    (!!currentUser?.branch_id && row.branch_id===currentUser.branch_id));
+}
+
 function requireSuspenseManage(){
   if(canManageSuspense())return true;
   toast('Your Suspense Account access is view only','warning');
@@ -6074,7 +6079,7 @@ async function fetchBriptaSuspenseRows(source){
   const rows=[];let after=null;
   for(let page=0;page<200;page++){
     const{data,error}=await supabaseClient.rpc('bripta_suspense_page',{
-      p_source:source,p_branch:selectedBranchId||null,p_after:after,p_limit:500
+      p_source:source,p_branch:null,p_after:after,p_limit:500
     });
     if(error)throw error;
     if(!Array.isArray(data?.rows))throw new Error('Could not read Suspense records');
@@ -6102,8 +6107,8 @@ async function renderSuspense(){
     const queue=unique(queued);
     const pendingManualSuspense=unique(manual);
     visibleSuspenseEntries=[
-      ...queue.map(q=>({key:`mpesa:${q.id}`,type:'mpesa',id:q.id,amount:Number(q.trans_amount||0)})),
-      ...pendingManualSuspense.map(r=>({key:`unmatched:${r.id}`,type:'unmatched',id:r.id,amount:Number(r.amount||0)}))
+      ...queue.filter(canManageSuspenseEntry).map(q=>({key:`mpesa:${q.id}`,type:'mpesa',id:q.id,amount:Number(q.trans_amount||0)})),
+      ...pendingManualSuspense.filter(canManageSuspenseEntry).map(r=>({key:`unmatched:${r.id}`,type:'unmatched',id:r.id,amount:Number(r.amount||0)}))
     ];
     const visibleKeys=new Set(visibleSuspenseEntries.map(entry=>entry.key));
     [...selectedSuspenseEntries].forEach(key=>{if(!visibleKeys.has(key))selectedSuspenseEntries.delete(key)});
@@ -6113,7 +6118,7 @@ async function renderSuspense(){
 
     main.innerHTML=`
       <div class="page-header">
-        <h1>💼 Suspense Account</h1>
+        <div><h1>💼 Suspense Account</h1><p style="font-size:12px;color:var(--text-secondary)">Shared across all Bripta branches · branch shown on each payment</p></div>
         ${canManage?`<div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn btn-outline btn-sm" onclick="selectAllVisibleSuspense()">Select all</button>
           <button class="btn btn-outline btn-sm" onclick="clearSuspenseSelection()">Clear selection</button>
@@ -6132,21 +6137,22 @@ async function renderSuspense(){
       <h3 class="dash-h3">Unmatched M-Pesa (Daraja Queue)</h3>
       <div class="table-wrap" style="margin-bottom:14px">
         <table>
-          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all M-Pesa suspense rows" onchange="toggleSuspenseTypeSelection(\'mpesa\',this.checked)"></th>':''}<th>Date</th><th>M-Pesa Ref</th><th>Phone</th><th>Account Ref</th><th>Amount</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
+          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all M-Pesa suspense rows" onchange="toggleSuspenseTypeSelection(\'mpesa\',this.checked)"></th>':''}<th>Date</th><th>Branch</th><th>M-Pesa Ref</th><th>Phone</th><th>Account Ref</th><th>Amount</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
           <tbody>
             ${queue.length?queue.map(q=>`
               <tr>
-                ${canManage?`<td><input type="checkbox" aria-label="Select M-Pesa payment ${escapeHtml(q.trans_id||'')}" ${selectedSuspenseEntries.has(`mpesa:${q.id}`)?'checked':''} onchange="toggleSuspenseSelection('mpesa','${q.id}',this.checked)"></td>`:''}
+                ${canManage?`<td>${canManageSuspenseEntry(q)?`<input type="checkbox" aria-label="Select M-Pesa payment ${escapeHtml(q.trans_id||'')}" ${selectedSuspenseEntries.has(`mpesa:${q.id}`)?'checked':''} onchange="toggleSuspenseSelection('mpesa','${q.id}',this.checked)">`:''}</td>`:''}
                 <td>${fmtDateTime(q.created_at)}</td>
+                <td>${escapeHtml(branchName(q.branch_id))}</td>
                 <td><strong>${escapeHtml(q.trans_id||'-')}</strong></td>
                 <td>${paymentPhoneHtml(q)}</td>
                 <td>${escapeHtml(q.bill_ref_number||'-')}${q.loan_id?'<br><span class="badge badge-blue">Suggested loan found</span>':''}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(q.trans_amount)}</strong></td>
-                ${canManage?`<td style="display:flex;gap:4px;flex-wrap:wrap">
+                ${canManageSuspenseEntry(q)?`<td style="display:flex;gap:4px;flex-wrap:wrap">
                   <button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${q.id}','mpesa',${q.trans_amount},'${q.trans_id||''}','${q.loan_id||''}')">Match to Loan</button>
                   <button class="btn btn-outline btn-sm" onclick="dismissMpesaPayment('${q.id}')">Dismiss</button>
                 </td>`:'<td><span class="badge badge-blue">View only</span></td>'}
-              </tr>`).join(''):`<tr><td colspan="${canManage?7:6}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No unmatched M-Pesa payments</div></td></tr>`}
+              </tr>`).join(''):`<tr><td colspan="${canManage?8:7}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No unmatched M-Pesa payments</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -6154,18 +6160,19 @@ async function renderSuspense(){
       <h3 class="dash-h3">Manual Suspense Entries</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all manual suspense rows" onchange="toggleSuspenseTypeSelection(\'unmatched\',this.checked)"></th>':''}<th>Date</th><th>Reference</th><th>Description</th><th>Amount</th><th>Status</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
+          <thead><tr>${canManage?'<th style="width:34px"><input type="checkbox" aria-label="Select all manual suspense rows" onchange="toggleSuspenseTypeSelection(\'unmatched\',this.checked)"></th>':''}<th>Date</th><th>Branch</th><th>Reference</th><th>Description</th><th>Amount</th><th>Status</th><th>${canManage?'Actions':'Access'}</th></tr></thead>
           <tbody>
             ${pendingManualSuspense.length?pendingManualSuspense.map(r=>`
               <tr>
-                ${canManage?`<td><input type="checkbox" aria-label="Select manual suspense entry" ${selectedSuspenseEntries.has(`unmatched:${r.id}`)?'checked':''} onchange="toggleSuspenseSelection('unmatched','${r.id}',this.checked)"></td>`:''}
+                ${canManage?`<td>${canManageSuspenseEntry(r)?`<input type="checkbox" aria-label="Select manual suspense entry" ${selectedSuspenseEntries.has(`unmatched:${r.id}`)?'checked':''} onchange="toggleSuspenseSelection('unmatched','${r.id}',this.checked)">`:''}</td>`:''}
                 <td>${fmtDate(r.created_at)}</td>
-                <td>${r.mpesa_reference||r.invoice_id||'-'}</td>
-                <td>${r.payer_name||'-'} · ${r.payer_phone||'-'} · Acct: ${r.account_number||'-'}</td>
+                <td>${escapeHtml(branchName(r.branch_id))}</td>
+                <td>${escapeHtml(r.mpesa_reference||r.invoice_id||'-')}</td>
+                <td>${escapeHtml(r.payer_name||'-')} · ${escapeHtml(r.payer_phone||'-')} · Acct: ${escapeHtml(r.account_number||'-')}</td>
                 <td><strong style="color:var(--accent-green)">${fmtMoney(r.amount)}</strong></td>
                 <td>${!r.resolved?'<span class="badge badge-yellow">Pending</span>':'<span class="badge badge-green">Matched</span>'}</td>
-                <td>${canManage?(!r.resolved?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button><button class="btn btn-outline btn-sm" onclick="dismissManualSuspense('${r.id}')">Dismiss</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'):'<span class="badge badge-blue">View only</span>'}</td>
-              </tr>`).join(''):`<tr><td colspan="${canManage?7:6}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>`}
+                <td>${canManageSuspenseEntry(r)?(!r.resolved?`<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-success btn-sm" onclick="openSuspenseMatchModal('${r.id}','unmatched',${r.amount},'${r.mpesa_reference||r.invoice_id||''}')">Match</button><button class="btn btn-outline btn-sm" onclick="dismissManualSuspense('${r.id}')">Dismiss</button></div>`:'<span style="font-size:11px;color:var(--text-secondary)">Done</span>'):'<span class="badge badge-blue">View only</span>'}</td>
+              </tr>`).join(''):`<tr><td colspan="${canManage?8:7}"><div style="padding:18px;text-align:center;color:var(--text-secondary);font-size:13px">No manual suspense entries waiting to be matched</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -6251,6 +6258,7 @@ async function openAddSuspenseModal(){
       <div class="form-group"><label>Reference / Receipt No</label><input class="input" id="suspRef" placeholder="e.g. QHF7XXXXX"></div>
     </div>
     <div class="form-group"><label>Date Received</label><input class="input" type="date" id="suspDate" value="${today()}"></div>
+    ${hasRole('admin')?`<div class="form-group"><label>Origin branch</label><select class="select" id="suspEntryBranch">${branchOptions(selectedBranchId||currentUser.branch_id)}</select></div>`:''}
     <div class="form-group"><label>Description / Notes</label><textarea class="textarea" id="suspDesc" placeholder="e.g. Cash payment from unknown client, M-Pesa from 0712xxxxx..."></textarea></div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
@@ -6265,8 +6273,11 @@ async function saveSuspenseEntry(){
   if(!amt||amt<=0)return toast('Enter a valid amount','warning');
   try{
     const rcpt='SUSP-'+Date.now().toString().slice(-8);
-    await sb('unmatched_payments').insert({
+    const originBranch=$('#suspEntryBranch')?.value||currentUser.branch_id;
+    if(!originBranch)throw new Error('Select an origin branch');
+    const{error}=await sb('unmatched_payments').insert({
       business_id:currentUser.business_id,
+      branch_id:originBranch,
       account_number:$('#suspRef').value||rcpt,
       amount:amt,
       payer_phone:'',
@@ -6274,6 +6285,7 @@ async function saveSuspenseEntry(){
       mpesa_reference:$('#suspRef').value||rcpt,
       resolved:false
     });
+    if(error)throw error;
     toast('Payment added to suspense account','success');
     closeModal();
     renderSuspense();
@@ -6292,10 +6304,14 @@ async function dismissManualSuspense(entryId){
 
 async function openSuspenseMatchModal(entryId, entryType, amount, ref, suggestedLoanId=''){
   if(!requireSuspenseManage())return;
-  const{data:loans}=await sb('loans')
-    .select('id,loan_no,client_id,outstanding_balance,registration_fee_due,registration_fee_paid,processing_fee,processing_fee_paid,loan_clients(full_name,phone,id_number)')
-    .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0)
-    .order('created_at',{ascending:false}).limit(500);
+  if(!visibleSuspenseEntries.some(e=>e.id===entryId&&e.type===entryType))
+    return toast('This payment belongs to another branch or is no longer pending','warning');
+  let loanQuery=sb('loans')
+    .select('id,loan_no,client_id,branch_id,outstanding_balance,registration_fee_due,registration_fee_paid,processing_fee,processing_fee_paid,loan_clients(full_name,phone,id_number)')
+    .eq('business_id',currentUser.business_id).eq('status','active').gt('outstanding_balance',0);
+  if(!hasRole('admin'))loanQuery=loanQuery.eq('branch_id',currentUser.branch_id);
+  const{data:loans,error:loanError}=await loanQuery.order('created_at',{ascending:false}).limit(500);
+  if(loanError)return toast(loanError.message,'error');
 
   openModal(`
     <h2>Match Suspense Payment to Loan</h2>
@@ -6362,6 +6378,8 @@ function previewSuspenseMatch(amount){
 
 async function confirmSuspenseMatch(entryId, entryType, amount, ref){
   if(!requireSuspenseManage())return;
+  if(!visibleSuspenseEntries.some(e=>e.id===entryId&&e.type===entryType))
+    return toast('This payment belongs to another branch or is no longer pending','warning');
   const loanId=document.getElementById('suspMatchLoan')?.value;
   if(!loanId)return toast('Please select a loan','warning');
   const btn=[...document.querySelectorAll('.modal-actions .btn-primary')].find(b=>/Confirm Match/i.test(b.textContent||''));
@@ -6369,6 +6387,8 @@ async function confirmSuspenseMatch(entryId, entryType, amount, ref){
   try{
     const{data:loan}=await sb('loans').select('*').eq('id',loanId).single();
     if(!loan)throw new Error('Loan not found');
+    if(loan.business_id!==currentUser.business_id||(!hasRole('admin')&&loan.branch_id!==currentUser.branch_id))
+      throw new Error('Select a loan from your own branch');
 
     // Record the repayment
     const receiptNo=generateUniqueNo('RCP');

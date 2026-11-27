@@ -20,21 +20,33 @@ assert.equal(context.filterByDate(rows,'date',context.appFilters.accounting).red
 console.log('PASS: Accounting period controls use original records; yesterday, Monday week boundary and custom dates use Kenya time.');
 
 const main={innerHTML:''},errors=[];
-Object.assign(context,{$:()=>main,canManageSuspense:()=>false,selectedBranchId:'branch',
+Object.assign(context,{$:()=>main,canManageSuspense:()=>false,canManageSuspenseEntry:()=>false,
+  branchName:id=>id==='branch'?'Migori':'Mbita',selectedBranchId:'branch',
   selectedSuspenseEntries:new Set(),visibleSuspenseEntries:[],
   escapeHtml:x=>String(x),fmtDate:x=>x,fmtDateTime:x=>x,fmtMoney:x=>`KES ${x}`,paymentPhoneHtml:()=>'',toast:x=>errors.push(x),
   supabaseClient:{rpc:async(name,args)=>{
-    assert.equal(name,'bripta_suspense_page');assert.equal(args.p_branch,'branch');
-    if(args.p_source==='manual')return {data:{rows:[{id:'m1',mpesa_reference:'UNKNOWN',amount:150},{id:'m2',amount:50}],next_after:null}};
-    return {data:args.p_after?{rows:[{id:'q2',trans_id:'SECOND',trans_amount:200}],next_after:null}:
-      {rows:[{id:'q1',trans_id:'UNKNOWN',trans_amount:150,dismissed:null}],next_after:'q1'}};
+    assert.equal(name,'bripta_suspense_page');assert.equal(args.p_branch,null);
+    if(args.p_source==='manual')return {data:{rows:[{id:'m1',mpesa_reference:'UNKNOWN',amount:150,branch_id:'other'},{id:'m2',amount:50,branch_id:'branch'}],next_after:null}};
+    return {data:args.p_after?{rows:[{id:'q2',trans_id:'SECOND',trans_amount:200,branch_id:'other'}],next_after:null}:
+      {rows:[{id:'q1',trans_id:'UNKNOWN',trans_amount:150,dismissed:null,branch_id:'branch'}],next_after:'q1'}};
   }}});
 vm.runInContext(fragment('async function fetchBriptaSuspenseRows(','function toggleSuspenseSelection('),context);
 await context.renderSuspense();
-assert.deepEqual(errors,[]);assert.equal(context.visibleSuspenseEntries.length,3);
+assert.deepEqual(errors,[]);assert.equal(context.visibleSuspenseEntries.length,0);
 assert.ok(main.innerHTML.includes('KES 400'));assert.ok(main.innerHTML.includes('View only'));
 assert.ok(!main.innerHTML.includes('onclick="openSuspenseMatchModal'));
 console.log('PASS: Suspense pages load, duplicate receipts count once and officers retain view-only controls.');
+
+context.canManageSuspense=()=>true;
+context.canManageSuspenseEntry=row=>row.branch_id==='branch';
+context.updateSuspenseBulkControls=()=>{};
+await context.renderSuspense();
+assert.equal(context.visibleSuspenseEntries.length,2);
+assert.ok(main.innerHTML.includes('Migori'));
+assert.ok(main.innerHTML.includes('Mbita'));
+assert.equal((main.innerHTML.match(/onclick="openSuspenseMatchModal/g)||[]).length,2);
+assert.equal((main.innerHTML.match(/View only/g)||[]).length,1);
+console.log('PASS: Shared Suspense shows both branches while branch staff can manage only their own entries.');
 
 const calls=[];let fail=true;
 const bucket={upload:async(path)=>{calls.push(['upload',path]);return {};},remove:async(paths)=>{calls.push(['remove',...paths]);return {};}};
